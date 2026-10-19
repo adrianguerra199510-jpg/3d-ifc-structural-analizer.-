@@ -4,10 +4,11 @@ losas y muros), organizados en pestañas. Al seleccionar una fila se emite
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSize, Signal
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QTabWidget, QWidget
 
 from ..core.modelo import Proyecto
+from .iconos import icono
 
 
 class PanelElementos(QTabWidget):
@@ -21,16 +22,21 @@ class PanelElementos(QTabWidget):
         self._tablas["LOSA"] = self._crear_tabla(["ID", "Nombre", "Espesor (m)", "Material"])
         self._tablas["MURO"] = self._crear_tabla(["ID", "Nombre", "Espesor (m)", "Material"])
 
-        self.addTab(self._tablas["VIGA"], "Vigas")
-        self.addTab(self._tablas["COLUMNA"], "Columnas")
-        self.addTab(self._tablas["LOSA"], "Losas")
-        self.addTab(self._tablas["MURO"], "Muros")
+        self._titulos = {"VIGA": "Vigas", "COLUMNA": "Columnas", "LOSA": "Losas", "MURO": "Muros"}
+        self._iconos = {"VIGA": "viga", "COLUMNA": "columna", "LOSA": "losa", "MURO": "muro"}
+        for tipo, titulo in self._titulos.items():
+            self.addTab(self._tablas[tipo], icono(self._iconos[tipo]), titulo)
+        self.setIconSize(QSize(18, 18))
 
     def _crear_tabla(self, columnas: list) -> QTableWidget:
         tabla = QTableWidget(0, len(columnas))
         tabla.setHorizontalHeaderLabels(columnas)
         tabla.setSelectionBehavior(QTableWidget.SelectRows)
         tabla.setEditTriggers(QTableWidget.NoEditTriggers)
+        tabla.setAlternatingRowColors(True)
+        tabla.setShowGrid(False)
+        tabla.verticalHeader().setVisible(False)
+        tabla.horizontalHeader().setStretchLastSection(True)
         tabla.itemSelectionChanged.connect(lambda t=tabla: self._al_seleccionar(t))
         return tabla
 
@@ -48,6 +54,8 @@ class PanelElementos(QTabWidget):
         self._llenar_barras(self._tablas["COLUMNA"], proyecto.columnas.values(), proyecto, "COLUMNA")
         self._llenar_superficies(self._tablas["LOSA"], proyecto.losas.values(), proyecto, "LOSA")
         self._llenar_superficies(self._tablas["MURO"], proyecto.muros.values(), proyecto, "MURO")
+        for indice, tipo in enumerate(self._titulos):
+            self.setTabText(indice, f"{self._titulos[tipo]} ({self._tablas[tipo].rowCount()})")
 
     def _llenar_barras(self, tabla: QTableWidget, barras, proyecto: Proyecto, tipo: str) -> None:
         tabla.setRowCount(0)

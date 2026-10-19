@@ -38,6 +38,7 @@ from ..core.asignacion import (
     restriccion_solo_normal,
 )
 from ..core.modelo import Proyecto
+from .estilo import EncabezadoDialogo
 
 PRESETS = {
     "Empotramiento (restringe los 6 grados de libertad)": (True, True, True, True, True, True),
@@ -60,11 +61,14 @@ class DialogoApoyo(QDialog):
     def __init__(self, proyecto: Proyecto, objetivos: List[Objetivo], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Asignar apoyo")
-        self.resize(600, 600)
+        self.resize(640, 700)
         self._proyecto = proyecto
         self._objetivos = objetivos
 
         layout = QVBoxLayout(self)
+        layout.addWidget(EncabezadoDialogo(
+            "apoyo", "Asignar apoyo",
+            "Puntual en el extremo de una barra o de área (continuo), con los grados de libertad que elija."))
         formulario = QFormLayout()
 
         self.combo_nodo: Optional[QComboBox] = None

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from ..core.asignacion import ErrorAsignacion, Objetivo, Restricciones, conexion_para_objetivos, descripcion
 from ..core.modelo import Proyecto
+from .estilo import EncabezadoDialogo
 
 PRESETS = {
     "Articulación (transmite traslaciones, libera los 3 giros)": (True, True, True, False, False, False),
@@ -41,10 +42,11 @@ class DialogoConexion(QDialog):
     def __init__(self, proyecto: Proyecto, a: Objetivo, b: Objetivo, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Conectar elementos")
-        self.resize(560, 470)
+        self.resize(600, 560)
         self._proyecto, self._a, self._b = proyecto, a, b
 
         layout = QVBoxLayout(self)
+        layout.addWidget(EncabezadoDialogo("conectar", "Conectar elementos", "Articulación o enlace rígido entre dos elementos (constraint)."))
         layout.addWidget(QLabel(
             f"<b>Conexión entre</b> {descripcion(proyecto, a)} <b>y</b> {descripcion(proyecto, b)}"
         ))

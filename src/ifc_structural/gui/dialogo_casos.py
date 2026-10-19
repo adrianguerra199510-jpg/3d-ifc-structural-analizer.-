@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.casos_carga import PLANTILLAS_COMBINACIONES, CasoCarga, Combinacion, TipoCaso
+from .estilo import EncabezadoDialogo
 
 _PATRON_ID = re.compile(r"[A-Za-z0-9_]+")
 _SIN_PLANTILLA = "(en blanco)"
@@ -72,7 +73,7 @@ class DialogoCasos(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Casos de carga y combinaciones")
-        self.resize(780, 520)
+        self.resize(820, 620)
         self._casos = copy.deepcopy(casos)
         self._combinaciones = copy.deepcopy(combinaciones)
         self._casos_con_cargas: Set[str] = set(casos_con_cargas)
@@ -84,6 +85,7 @@ class DialogoCasos(QDialog):
         self._sucio_comb = False
 
         layout = QVBoxLayout(self)
+        layout.addWidget(EncabezadoDialogo("casos", "Casos de carga y combinaciones", "Defina los casos (D, L, W…) y combine sus factores."))
         self.pestanas = QTabWidget()
         self.pestanas.addTab(self._crear_pestana_casos(), "Casos de carga")
         self.pestanas.addTab(self._crear_pestana_combinaciones(), "Combinaciones")

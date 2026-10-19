@@ -42,6 +42,7 @@ from ..core.asignacion import (
 from ..core.cargas import PerfilPresion
 from ..core.casos_carga import CasoCarga
 from ..core.modelo import Proyecto
+from .estilo import EncabezadoDialogo
 
 TIPOS = {
     "Presión sobre cara o losa (kPa)": "PRESION",
@@ -73,7 +74,7 @@ class DialogoCargas(QDialog):
                  caso_activo: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Asignar carga")
-        self.resize(640, 780)
+        self.resize(680, 860)
         self._proyecto = proyecto
         self._objetivos = objetivos
 
@@ -153,6 +154,9 @@ class DialogoCargas(QDialog):
         self.botones.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(EncabezadoDialogo(
+            "carga_dist", "Asignar carga",
+            "Presión, carga distribuida (uniforme, triangular, trapezoidal), fuerza o momento, en la dirección que elija."))
         layout.addLayout(self.formulario)
         layout.addWidget(self.ayuda)
         layout.addWidget(QLabel("<b>Se crearán estas cargas:</b>"))

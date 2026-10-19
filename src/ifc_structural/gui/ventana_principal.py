@@ -16,21 +16,25 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QActionGroup, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDockWidget,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
     QProgressDialog,
     QSizePolicy,
+    QStackedWidget,
     QTabWidget,
+    QToolBar,
     QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -52,11 +56,16 @@ from ..core.modelo import Proyecto
 from ..core.persistencia import cargar_proyecto, guardar_proyecto
 from ..ifc.importador import importar_ifc
 from ..solver.analisis import ResultadoAnalisis, ejecutar_analisis, validar_modelo
+from .barra_vista import BarraVista
+from .dialogo_acerca import DialogoAcerca
 from .dialogo_apoyos import DialogoApoyo
 from .dialogo_cargas import DialogoCargas
 from .dialogo_casos import DialogoCasos
 from .dialogo_conexion import DialogoConexion
 from .dialogo_materiales import DialogoAsignarMaterial, DialogoMateriales
+from .estilo import etiqueta_logo
+from .iconos import icono, icono_aplicacion, icono_blanco
+from .pagina_bienvenida import PaginaBienvenida
 from .panel_asignaciones import PanelAsignaciones
 from .panel_elementos import PanelElementos
 from .panel_resultados import ENVOLVENTE, PanelEsfuerzos
@@ -64,13 +73,6 @@ from .trabajador_analisis import TrabajadorAnalisis
 from .visor_3d import MODO_CARA, MODO_ELEMENTO, Visor3D
 
 logger = logging.getLogger(__name__)
-
-ESTILO_BOTON_ANALIZAR = """
-QToolButton { background-color: #2e8b57; color: white; font-weight: bold; font-size: 14px;
-              padding: 6px 20px; border-radius: 4px; }
-QToolButton:hover { background-color: #3cb371; }
-QToolButton:disabled { background-color: #9aa; }
-"""
 
 AYUDA = (
     "<b>Cómo se usa</b><ol>"
@@ -112,12 +114,25 @@ class VentanaPrincipal(QMainWindow):
         self._worker: Optional[TrabajadorAnalisis] = None
         self._dialogo_progreso: Optional[QProgressDialog] = None
 
+        self.setWindowIcon(icono_aplicacion())
         self.visor = Visor3D(self)
-        self.setCentralWidget(self.visor)
+        self.barra_vista = BarraVista(self)
+        self.pagina_bienvenida = PaginaBienvenida(self)
+        self.contenedor_visor = QWidget(self)
+        capa = QVBoxLayout(self.contenedor_visor)
+        capa.setContentsMargins(0, 0, 0, 0)
+        capa.setSpacing(0)
+        capa.addWidget(self.barra_vista)
+        capa.addWidget(self.visor, 1)
+        self.paginas = QStackedWidget(self)
+        self.paginas.addWidget(self.pagina_bienvenida)
+        self.paginas.addWidget(self.contenedor_visor)
+        self.setCentralWidget(self.paginas)
 
         self.panel_elementos = PanelElementos(self)
-        dock_elementos = QDockWidget("Elementos", self)
+        dock_elementos = QDockWidget("Elementos del modelo", self)
         dock_elementos.setWidget(self.panel_elementos)
+        dock_elementos.setMinimumWidth(270)
         self.addDockWidget(Qt.LeftDockWidgetArea, dock_elementos)
 
         self.panel_asignaciones = PanelAsignaciones(self)
@@ -125,12 +140,19 @@ class VentanaPrincipal(QMainWindow):
         self.pestanas = QTabWidget()
         self.pestanas.addTab(self.panel_asignaciones, "Asignaciones")
         self.pestanas.addTab(self.panel_esfuerzos, "Esfuerzos")
-        dock_derecho = QDockWidget("Panel", self)
+        dock_derecho = QDockWidget("Asignaciones y resultados", self)
+        dock_derecho.setMinimumWidth(330)
         dock_derecho.setWidget(self.pestanas)
         self.addDockWidget(Qt.RightDockWidgetArea, dock_derecho)
 
         self._etiqueta_seleccion = QLabel("Sin selección")
-        self.statusBar().addPermanentWidget(self._etiqueta_seleccion)
+        self._etiqueta_seleccion.setObjectName("etiquetaEstado")
+        self._etiqueta_modo = QLabel("Modo: elemento")
+        self._etiqueta_modo.setObjectName("etiquetaEstado")
+        self._etiqueta_caso = QLabel("Caso: —")
+        self._etiqueta_caso.setObjectName("etiquetaEstado")
+        for etiqueta in (self._etiqueta_modo, self._etiqueta_caso, self._etiqueta_seleccion):
+            self.statusBar().addPermanentWidget(etiqueta)
 
         self._crear_acciones()
         self._crear_menus()
@@ -145,43 +167,58 @@ class VentanaPrincipal(QMainWindow):
     # Construcción de la interfaz
     # ------------------------------------------------------------------
     def _crear_acciones(self) -> None:
-        self.accion_importar = QAction("Importar IFC…", self, shortcut="Ctrl+I", triggered=self._importar_ifc)
-        self.accion_abrir = QAction("Abrir proyecto…", self, shortcut="Ctrl+O", triggered=self._abrir_proyecto)
-        self.accion_guardar = QAction("Guardar proyecto como…", self, shortcut="Ctrl+S", triggered=self._guardar_proyecto)
-        self.accion_salir = QAction("Salir", self, triggered=self.close)
+        def accion(texto, funcion=None, icono_=None, atajo=None, ayuda=None, **kwargs):
+            a = QAction(texto, self, **kwargs)
+            if icono_:
+                a.setIcon(icono(icono_))
+            if atajo:
+                a.setShortcut(atajo)
+            if ayuda:
+                a.setToolTip(ayuda)
+                a.setStatusTip(ayuda)
+            if funcion:
+                a.triggered.connect(funcion)
+            return a
 
-        self.accion_modo_elemento = QAction("Elemento", self, checkable=True, checked=True)
-        self.accion_modo_elemento.setToolTip("Seleccionar elementos completos con el mouse")
-        self.accion_modo_cara = QAction("Cara", self, checkable=True)
-        self.accion_modo_cara.setToolTip("Seleccionar caras de los elementos con el mouse (para apoyos y cargas)")
+        self.accion_importar = accion("Importar", self._importar_ifc, "importar", "Ctrl+I", "Importar un modelo IFC (Ctrl+I)")
+        self.accion_abrir = accion("Abrir", self._abrir_proyecto, "abrir", "Ctrl+O", "Abrir un proyecto guardado (Ctrl+O)")
+        self.accion_guardar = accion("Guardar", self._guardar_proyecto, "guardar", "Ctrl+S", "Guardar el proyecto (Ctrl+S)")
+        self.accion_salir = accion("Salir", self.close)
+
+        self.accion_modo_elemento = accion(
+            "Elemento", icono_="sel_elemento", ayuda="Seleccionar elementos completos con el mouse",
+            checkable=True, checked=True,
+        )
+        self.accion_modo_cara = accion(
+            "Cara", icono_="sel_cara", ayuda="Seleccionar caras de los elementos con el mouse (para apoyos y cargas)",
+            checkable=True,
+        )
         grupo_modo = QActionGroup(self)
         grupo_modo.setExclusive(True)
         grupo_modo.addAction(self.accion_modo_elemento)
         grupo_modo.addAction(self.accion_modo_cara)
 
-        self.accion_apoyo = QAction("Asignar apoyo", self, triggered=self.asignar_apoyo)
-        self.accion_apoyo.setToolTip("Asigna un apoyo en la cara extrema seleccionada de una viga o columna")
-        self.accion_carga = QAction("Asignar carga", self, triggered=self.asignar_carga)
-        self.accion_carga.setToolTip("Asigna una carga a las losas, vigas, columnas o caras seleccionadas")
-        self.accion_material = QAction("Asignar material", self, triggered=self.asignar_material)
-        self.accion_material.setToolTip("Asigna un material a los elementos seleccionados")
-        self.accion_conexion = QAction("Conectar elementos", self, triggered=self.asignar_conexion)
-        self.accion_conexion.setToolTip("Articula o une rígidamente dos elementos seleccionados (constraint)")
-        self.accion_materiales = QAction("Materiales…", self, triggered=self.gestionar_materiales)
-        self.accion_materiales.setToolTip("Crear y editar materiales")
-        self.accion_casos = QAction("Casos y combinaciones…", self, triggered=self._gestionar_casos)
-        self.accion_analizar = QAction("Analizar", self, shortcut="F5", triggered=self.analizar)
+        self.accion_apoyo = accion("Apoyo", self.asignar_apoyo, "apoyo", ayuda="Asignar un apoyo (puntual o de área) a la selección")
+        self.accion_carga = accion("Carga", self.asignar_carga, "carga_dist", ayuda="Asignar cargas (presión, distribuida, puntual) a la selección")
+        self.accion_material = accion("Material", self.asignar_material, "material", ayuda="Asignar un material a los elementos seleccionados")
+        self.accion_conexion = accion("Conectar", self.asignar_conexion, "conectar",
+                                      ayuda="Articular o unir dos elementos seleccionados (constraint)")
+        self.accion_materiales = accion("Materiales", self.gestionar_materiales, "materiales", ayuda="Crear y editar materiales")
+        self.accion_casos = accion("Casos", self._gestionar_casos, "casos", ayuda="Casos de carga y combinaciones")
+        self.accion_analizar = accion("ANALIZAR", self.analizar, None, "F5", "Resolver todos los casos con CalculiX y mostrar los esfuerzos (F5)")
+        self.accion_analizar.setIcon(icono_blanco("analizar"))
 
-        self.accion_ver_modelo = QAction("Modelo", self, checkable=True, checked=True,
-                                         triggered=lambda: self.volver_al_modelo())
-        self.accion_ver_esfuerzos = QAction("Esfuerzos", self, checkable=True,
-                                            triggered=lambda: self.mostrar_esfuerzos())
+        self.accion_ver_modelo = accion("Modelo", lambda: self.volver_al_modelo(), "modelo",
+                                        ayuda="Volver a la vista del modelo", checkable=True, checked=True)
+        self.accion_ver_esfuerzos = accion("Esfuerzos", lambda: self.mostrar_esfuerzos(), "esfuerzos",
+                                           ayuda="Ver el mapa de esfuerzos del último análisis", checkable=True)
         grupo_vista = QActionGroup(self)
         grupo_vista.setExclusive(True)
         grupo_vista.addAction(self.accion_ver_modelo)
         grupo_vista.addAction(self.accion_ver_esfuerzos)
 
-        self.accion_ayuda = QAction("Cómo se usa", self, triggered=lambda: QMessageBox.information(self, "Ayuda", AYUDA))
+        self.accion_ayuda = accion("Cómo se usa", lambda: QMessageBox.information(self, "Ayuda", AYUDA), "ayuda", "F1")
+        self.accion_acerca = accion("Acerca de…", lambda: DialogoAcerca(self).exec(), "info")
 
     def _crear_menus(self) -> None:
         menu = self.menuBar().addMenu("&Archivo")
@@ -201,68 +238,92 @@ class VentanaPrincipal(QMainWindow):
         self.menuBar().addMenu(self.menu_ver)
         self.menu_ver.addActions([self.accion_ver_modelo, self.accion_ver_esfuerzos])
         self.menu_ver.addSeparator()
-        for tipo, texto in (("LOSA", "losas"), ("MURO", "muros"), ("VIGA", "vigas"), ("COLUMNA", "columnas")):
-            accion = QAction(f"Mostrar {texto}", self, checkable=True, checked=True)
-            accion.toggled.connect(lambda visible, t=tipo: self.visor.set_visibilidad(t, visible))
-            self.menu_ver.addAction(accion)
-        self.menu_ver.addSeparator()
-        for texto, funcion in (
-            ("Vista isométrica", lambda: self.visor.vista_isometrica()),
-            ("Vista en planta", lambda: self.visor.vista_planta()),
-            ("Vista inferior (bases de columnas)", lambda: self._vista_inferior()),
-            ("Vista frontal", lambda: self.visor.vista_frontal()),
-            ("Vista lateral", lambda: self.visor.vista_lateral()),
+        self._acciones_visibilidad = {}
+        for tipo, texto, nombre_icono in (
+            ("LOSA", "losas", "losa"), ("MURO", "muros", "muro"), ("VIGA", "vigas", "viga"), ("COLUMNA", "columnas", "columna"),
         ):
-            self.menu_ver.addAction(QAction(texto, self, triggered=funcion))
+            accion = QAction(icono(nombre_icono), f"Mostrar {texto}", self, checkable=True, checked=True)
+            accion.toggled.connect(lambda visible, t=tipo: self._cambiar_visibilidad(t, visible, desde_menu=True))
+            self.menu_ver.addAction(accion)
+            self._acciones_visibilidad[tipo] = accion
+        self.menu_ver.addSeparator()
+        for clave, texto in (
+            ("vista_iso", "Vista isométrica"), ("vista_planta", "Vista en planta"),
+            ("vista_inferior", "Vista inferior (bases de columnas)"), ("vista_frontal", "Vista frontal"),
+            ("vista_lateral", "Vista lateral"), ("ajustar", "Encuadrar el modelo"),
+        ):
+            self.menu_ver.addAction(QAction(icono(clave), texto, self, triggered=lambda _=False, c=clave: self._cambiar_vista(c)))
 
         menu = self.menuBar().addMenu("A&yuda")
-        menu.addAction(self.accion_ayuda)
+        menu.addActions([self.accion_ayuda, self.accion_acerca])
 
     def _crear_barra_de_herramientas(self) -> None:
-        barra = self.addToolBar("Principal")
+        barra = QToolBar("Principal", self)
+        self.addToolBar(barra)
         barra.setMovable(False)
-        barra.addAction(self.accion_importar)
+        barra.setIconSize(QSize(26, 26))
+        barra.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        self.barra_principal = barra
+
+        marca = QWidget()
+        fila = QHBoxLayout(marca)
+        fila.setContentsMargins(2, 0, 12, 0)
+        fila.setSpacing(9)
+        fila.addWidget(etiqueta_logo(34))
+        textos = QVBoxLayout()
+        textos.setSpacing(0)
+        nombre = QLabel("Analizador Estructural")
+        nombre.setStyleSheet("font-size: 13px; font-weight: 800; color: #0d2a50;")
+        detalle = QLabel("IFC · CalculiX")
+        detalle.setStyleSheet("font-size: 10px; color: #5b6b7c;")
+        textos.addWidget(nombre)
+        textos.addWidget(detalle)
+        fila.addLayout(textos)
+        barra.addWidget(marca)
         barra.addSeparator()
-        barra.addWidget(QLabel(" Seleccionar: "))
-        barra.addAction(self.accion_modo_elemento)
-        barra.addAction(self.accion_modo_cara)
+
+        barra.addActions([self.accion_importar, self.accion_abrir, self.accion_guardar])
         barra.addSeparator()
-        barra.addWidget(QLabel(" Caso activo: "))
+        barra.addActions([self.accion_modo_elemento, self.accion_modo_cara])
+        barra.addSeparator()
+
+        contenedor_caso = QWidget()
+        capa = QVBoxLayout(contenedor_caso)
+        capa.setContentsMargins(4, 0, 4, 0)
+        capa.setSpacing(2)
+        capa.addWidget(QLabel("Caso activo"))
         self.combo_caso = QComboBox()
-        self.combo_caso.setMinimumWidth(110)
-        barra.addWidget(self.combo_caso)
-        barra.addAction(self.accion_apoyo)
-        barra.addAction(self.accion_carga)
-        barra.addAction(self.accion_material)
-        barra.addAction(self.accion_conexion)
-        barra.addAction(self.accion_materiales)
-        barra.addAction(self.accion_casos)
+        self.combo_caso.setMinimumWidth(130)
+        capa.addWidget(self.combo_caso)
+        barra.addWidget(contenedor_caso)
         barra.addSeparator()
-        barra.addWidget(QLabel(" Ver: "))
-        barra.addAction(self.accion_ver_modelo)
-        barra.addAction(self.accion_ver_esfuerzos)
-        boton_vistas = QToolButton()
-        boton_vistas.setText("Vistas ▾")
-        boton_vistas.setMenu(self.menu_ver)
-        boton_vistas.setPopupMode(QToolButton.InstantPopup)
-        barra.addWidget(boton_vistas)
+
+        barra.addActions([self.accion_apoyo, self.accion_carga, self.accion_material, self.accion_conexion])
+        barra.addSeparator()
+        barra.addActions([self.accion_materiales, self.accion_casos])
+        barra.addSeparator()
+        barra.addActions([self.accion_ver_modelo, self.accion_ver_esfuerzos])
 
         espacio = QWidget()
         espacio.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         barra.addWidget(espacio)
 
         self.boton_analizar = QToolButton()
+        self.boton_analizar.setObjectName("botonAnalizar")
         self.boton_analizar.setDefaultAction(self.accion_analizar)
-        self.boton_analizar.setText("▶  ANALIZAR")
-        self.boton_analizar.setToolTip("Resuelve todos los casos con CalculiX y muestra los esfuerzos (F5)")
-        self.boton_analizar.setStyleSheet(ESTILO_BOTON_ANALIZAR)
+        self.boton_analizar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.boton_analizar.setIconSize(QSize(18, 18))
+        self.boton_analizar.setCursor(Qt.PointingHandCursor)
         barra.addWidget(self.boton_analizar)
-        self.accion_analizar.setText("▶  ANALIZAR")
 
     def _conectar_senales(self) -> None:
-        self.accion_modo_elemento.toggled.connect(lambda marcado: marcado and self.visor.set_modo(MODO_ELEMENTO))
-        self.accion_modo_cara.toggled.connect(lambda marcado: marcado and self.visor.set_modo(MODO_CARA))
-        self.combo_caso.currentIndexChanged.connect(lambda _: self._refrescar_asignaciones())
+        self.accion_modo_elemento.toggled.connect(lambda marcado: marcado and self._cambiar_modo(MODO_ELEMENTO))
+        self.accion_modo_cara.toggled.connect(lambda marcado: marcado and self._cambiar_modo(MODO_CARA))
+        self.combo_caso.currentIndexChanged.connect(lambda _: self._al_cambiar_caso())
+        self.pagina_bienvenida.importar_solicitado.connect(self._importar_ifc)
+        self.pagina_bienvenida.abrir_solicitado.connect(self._abrir_proyecto)
+        self.barra_vista.vista_solicitada.connect(self._cambiar_vista)
+        self.barra_vista.visibilidad_cambiada.connect(lambda t, v: self._cambiar_visibilidad(t, v, desde_menu=False))
         self.visor.seleccion_cambiada.connect(self._al_cambiar_seleccion)
         self.visor.menu_contextual.connect(self._mostrar_menu_contextual)
         self.visor.punto_sondeado.connect(lambda texto: self.statusBar().showMessage(texto))
@@ -306,6 +367,36 @@ class VentanaPrincipal(QMainWindow):
         if len(objetivos) > 3:
             textos.append(f"y {len(objetivos) - 3} más")
         self._etiqueta_seleccion.setText("Selección: " + "; ".join(textos))
+
+    def _cambiar_modo(self, modo: str) -> None:
+        self.visor.set_modo(modo)
+        self._etiqueta_modo.setText("Modo: cara" if modo == MODO_CARA else "Modo: elemento")
+
+    def _al_cambiar_caso(self) -> None:
+        caso = self.casos.get(self.caso_activo())
+        self._etiqueta_caso.setText(f"Caso: {caso.id}" if caso else "Caso: —")
+        self._refrescar_asignaciones()
+
+    def _cambiar_vista(self, clave: str) -> None:
+        if clave == "vista_inferior":
+            self._vista_inferior()
+            return
+        {
+            "vista_iso": self.visor.vista_isometrica, "vista_planta": self.visor.vista_planta,
+            "vista_frontal": self.visor.vista_frontal, "vista_lateral": self.visor.vista_lateral,
+        }.get(clave, lambda: None)()
+        self.visor.reset_camera()
+        self.visor.render()
+
+    def _cambiar_visibilidad(self, tipo: str, visible: bool, desde_menu: bool) -> None:
+        self.visor.set_visibilidad(tipo, visible)
+        if desde_menu:
+            self.barra_vista.fijar_visibilidad(tipo, visible)
+        else:
+            accion = self._acciones_visibilidad[tipo]
+            accion.blockSignals(True)
+            accion.setChecked(visible)
+            accion.blockSignals(False)
 
     def _vista_inferior(self) -> None:
         self.visor.view_xy(negative=True)
@@ -366,6 +457,7 @@ class VentanaPrincipal(QMainWindow):
         self.panel_esfuerzos.establecer_resultados([], [])
         self.panel_esfuerzos.mostrar_resumen("Ejecute el análisis para ver los esfuerzos.", {})
 
+        self.paginas.setCurrentWidget(self.contenedor_visor)  # sale de la pantalla de inicio
         self.visor.mostrar_modelo(proyecto)
         self.panel_elementos.actualizar(proyecto)
         self._actualizar_combo_caso()

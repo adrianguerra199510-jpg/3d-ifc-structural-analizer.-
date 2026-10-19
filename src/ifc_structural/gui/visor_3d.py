@@ -38,10 +38,10 @@ from ..solver.lector_resultados import MallaTensiones
 logger = logging.getLogger(__name__)
 
 COLORES_BASE = {
-    "VIGA": (70, 130, 180),
-    "COLUMNA": (205, 92, 92),
-    "LOSA": (190, 190, 190),
-    "MURO": (218, 200, 120),
+    "VIGA": (79, 134, 198),
+    "COLUMNA": (212, 104, 90),
+    "LOSA": (170, 182, 196),
+    "MURO": (217, 198, 143),
 }
 COLOR_ELEMENTO_SELECCIONADO = (255, 200, 0)
 COLOR_CARA_SELECCIONADA = (255, 120, 0)
@@ -97,7 +97,7 @@ class Visor3D(QtInteractor):
         self._pulsacion: Optional[Tuple[int, int]] = None
         self._pulsacion_derecha: Optional[Tuple[int, int]] = None
 
-        self.set_background("white")
+        self.set_background("#ffffff", top="#dde6f1")  # degradado suave de abajo (blanco) a arriba
         self.add_axes()
         self.iren.add_observer("LeftButtonPressEvent", self._al_presionar)
         self.iren.add_observer("LeftButtonReleaseEvent", self._al_soltar)
@@ -146,7 +146,7 @@ class Visor3D(QtInteractor):
                 scalars="colores",
                 rgb=True,
                 show_edges=True,
-                edge_color=(40, 40, 40),
+                edge_color=(52, 68, 88),
                 opacity=OPACIDAD_PLANOS if es_plano else 1.0,
                 pickable=True,
                 name=f"{tipo}_{id_}",

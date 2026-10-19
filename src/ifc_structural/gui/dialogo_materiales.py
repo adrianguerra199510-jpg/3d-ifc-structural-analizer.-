@@ -38,6 +38,7 @@ from ..core.materiales import (
     usos_de_material,
 )
 from ..core.modelo import Material, Proyecto
+from .estilo import EncabezadoDialogo
 
 _SIN_PLANTILLA = "(elegir plantilla…)"
 
@@ -46,7 +47,7 @@ class DialogoMateriales(QDialog):
     def __init__(self, proyecto: Proyecto, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Materiales")
-        self.resize(720, 460)
+        self.resize(760, 560)
         self._proyecto = proyecto
         self._materiales: Dict[str, Material] = copy.deepcopy(proyecto.materiales)
         self._nombre_actual: Optional[str] = None  # None = material nuevo
@@ -95,6 +96,8 @@ class DialogoMateriales(QDialog):
         fila.addWidget(self.grupo, 2)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(EncabezadoDialogo(
+            "materiales", "Materiales", "Cree materiales propios o parta de una plantilla; luego asígnelos a los elementos."))
         layout.addLayout(fila)
         caja = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         caja.accepted.connect(self.accept)
@@ -261,10 +264,11 @@ class DialogoAsignarMaterial(QDialog):
     def __init__(self, proyecto: Proyecto, objetivos: List[Objetivo], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Asignar material")
-        self.resize(520, 360)
+        self.resize(560, 460)
         self._proyecto = proyecto
 
         layout = QVBoxLayout(self)
+        layout.addWidget(EncabezadoDialogo("material", "Asignar material", "Elija el material de los elementos seleccionados."))
         layout.addWidget(QLabel("<b>Elementos seleccionados</b> (se asigna al elemento completo, aunque se haya elegido una cara):"))
         elementos = list(dict.fromkeys((o.tipo, o.id) for o in objetivos))
         resumen = QPlainTextEdit()
