@@ -126,7 +126,7 @@ class PanelArbol(QWidget):
         self.arbol.setIconSize(QSize(18, 18))
         self.arbol.setIndentation(16)
         self.arbol.setAnimated(True)
-        self.arbol.setUniformRowHeights(True)
+        self.arbol.setUniformRowHeights(False)  # con filas ocultas (filtro) la maquetación uniforme se descuadra
         self.arbol.setAlternatingRowColors(False)
         self.arbol.setTextElideMode(Qt.ElideRight)
         self.arbol.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -452,5 +452,5 @@ class PanelArbol(QWidget):
 
         for i in range(self.arbol.topLevelItemCount()):
             visible(self.arbol.topLevelItem(i))
-        self.arbol.scheduleDelayedItemsLayout()
+        self.arbol.doItemsLayout()
         self.arbol.viewport().update()
