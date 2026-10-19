@@ -4,14 +4,13 @@ elemento y leyenda de colores."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QWidget
 
 from .iconos import icono
 from .visor_3d import COLORES_BASE
 
 VISTAS = (
-    ("vista_iso", "Isométrica", "Vista isométrica"),
+    ("vista_iso", "Iso", "Vista isométrica"),
     ("vista_planta", "Planta", "Vista en planta (desde arriba)"),
     ("vista_frontal", "Frontal", "Vista frontal"),
     ("vista_lateral", "Lateral", "Vista lateral"),
@@ -21,10 +20,8 @@ VISTAS = (
 TIPOS = (("VIGA", "Vigas", "viga"), ("COLUMNA", "Columnas", "columna"), ("LOSA", "Losas", "losa"), ("MURO", "Muros", "muro"))
 
 
-def _cuadro_color(rgb) -> QPixmap:
-    px = QPixmap(12, 12)
-    px.fill(QColor(*rgb))
-    return px
+def _hex(rgb) -> str:
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
 class BarraVista(QWidget):
@@ -62,26 +59,25 @@ class BarraVista(QWidget):
         self.botones_tipo = {}
         for tipo, texto, nombre_icono in TIPOS:
             boton = QToolButton()
-            boton.setText(texto)
             boton.setCheckable(True)
             boton.setChecked(True)
-            boton.setIcon(icono(nombre_icono))
+            color = _hex(COLORES_BASE[tipo])  # el icono lleva el color del elemento: hace de leyenda
+            boton.setIcon(icono(nombre_icono, color, color))
             boton.setToolTip(f"Mostrar u ocultar {texto.lower()}")
-            boton.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            boton.setToolButtonStyle(Qt.ToolButtonIconOnly)
             boton.toggled.connect(lambda visible, t=tipo: self.visibilidad_cambiada.emit(t, visible))
             fila.addWidget(boton)
             self.botones_tipo[tipo] = boton
         fila.addStretch(1)
+        self._fila = fila
 
-        # Leyenda de colores del modelo
-        for tipo, texto, _ in TIPOS:
-            cuadro = QLabel()
-            cuadro.setPixmap(_cuadro_color(COLORES_BASE[tipo]))
-            cuadro.setToolTip(texto)
-            fila.addWidget(cuadro)
-        etiqueta_leyenda = QLabel("  colores del modelo")
-        etiqueta_leyenda.setObjectName("chipLeyenda")
-        fila.addWidget(etiqueta_leyenda)
+    def agregar_accion(self, accion) -> None:
+        """Añade, al extremo derecho, un botón ligado a una acción (p. ej. Modelo / Esfuerzos)."""
+
+        boton = QToolButton()
+        boton.setDefaultAction(accion)
+        boton.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._fila.addWidget(boton)
 
     def fijar_visibilidad(self, tipo: str, visible: bool) -> None:
         self.botones_tipo[tipo].blockSignals(True)

@@ -96,7 +96,7 @@ class VentanaPrincipal(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Analizador Estructural 3D (IFC + CalculiX)")
-        self.resize(1500, 920)
+        self.resize(1440, 880)
 
         self.configuracion: Configuracion = cargar_configuracion()
         self.proyecto = Proyecto()
@@ -131,9 +131,11 @@ class VentanaPrincipal(QMainWindow):
 
         self.panel_elementos = PanelElementos(self)
         dock_elementos = QDockWidget("Elementos del modelo", self)
+        self._docks = []
         dock_elementos.setWidget(self.panel_elementos)
-        dock_elementos.setMinimumWidth(270)
+        dock_elementos.setMinimumWidth(255)
         self.addDockWidget(Qt.LeftDockWidgetArea, dock_elementos)
+        self._docks.append(dock_elementos)
 
         self.panel_asignaciones = PanelAsignaciones(self)
         self.panel_esfuerzos = PanelEsfuerzos(self)
@@ -141,9 +143,12 @@ class VentanaPrincipal(QMainWindow):
         self.pestanas.addTab(self.panel_asignaciones, "Asignaciones")
         self.pestanas.addTab(self.panel_esfuerzos, "Esfuerzos")
         dock_derecho = QDockWidget("Asignaciones y resultados", self)
-        dock_derecho.setMinimumWidth(330)
+        dock_derecho.setMinimumWidth(320)
         dock_derecho.setWidget(self.pestanas)
         self.addDockWidget(Qt.RightDockWidgetArea, dock_derecho)
+        self._docks.append(dock_derecho)
+        for dock in self._docks:
+            dock.hide()  # los paneles aparecen al cargar un modelo (la pantalla de inicio los oculta)
 
         self._etiqueta_seleccion = QLabel("Sin selección")
         self._etiqueta_seleccion.setObjectName("etiquetaEstado")
@@ -238,6 +243,9 @@ class VentanaPrincipal(QMainWindow):
         self.menuBar().addMenu(self.menu_ver)
         self.menu_ver.addActions([self.accion_ver_modelo, self.accion_ver_esfuerzos])
         self.menu_ver.addSeparator()
+        for dock in self._docks:  # reabrir los paneles si se cerraron
+            self.menu_ver.addAction(dock.toggleViewAction())
+        self.menu_ver.addSeparator()
         self._acciones_visibilidad = {}
         for tipo, texto, nombre_icono in (
             ("LOSA", "losas", "losa"), ("MURO", "muros", "muro"), ("VIGA", "vigas", "viga"), ("COLUMNA", "columnas", "columna"),
@@ -279,10 +287,13 @@ class VentanaPrincipal(QMainWindow):
         textos.addWidget(nombre)
         textos.addWidget(detalle)
         fila.addLayout(textos)
+        marca.setToolTip("Analizador Estructural 3D")
         barra.addWidget(marca)
         barra.addSeparator()
 
         barra.addActions([self.accion_importar, self.accion_abrir, self.accion_guardar])
+        for accion in (self.accion_importar, self.accion_abrir, self.accion_guardar):
+            barra.widgetForAction(accion).setToolButtonStyle(Qt.ToolButtonIconOnly)  # más compacto
         barra.addSeparator()
         barra.addActions([self.accion_modo_elemento, self.accion_modo_cara])
         barra.addSeparator()
@@ -301,8 +312,9 @@ class VentanaPrincipal(QMainWindow):
         barra.addActions([self.accion_apoyo, self.accion_carga, self.accion_material, self.accion_conexion])
         barra.addSeparator()
         barra.addActions([self.accion_materiales, self.accion_casos])
-        barra.addSeparator()
-        barra.addActions([self.accion_ver_modelo, self.accion_ver_esfuerzos])
+
+        self.barra_vista.agregar_accion(self.accion_ver_modelo)
+        self.barra_vista.agregar_accion(self.accion_ver_esfuerzos)
 
         espacio = QWidget()
         espacio.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -347,6 +359,8 @@ class VentanaPrincipal(QMainWindow):
         indice = self.combo_caso.findData(actual)
         self.combo_caso.setCurrentIndex(max(indice, 0))
         self.combo_caso.blockSignals(False)
+        caso_actual = self.casos.get(self.caso_activo())
+        self._etiqueta_caso.setText(f"Caso: {caso_actual.id}" if caso_actual else "Caso: —")
 
     def _actualizar_estado_de_acciones(self) -> None:
         hay_modelo = bool(self.proyecto.todas_las_barras())
@@ -458,6 +472,9 @@ class VentanaPrincipal(QMainWindow):
         self.panel_esfuerzos.mostrar_resumen("Ejecute el análisis para ver los esfuerzos.", {})
 
         self.paginas.setCurrentWidget(self.contenedor_visor)  # sale de la pantalla de inicio
+        for dock in self._docks:
+            dock.show()
+        self.resizeDocks(self._docks, [300, 360], Qt.Horizontal)
         self.visor.mostrar_modelo(proyecto)
         self.panel_elementos.actualizar(proyecto)
         self._actualizar_combo_caso()

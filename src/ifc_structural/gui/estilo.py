@@ -13,7 +13,16 @@ from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QProxyStyle,
+    QStyle,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .iconos import icono, pixmap_logo
 
@@ -158,10 +167,19 @@ QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 """
 
 
+class _EstiloFusionLimpio(QProxyStyle):
+    """Fusion sin los iconos genéricos de los botones Aceptar/Cancelar."""
+
+    def styleHint(self, hint, option=None, widget=None, returnData=None):
+        if hint == QStyle.SH_DialogButtonBox_ButtonsHaveIcons:
+            return 0
+        return super().styleHint(hint, option, widget, returnData)
+
+
 def aplicar_estilo(app: QApplication) -> None:
     """Estilo Fusion + paleta + hoja de estilos de la aplicación."""
 
-    app.setStyle("Fusion")
+    app.setStyle(_EstiloFusionLimpio("Fusion"))
     app.setPalette(_paleta())
     fuente = QFont()
     fuente.setPointSizeF(max(fuente.pointSizeF(), 9.5))

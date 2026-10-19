@@ -4,7 +4,7 @@ losas y muros), organizados en pestañas. Al seleccionar una fila se emite
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QTabWidget, QWidget
 
 from ..core.modelo import Proyecto
@@ -27,6 +27,8 @@ class PanelElementos(QTabWidget):
         for tipo, titulo in self._titulos.items():
             self.addTab(self._tablas[tipo], icono(self._iconos[tipo]), titulo)
         self.setIconSize(QSize(18, 18))
+        self.setUsesScrollButtons(False)
+        self.setElideMode(Qt.ElideNone)
 
     def _crear_tabla(self, columnas: list) -> QTableWidget:
         tabla = QTableWidget(0, len(columnas))
@@ -55,7 +57,8 @@ class PanelElementos(QTabWidget):
         self._llenar_superficies(self._tablas["LOSA"], proyecto.losas.values(), proyecto, "LOSA")
         self._llenar_superficies(self._tablas["MURO"], proyecto.muros.values(), proyecto, "MURO")
         for indice, tipo in enumerate(self._titulos):
-            self.setTabText(indice, f"{self._titulos[tipo]} ({self._tablas[tipo].rowCount()})")
+            self.setTabText(indice, f"{self._titulos[tipo]} {self._tablas[tipo].rowCount()}")
+            self._tablas[tipo].resizeColumnsToContents()
 
     def _llenar_barras(self, tabla: QTableWidget, barras, proyecto: Proyecto, tipo: str) -> None:
         tabla.setRowCount(0)

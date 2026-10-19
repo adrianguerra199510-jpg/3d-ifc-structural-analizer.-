@@ -29,6 +29,9 @@ def verificar(condicion: bool, mensaje: str) -> None:
 
 def main(salida: Path) -> None:
     app = QApplication([])
+    from ifc_structural.gui.estilo import aplicar_estilo
+
+    aplicar_estilo(app)
     mensajes = []
     for nombre in ("information", "warning", "critical"):
         setattr(QMessageBox, nombre, staticmethod(lambda *a, _n=nombre, **k: mensajes.append((_n, a[1:3])) or QMessageBox.Ok))

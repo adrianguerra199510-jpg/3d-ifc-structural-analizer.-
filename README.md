@@ -59,6 +59,23 @@ restringidos CalculiX puede fallar y se muestra un diagnóstico; las cargas
 sobre muros no se transfieren y los apoyos solo se asignan en extremos de
 vigas y columnas.
 
+## Interfaz
+
+- **Pantalla de inicio** con los tres pasos (importar, asignar, analizar); los paneles
+  aparecen al cargar un modelo y se reabren desde *Ver*.
+- **Barra de herramientas agrupada** con iconos propios: archivo, modo de selección
+  (elemento / cara), caso activo, asignaciones (apoyo, carga, material, conexión),
+  materiales y casos, y el botón verde **ANALIZAR** (F5).
+- **Barra de vista** sobre el visor: isométrica, planta, frontal, lateral, inferior,
+  encuadrar, visibilidad por tipo de elemento (los iconos llevan el color del elemento)
+  y el cambio Modelo / Esfuerzos.
+- **Clic derecho** sobre un elemento: carga, apoyo, material, conexión, propiedades.
+- Barra de estado con el modo de selección, el caso activo y la selección actual.
+
+El logo y todos los iconos son SVG dibujados en código (`gui/iconos.py`); la paleta y
+la hoja de estilos están en `gui/estilo.py`. Para regenerar `recursos/logo.svg`,
+`logo.png` y `logo.ico` (icono del `.exe`): `python recursos/generar_logo.py`.
+
 ## Transferencia de cargas de área → vigas (decisión de diseño)
 
 Las losas en una dirección se reparten como carga lineal uniforme sobre las
@@ -173,5 +190,9 @@ src/ifc_structural/
     ├── dialogo_casos.py
     ├── panel_resultados.py         # panel de esfuerzos
     ├── panel_asignaciones.py
-    └── trabajador_analisis.py      # hilo del análisis
+    ├── trabajador_analisis.py      # hilo del análisis
+    ├── iconos.py                   # logo e iconos SVG
+    ├── estilo.py                   # paleta, estilo y hoja de estilos
+    ├── pagina_bienvenida.py        # pantalla de inicio
+    └── barra_vista.py              # vistas y visibilidad sobre el visor
 ```

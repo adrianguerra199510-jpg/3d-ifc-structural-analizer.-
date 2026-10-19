@@ -26,8 +26,9 @@ class _TarjetaPaso(QFrame):
             f"QFrame#tarjetaPaso {{ background: {SUPERFICIE}; border: 1px solid {BORDE}; border-radius: 12px; }}"
             f"QLabel {{ background: transparent; }}"
         )
-        self.setMinimumWidth(210)
+        self.setMinimumWidth(200)
         self.setMaximumWidth(250)
+        self.setFixedHeight(172)
         capa = QVBoxLayout(self)
         capa.setContentsMargins(16, 16, 16, 16)
         capa.setSpacing(8)
@@ -59,8 +60,8 @@ class PaginaBienvenida(QWidget):
         super().__init__(parent)
         self.setStyleSheet(f"PaginaBienvenida {{ background: {FONDO}; }}")
         raiz = QVBoxLayout(self)
-        raiz.setAlignment(Qt.AlignCenter)
         raiz.setSpacing(0)
+        raiz.addStretch(1)
 
         logo = QLabel()
         logo.setPixmap(pixmap_logo(112, 2.0))
@@ -108,3 +109,4 @@ class PaginaBienvenida(QWidget):
         pie.setAlignment(Qt.AlignCenter)
         pie.setStyleSheet(f"font-size: 10px; color: {TEXTO_SUAVE};")
         raiz.addWidget(pie)
+        raiz.addStretch(1)

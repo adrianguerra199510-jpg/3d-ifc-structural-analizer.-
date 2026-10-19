@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="fondo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d2a50"/><stop offset="1" stop-color="#1f6feb"/>
+    </linearGradient>
+    <linearGradient id="esfuerzo" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2f6bff"/><stop offset=".38" stop-color="#19c3a4"/>
+      <stop offset=".7" stop-color="#f7d548"/><stop offset="1" stop-color="#ff6a3d"/>
+    </linearGradient>
+    <linearGradient id="brillo" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".18"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#fondo)"/>
+  <rect x="8" y="8" width="240" height="120" rx="58" fill="url(#brillo)"/>
+  <!-- cargas -->
+  <g stroke="#ffffff" stroke-opacity=".85" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M88 40h80"/>
+    <path d="M96 40v26M128 40v26M160 40v26"/>
+    <path d="M88 58l8 10 8-10M120 58l8 10 8-10M152 58l8 10 8-10"/>
+  </g>
+  <!-- columnas -->
+  <rect x="66" y="112" width="20" height="92" rx="6" fill="#ffffff" fill-opacity=".95"/>
+  <rect x="170" y="112" width="20" height="92" rx="6" fill="#ffffff" fill-opacity=".95"/>
+  <!-- viga con mapa de esfuerzos -->
+  <rect x="50" y="84" width="156" height="32" rx="11" fill="url(#esfuerzo)" stroke="#ffffff" stroke-width="4"/>
+  <!-- apoyos -->
+  <path d="M76 204l-19 20h38z" fill="#ffffff" fill-opacity=".95"/>
+  <path d="M180 204l-19 20h38z" fill="#ffffff" fill-opacity=".95"/>
+  <rect x="42" y="226" width="172" height="6" rx="3" fill="#ffffff" fill-opacity=".6"/>
+  <!-- nudos -->
+  <circle cx="76" cy="100" r="8" fill="#ffffff" stroke="#0d2a50" stroke-width="4"/>
+  <circle cx="180" cy="100" r="8" fill="#ffffff" stroke="#0d2a50" stroke-width="4"/>
+</svg>

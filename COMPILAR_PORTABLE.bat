@@ -80,6 +80,7 @@ if exist "%SALIDA%" rmdir /s /q "%SALIDA%"
 if exist "%BUILD%\work" rmdir /s /q "%BUILD%\work"
 "%VPY%" -m PyInstaller --name AnalizadorEstructuralIFC --onedir --windowed --noconfirm ^
     --distpath "%SALIDA%" --workpath "%BUILD%\work" --specpath "%BUILD%" ^
+    --icon "%~dp0recursos\logo.ico" ^
     --paths "%~dp0src" ^
     --collect-all ifcopenshell ^
     --collect-data pyvista ^
