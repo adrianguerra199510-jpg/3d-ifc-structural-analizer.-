@@ -53,9 +53,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from ..core.cargas import Apoyo, CargaLineal, CargaPuntual
+from ..core.asignacion import barras_de_apoyo_area
+from ..core.cargas import Apoyo, ApoyoArea, CargaLineal, CargaPuntual, Conexion
 from ..core.geometria import ejes_seccion
 from ..core.modelo import Proyecto
 
@@ -112,6 +113,9 @@ class MallaAnalisis:
     elementos: Dict[int, ElementoMalla] = field(default_factory=dict)
     nodo_ccx_de_nodo_original: Dict[str, int] = field(default_factory=dict)
     nodo_ccx_de_posicion: Dict[Tuple[str, float], int] = field(default_factory=dict)
+    #: Nodo propio del extremo de una barra separado del nudo por una
+    #: conexión de tipo EXTREMO: (barra_id, nodo_original) -> nodo ccx.
+    nodo_ccx_de_extremo: Dict[Tuple[str, str], int] = field(default_factory=dict)
     elementos_por_barra: Dict[str, List[int]] = field(default_factory=dict)
     orden_nodos_por_barra: Dict[str, List[int]] = field(default_factory=dict)
     posiciones_s_por_barra: Dict[str, List[float]] = field(default_factory=dict)
@@ -122,6 +126,8 @@ def construir_malla(
     cargas_lineales_por_caso: Dict[str, List[CargaLineal]],
     cargas_puntuales_por_caso: Dict[str, List[CargaPuntual]],
     longitud_elemento: float = LONGITUD_ELEMENTO_OBJETIVO,
+    conexiones: Sequence[Conexion] = (),
+    apoyos: Sequence = (),
 ) -> MallaAnalisis:
     """Construye la malla de análisis, común a todos los casos de carga.
 
@@ -132,6 +138,11 @@ def construir_malla(
 
     malla = MallaAnalisis()
     contador = {"nodo": 0, "elemento": 0}
+    extremos_separados = {(c.barra_id, c.nodo_id) for c in conexiones if c.barra_id is not None}
+    tramos_de_apoyo: Dict[str, List[Tuple[float, float]]] = {}
+    for apoyo in apoyos:
+        if isinstance(apoyo, ApoyoArea) and apoyo.elemento_tipo in ("VIGA", "COLUMNA"):
+            tramos_de_apoyo.setdefault(apoyo.elemento_id, []).append((apoyo.s_inicio, apoyo.s_fin))
 
     def nuevo_id(clave: str) -> int:
         contador[clave] += 1
@@ -149,6 +160,8 @@ def construir_malla(
             for cp in cargas_p:
                 if cp.elemento_id == barra_id and cp.posicion is not None:
                     breakpoints.add(round(cp.posicion, 6))
+        for s_ini, s_fin in tramos_de_apoyo.get(barra_id, []):
+            breakpoints.update((round(s_ini, 6), round(s_fin, 6)))
 
         puntos_quiebre = sorted(breakpoints)
         posiciones: List[float] = [puntos_quiebre[0]]
@@ -165,7 +178,15 @@ def construir_malla(
 
         ids_nodo: List[int] = []
         for s in posiciones:
-            if s <= _TOL:
+            if s <= _TOL and (barra_id, barra.nodo_inicio) in extremos_separados:
+                id_ccx = nuevo_id("nodo")
+                malla.nodos[id_ccx] = NodoMalla(id_ccx, nodo_ini.x, nodo_ini.y, nodo_ini.z, None)
+                malla.nodo_ccx_de_extremo[(barra_id, barra.nodo_inicio)] = id_ccx
+            elif s >= 1.0 - _TOL and (barra_id, barra.nodo_fin) in extremos_separados:
+                id_ccx = nuevo_id("nodo")
+                malla.nodos[id_ccx] = NodoMalla(id_ccx, nodo_fin.x, nodo_fin.y, nodo_fin.z, None)
+                malla.nodo_ccx_de_extremo[(barra_id, barra.nodo_fin)] = id_ccx
+            elif s <= _TOL:
                 id_ccx = malla.nodo_ccx_de_nodo_original.get(barra.nodo_inicio)
                 if id_ccx is None:
                     id_ccx = nuevo_id("nodo")
@@ -204,6 +225,19 @@ def construir_malla(
             )
             elementos_barra.append(id_el)
         malla.elementos_por_barra[barra_id] = elementos_barra
+
+    # Enlaces rígidos: un tramo B31 muy rígido entre los dos nudos (ver tramos_rigidos)
+    for c in conexiones:
+        if not c.es_enlace_rigido:
+            continue
+        origen = malla.nodo_ccx_de_nodo_original.get(c.nodo_id)
+        destino = malla.nodo_ccx_de_nodo_original.get(c.nodo_destino)
+        if origen is None or destino is None or origen == destino:
+            continue
+        etiqueta = f"ENL_{c.id}"
+        id_el = nuevo_id("elemento")
+        malla.elementos[id_el] = ElementoMalla(id=id_el, barra_id=etiqueta, nodo_i=origen, nodo_f=destino, s_inicio=0.0, s_fin=1.0)
+        malla.elementos_por_barra[etiqueta] = [id_el]
 
     return malla
 
@@ -250,16 +284,128 @@ def _carga_global_en_elemento(elemento: ElementoMalla, cargas: List[CargaLineal]
     return (total[0], total[1], total[2])
 
 
+def grados_restringidos_por_nodo(proyecto: Proyecto, malla: MallaAnalisis, apoyos: Sequence) -> Dict[int, Set[int]]:
+    """Grados de libertad (1-6) restringidos en cada nodo de la malla, a
+    partir de los apoyos nodales y de los apoyos de área (que restringen
+    todos los nodos de la barra dentro de su tramo)."""
+
+    restringidos: Dict[int, Set[int]] = {}
+    for apoyo in apoyos:
+        if isinstance(apoyo, ApoyoArea):
+            for barra_id in barras_de_apoyo_area(proyecto, apoyo):
+                if barra_id not in malla.orden_nodos_por_barra:
+                    continue
+                for nid, s in zip(malla.orden_nodos_por_barra[barra_id], malla.posiciones_s_por_barra[barra_id]):
+                    if apoyo.s_inicio - 1e-6 <= s <= apoyo.s_fin + 1e-6:
+                        restringidos.setdefault(nid, set()).update(apoyo.grados_restringidos())
+        else:
+            nid = malla.nodo_ccx_de_nodo_original.get(apoyo.nodo_id)
+            if nid is not None:
+                restringidos.setdefault(nid, set()).update(apoyo.grados_restringidos())
+    return restringidos
+
+
+Terminos = List[Tuple[int, int, float]]
+
+#: Módulo de elasticidad del tramo rígido de un enlace = este factor × el mayor del modelo.
+FACTOR_RIGIDEZ_ENLACE = 1000.0
+#: Lado (m) de la sección cuadrada del tramo rígido.
+LADO_ENLACE = 0.5
+
+
+def ecuaciones_de_conexiones(proyecto: Proyecto, malla: MallaAnalisis, conexiones: Sequence[Conexion]) -> List[Terminos]:
+    """Ecuaciones lineales ``Σ coef·u(nodo, gdl) = 0`` de las conexiones. El
+    primer término de cada ecuación es el grado de libertad dependiente.
+
+    Solo se escriben ecuaciones de TRASLACIÓN: en la versión 2.21 de
+    CalculiX las ecuaciones sobre los giros de vigas B31 no se aplican (se
+    comprobó que no tienen efecto), así que los giros se transmiten
+    mediante la continuidad del nudo (no hay conexión), se liberan (EXTREMO
+    articulado) o se transmiten con un tramo rígido (enlace rígido, ver
+    ``tramos_rigidos``).
+    """
+
+    ecuaciones: List[Terminos] = []
+    for c in conexiones:
+        if c.es_enlace_rigido:
+            continue
+        if c.barra_id is not None:
+            dependiente = malla.nodo_ccx_de_extremo.get((c.barra_id, c.nodo_id))
+            principal = malla.nodo_ccx_de_nodo_original.get(c.nodo_id)
+        else:
+            dependiente = malla.nodo_ccx_de_nodo_original.get(c.nodo_destino)
+            principal = malla.nodo_ccx_de_nodo_original.get(c.nodo_id)
+        if dependiente is None or principal is None:
+            continue
+        for g in c.traslaciones_transmitidas():
+            ecuaciones.append([(dependiente, g, 1.0), (principal, g, -1.0)])
+    return ecuaciones
+
+
+def giros_axiales_fijados(proyecto: Proyecto, malla: MallaAnalisis, conexiones: Sequence[Conexion]) -> Dict[int, Set[int]]:
+    """Giro alrededor del eje de la barra impedido en los extremos
+    articulados (``fijar_torsion``), cuando la barra es paralela a un eje global."""
+
+    fijados: Dict[int, Set[int]] = {}
+    for c in conexiones:
+        if c.barra_id is None or not c.fijar_torsion or c.transmite_giros:
+            continue
+        nid = malla.nodo_ccx_de_extremo.get((c.barra_id, c.nodo_id))
+        eje = eje_global_de_barra(proyecto, c.barra_id)
+        if nid is not None and eje is not None:
+            fijados.setdefault(nid, set()).add(4 + eje)
+    return fijados
+
+
+def eje_global_de_barra(proyecto: Proyecto, barra_id: str) -> Optional[int]:
+    """0, 1 o 2 si la barra es paralela al eje X, Y o Z global; si no, None."""
+
+    barra = proyecto.elemento_barra(barra_id)
+    a, b = proyecto.nodos[barra.nodo_inicio], proyecto.nodos[barra.nodo_fin]
+    d = (b.x - a.x, b.y - a.y, b.z - a.z)
+    longitud = _norma(d)
+    for i in range(3):
+        if longitud > 0 and abs(abs(d[i]) - longitud) < 1e-6 * max(1.0, longitud):
+            return i
+    return None
+
+
+def tramos_rigidos(proyecto: Proyecto, malla: MallaAnalisis, conexiones: Sequence[Conexion]) -> List[Tuple[str, int, int, Vector3]]:
+    """Tramos B31 muy rígidos que materializan los enlaces rígidos:
+    (etiqueta, nodo ccx origen, nodo ccx destino, vector n1 de la sección)."""
+
+    tramos = []
+    for c in conexiones:
+        if not c.es_enlace_rigido:
+            continue
+        origen = malla.nodo_ccx_de_nodo_original.get(c.nodo_id)
+        destino = malla.nodo_ccx_de_nodo_original.get(c.nodo_destino)
+        if origen is None or destino is None or origen == destino:
+            continue
+        a, b = proyecto.nodos[c.nodo_id], proyecto.nodos[c.nodo_destino]
+        t = (b.x - a.x, b.y - a.y, b.z - a.z)
+        base = (0.0, 0.0, 1.0) if abs(t[2]) < 0.9 * _norma(t) else (1.0, 0.0, 0.0)
+        n1 = (t[1] * base[2] - t[2] * base[1], t[2] * base[0] - t[0] * base[2], t[0] * base[1] - t[1] * base[0])
+        norma = _norma(n1)
+        tramos.append((f"ENL_{c.id}", origen, destino, (n1[0] / norma, n1[1] / norma, n1[2] / norma)))
+    return tramos
+
+
 def generar_inp_caso(
     proyecto: Proyecto,
     malla: MallaAnalisis,
     caso_id: str,
     cargas_lineales: List[CargaLineal],
     cargas_puntuales: List[CargaPuntual],
-    apoyos: List[Apoyo],
+    apoyos: Sequence,
     ruta_salida: Path,
+    conexiones: Sequence[Conexion] = (),
 ) -> Path:
-    """Escribe el .inp de CalculiX correspondiente a un único caso de carga."""
+    """Escribe el .inp de CalculiX correspondiente a un único caso de carga.
+
+    ``apoyos`` mezcla ``Apoyo`` (nodales) y ``ApoyoArea`` (continuos).
+    ``conexiones`` se traducen en ecuaciones lineales (``*EQUATION``).
+    """
 
     lineas: List[str] = [f"** Caso de carga: {caso_id} (generado por ifc_structural)"]
 
@@ -281,7 +427,20 @@ def generar_inp_caso(
         lineas.append("*DENSITY")
         lineas.append(f"{DENSIDAD_FICTICIA}")
 
-    areas: Dict[str, float] = {}
+    enlaces = tramos_rigidos(proyecto, malla, conexiones)
+    if enlaces:
+        e_max = max((m.modulo_elasticidad for m in proyecto.materiales.values()), default=1e7)
+        lineas.append("*MATERIAL,NAME=RIGIDO_ENLACE")
+        lineas.append("*ELASTIC")
+        lineas.append(f"{e_max * FACTOR_RIGIDEZ_ENLACE:.6g},0.2000")
+        lineas.append("*DENSITY")
+        lineas.append(f"{DENSIDAD_FICTICIA}")
+        for etiqueta, origen, destino, n1 in enlaces:
+            lineas.append(f"*BEAM SECTION,ELSET=E_{etiqueta},MATERIAL=RIGIDO_ENLACE,SECTION=RECT")
+            lineas.append(f"{LADO_ENLACE},{LADO_ENLACE}")
+            lineas.append(f"{n1[0]:.9f},{n1[1]:.9f},{n1[2]:.9f}")
+
+    areas: Dict[str, float] = {etiqueta: LADO_ENLACE**2 for etiqueta, *_ in enlaces}
     for barra_id, barra in proyecto.todas_las_barras().items():
         ejes = ejes_seccion(proyecto, barra)
         areas[barra_id] = ejes.dim1 * ejes.dim2
@@ -291,13 +450,26 @@ def generar_inp_caso(
         lineas.append(f"{ejes.dim1:.6g},{ejes.dim2:.6g}")
         lineas.append(f"{ejes.e1[0]:.9f},{ejes.e1[1]:.9f},{ejes.e1[2]:.9f}")
 
-    apoyos_validos = [a for a in apoyos if a.nodo_id in malla.nodo_ccx_de_nodo_original]
-    if apoyos_validos:
+    ecuaciones = ecuaciones_de_conexiones(proyecto, malla, conexiones)
+    dependientes: Set[Tuple[int, int]] = {(eq[0][0], eq[0][1]) for eq in ecuaciones}
+
+    restringidos = grados_restringidos_por_nodo(proyecto, malla, apoyos)
+    for nid, grados in giros_axiales_fijados(proyecto, malla, conexiones).items():
+        restringidos.setdefault(nid, set()).update(grados)
+    lineas_boundary: List[str] = []
+    for nid in sorted(restringidos):
+        grados = [g for g in restringidos[nid] if (nid, g) not in dependientes]
+        for ini, fin in _rangos_contiguos(grados):
+            lineas_boundary.append(f"{nid},{ini},{fin}")
+    if lineas_boundary:
         lineas.append("*BOUNDARY")
-        for apoyo in apoyos_validos:
-            nid = malla.nodo_ccx_de_nodo_original[apoyo.nodo_id]
-            for ini, fin in _rangos_contiguos(apoyo.grados_restringidos()):
-                lineas.append(f"{nid},{ini},{fin}")
+        lineas.extend(lineas_boundary)
+
+    if ecuaciones:
+        lineas.append("*EQUATION")
+        for terminos in ecuaciones:
+            lineas.append(str(len(terminos)))
+            lineas.append(", ".join(f"{n},{g},{c:.9g}" for n, g, c in terminos))
 
     lineas.append("*STEP")
     lineas.append("*STATIC")
@@ -350,8 +522,9 @@ def generar_inp_todos_los_casos(
     malla: MallaAnalisis,
     cargas_lineales_por_caso: Dict[str, List[CargaLineal]],
     cargas_puntuales_por_caso: Dict[str, List[CargaPuntual]],
-    apoyos: List[Apoyo],
+    apoyos: Sequence,
     directorio_salida: Path,
+    conexiones: Sequence[Conexion] = (),
 ) -> Dict[str, Path]:
     """Genera un .inp independiente por cada caso de carga, sobre la misma malla."""
 
@@ -366,6 +539,7 @@ def generar_inp_todos_los_casos(
             cargas_puntuales_por_caso.get(caso_id, []),
             apoyos,
             ruta,
+            conexiones,
         )
         rutas[caso_id] = ruta
     return rutas

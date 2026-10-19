@@ -11,13 +11,14 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from ..combinaciones import esfuerzos
 from ..combinaciones.motor_superposicion import superponer_todas_las_combinaciones
-from ..core.cargas import Apoyo, CargaArea, CargaLineal, CargaPuntual
+from ..core.asignacion import barras_de_apoyo_area
+from ..core.cargas import Apoyo, ApoyoArea, CargaArea, CargaLineal, CargaPuntual, Conexion
 from ..core.casos_carga import CasoCarga, Combinacion, TipoCaso
 from ..core.modelo import Proyecto
 from ..core.transferencia import (
@@ -72,8 +73,9 @@ class ResultadoAnalisis:
         }
 
 
-def _componentes_conectadas(proyecto: Proyecto) -> List[Tuple[List[str], set]]:
-    """Grupos de barras conectadas entre sí: [(ids de barras, nodos)]."""
+def _componentes_conectadas(proyecto: Proyecto, conexiones: Sequence[Conexion] = ()) -> List[Tuple[List[str], set]]:
+    """Grupos de barras conectadas entre sí: [(ids de barras, nodos)]. Los
+    enlaces entre nudos distintos (conexiones ENLACE) también unen grupos."""
 
     padre: Dict[str, str] = {}
 
@@ -86,6 +88,9 @@ def _componentes_conectadas(proyecto: Proyecto) -> List[Tuple[List[str], set]]:
     barras = proyecto.todas_las_barras()
     for barra in barras.values():
         padre[buscar(barra.nodo_inicio)] = buscar(barra.nodo_fin)
+    for c in conexiones:
+        if c.nodo_destino is not None and c.nodo_id in proyecto.nodos and c.nodo_destino in proyecto.nodos:
+            padre[buscar(c.nodo_id)] = buscar(c.nodo_destino)
 
     grupos: Dict[str, Tuple[List[str], set]] = {}
     for id_, barra in barras.items():
@@ -95,42 +100,98 @@ def _componentes_conectadas(proyecto: Proyecto) -> List[Tuple[List[str], set]]:
     return list(grupos.values())
 
 
-def _grados_de_libertad_de_cuerpo_rigido_libres(proyecto: Proyecto, nodos: set, apoyos: List[Apoyo]) -> int:
+#: Restricción puntual: (nodos a los que pertenece, coordenadas, banderas ux..rz).
+RestriccionPuntual = Tuple[set, Tuple[float, float, float], Tuple[bool, ...]]
+
+
+def _restricciones_puntuales(proyecto: Proyecto, apoyos: Sequence) -> List[RestriccionPuntual]:
+    """Apoyos nodales y de área convertidos en restricciones en puntos: los
+    de área se muestrean a lo largo de la barra (extremos y 3 puntos
+    intermedios), que basta para el análisis de movimientos de cuerpo rígido."""
+
+    resultado: List[RestriccionPuntual] = []
+    for apoyo in apoyos:
+        banderas = (apoyo.ux, apoyo.uy, apoyo.uz, apoyo.rx, apoyo.ry, apoyo.rz)
+        if isinstance(apoyo, ApoyoArea):
+            for barra_id in barras_de_apoyo_area(proyecto, apoyo):
+                barra = proyecto.elemento_barra(barra_id)
+                a, b = proyecto.nodos[barra.nodo_inicio], proyecto.nodos[barra.nodo_fin]
+                for k in range(5):
+                    s = apoyo.s_inicio + (apoyo.s_fin - apoyo.s_inicio) * k / 4.0
+                    punto = (a.x + s * (b.x - a.x), a.y + s * (b.y - a.y), a.z + s * (b.z - a.z))
+                    resultado.append(({barra.nodo_inicio, barra.nodo_fin}, punto, banderas))
+        elif apoyo.nodo_id in proyecto.nodos:
+            resultado.append(({apoyo.nodo_id}, proyecto.nodos[apoyo.nodo_id].coordenadas, banderas))
+    return resultado
+
+
+def _grados_de_libertad_de_cuerpo_rigido_libres(
+    proyecto: Proyecto, nodos: set, restricciones: Sequence[RestriccionPuntual]
+) -> int:
     """Cuántos de los 6 movimientos de cuerpo rígido (3 traslaciones y 3
     giros) de un grupo de barras conectadas NO impiden sus apoyos.
 
-    Todas las barras se unen rígidamente en los nodos (no hay articulaciones
-    internas), así que el grupo solo puede ser inestable como un todo. Cada
-    restricción impone una condición lineal sobre el movimiento de cuerpo
-    rígido (t, ω): una traslación restringida en el eje ``e`` en un nodo en
-    ``r`` impone ``t·e + ω·(r × e) = 0``; un giro restringido impone
-    ``ω·e = 0``. El grupo es estable si esas condiciones tienen rango 6.
+    Cada restricción impone una condición lineal sobre el movimiento de
+    cuerpo rígido (t, ω): una traslación restringida en el eje ``e`` en un
+    punto ``r`` impone ``t·e + ω·(r × e) = 0``; un giro restringido impone
+    ``ω·e = 0``. El grupo es estable como cuerpo rígido si esas condiciones
+    tienen rango 6. (Los mecanismos internos, por articulaciones, se
+    detectan aparte en ``solver.mecanismos``.)
     """
 
     coordenadas = np.array([proyecto.nodos[n].coordenadas for n in nodos], dtype=float)
     centro = coordenadas.mean(axis=0)
     ejes = np.eye(3)
     filas: List[np.ndarray] = []
-    for apoyo in apoyos:
-        if apoyo.nodo_id not in nodos:
+    for pertenece, punto, banderas in restricciones:
+        if not (pertenece & nodos):
             continue
-        r = np.array(proyecto.nodos[apoyo.nodo_id].coordenadas, dtype=float) - centro
-        for i, restringido in enumerate((apoyo.ux, apoyo.uy, apoyo.uz)):
-            if restringido:
+        r = np.array(punto, dtype=float) - centro
+        for i in range(3):
+            if banderas[i]:
                 filas.append(np.concatenate([ejes[i], np.cross(r, ejes[i])]))
-        for i, restringido in enumerate((apoyo.rx, apoyo.ry, apoyo.rz)):
-            if restringido:
+        for i in range(3):
+            if banderas[3 + i]:
                 filas.append(np.concatenate([np.zeros(3), ejes[i]]))
     if not filas:
         return 6
     return 6 - int(np.linalg.matrix_rank(np.array(filas), tol=1e-9))
 
 
+def _validar_conexiones(
+    proyecto: Proyecto, conexiones: Sequence[Conexion], errores: List[str], advertencias: List[str]
+) -> List[Conexion]:
+    """Conexiones aplicables; informa de las que no lo son."""
+
+    validas: List[Conexion] = []
+    for c in conexiones:
+        if c.barra_id is not None:
+            barra = proyecto.todas_las_barras().get(c.barra_id)
+            if barra is None or c.nodo_id not in (barra.nodo_inicio, barra.nodo_fin):
+                advertencias.append(f"La conexión {c.nombre} ya no corresponde a ningún extremo del modelo y se ignora.")
+                continue
+            otras = [
+                b for i, b in proyecto.todas_las_barras().items()
+                if i != c.barra_id and c.nodo_id in (b.nodo_inicio, b.nodo_fin)
+            ]
+            if not otras:
+                advertencias.append(
+                    f"La conexión {c.nombre}: ninguna otra barra llega al nudo {c.nodo_id}; no hay nada que conectar y se ignora."
+                )
+                continue
+        elif c.nodo_id not in proyecto.nodos or c.nodo_destino not in proyecto.nodos:
+            advertencias.append(f"La conexión {c.nombre} usa nudos que ya no existen y se ignora.")
+            continue
+        validas.append(c)
+    return validas
+
+
 def validar_modelo(
     proyecto: Proyecto,
     casos: Dict[str, CasoCarga],
     combinaciones: Dict[str, Combinacion],
-    apoyos: List[Apoyo],
+    apoyos: Sequence,
+    conexiones: Sequence[Conexion] = (),
 ) -> Tuple[List[str], List[str]]:
     """Revisa que el modelo se pueda analizar. Devuelve (errores, advertencias):
     los errores impiden el análisis; las advertencias no."""
@@ -145,18 +206,27 @@ def validar_modelo(
         errores.append("No hay casos de carga definidos.")
 
     nodos_barras = {n for b in barras.values() for n in (b.nodo_inicio, b.nodo_fin)}
-    apoyos_validos = [a for a in apoyos if a.nodo_id in nodos_barras]
+    apoyos_validos = []
+    for a in apoyos:
+        if isinstance(a, ApoyoArea):
+            if barras_de_apoyo_area(proyecto, a):
+                apoyos_validos.append(a)
+        elif a.nodo_id in nodos_barras:
+            apoyos_validos.append(a)
     if len(apoyos_validos) < len(apoyos):
         advertencias.append(
-            f"{len(apoyos) - len(apoyos_validos)} apoyo(s) están en nodos que no pertenecen a ninguna "
-            "viga o columna y se ignorarán."
+            f"{len(apoyos) - len(apoyos_validos)} apoyo(s) no están sobre ninguna viga o columna del modelo "
+            "(o la losa no tiene vigas de soporte) y se ignorarán."
         )
     if barras and not apoyos_validos:
         errores.append("No hay apoyos asignados: seleccione la cara extrema de una columna o viga y asigne un apoyo.")
 
+    conexiones_validas = _validar_conexiones(proyecto, conexiones, errores, advertencias)
+
     if barras and apoyos_validos:
-        nodos_apoyados = {a.nodo_id for a in apoyos_validos}
-        for ids, nodos in _componentes_conectadas(proyecto):
+        restricciones = _restricciones_puntuales(proyecto, apoyos_validos)
+        nodos_apoyados = {n for pertenece, _, _ in restricciones for n in pertenece}
+        for ids, nodos in _componentes_conectadas(proyecto, conexiones_validas):
             nombres = ", ".join(sorted(ids))
             if not (nodos & nodos_apoyados):
                 errores.append(
@@ -164,13 +234,28 @@ def validar_modelo(
                     "Revise que sus extremos coincidan con los de las demás barras."
                 )
                 continue
-            libres = _grados_de_libertad_de_cuerpo_rigido_libres(proyecto, nodos, apoyos_validos)
+            libres = _grados_de_libertad_de_cuerpo_rigido_libres(proyecto, nodos, restricciones)
             if libres:
                 errores.append(
                     f"La estructura formada por {nombres} es inestable: sus apoyos no impiden {libres} de los 6 "
                     "movimientos de cuerpo rígido (traslaciones o giros). Agregue apoyos o restrinja más grados "
                     "de libertad (p. ej. un empotramiento restringe los 6; dos apoyos articulados alineados "
                     "dejan libre el giro alrededor del eje que los une)."
+                )
+        if not errores and conexiones_validas:
+            from .mecanismos import detectar_mecanismos
+
+            resultado = detectar_mecanismos(proyecto, apoyos_validos, conexiones_validas)
+            if resultado is None:
+                advertencias.append(
+                    "El modelo es grande: no se comprobó si las articulaciones dejan mecanismos internos."
+                )
+            elif resultado.cantidad:
+                barras_txt = ", ".join(resultado.barras) if resultado.barras else "varias barras"
+                errores.append(
+                    f"Las conexiones y apoyos dejan {resultado.cantidad} mecanismo(s) interno(s) (la estructura se "
+                    f"movería sin resistencia), principalmente en: {barras_txt}. Restrinja más grados de libertad, "
+                    "transmita más giros en las conexiones o agregue apoyos."
                 )
 
     for losa in proyecto.losas.values():
@@ -235,13 +320,14 @@ def ejecutar_analisis(
     proyecto: Proyecto,
     casos: Dict[str, CasoCarga],
     combinaciones: Dict[str, Combinacion],
-    apoyos: List[Apoyo],
+    apoyos: Sequence,
     cargas_area_por_caso: Dict[str, List[CargaArea]],
     cargas_lineales_por_caso: Dict[str, List[CargaLineal]],
     cargas_puntuales_por_caso: Dict[str, List[CargaPuntual]],
     directorio_trabajo: Path,
     ruta_ccx: str = "ccx",
     al_avanzar: Optional[Callable[[str], None]] = None,
+    conexiones: Sequence[Conexion] = (),
 ) -> ResultadoAnalisis:
     """Ejecuta el análisis completo y devuelve los esfuerzos por caso y
     por combinación. Lanza ``ErrorAnalisis`` con un mensaje explicativo si
@@ -252,7 +338,7 @@ def ejecutar_analisis(
             al_avanzar(mensaje)
 
     avanzar("Validando el modelo...")
-    errores, advertencias = validar_modelo(proyecto, casos, combinaciones, apoyos)
+    errores, advertencias = validar_modelo(proyecto, casos, combinaciones, apoyos, conexiones)
     if errores:
         raise ErrorAnalisis("\n".join(errores))
 
@@ -262,11 +348,14 @@ def ejecutar_analisis(
     cargas_puntuales = {caso_id: list(cargas_puntuales_por_caso.get(caso_id, [])) for caso_id in casos}
 
     avanzar("Construyendo la malla de análisis...")
-    malla = construir_malla(proyecto, cargas_lineales, cargas_puntuales)
+    conexiones_validas = _validar_conexiones(proyecto, conexiones, [], [])
+    malla = construir_malla(proyecto, cargas_lineales, cargas_puntuales, conexiones=conexiones_validas, apoyos=apoyos)
 
     avanzar("Generando los archivos de CalculiX...")
     directorio_trabajo.mkdir(parents=True, exist_ok=True)
-    rutas_inp = generar_inp_todos_los_casos(proyecto, malla, cargas_lineales, cargas_puntuales, apoyos, directorio_trabajo)
+    rutas_inp = generar_inp_todos_los_casos(
+        proyecto, malla, cargas_lineales, cargas_puntuales, apoyos, directorio_trabajo, conexiones_validas
+    )
     for ruta in rutas_inp.values():
         for sufijo in (".frd", ".dat"):
             ruta.with_suffix(sufijo).unlink(missing_ok=True)

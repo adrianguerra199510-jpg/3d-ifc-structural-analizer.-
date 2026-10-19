@@ -29,8 +29,8 @@ from PySide6.QtCore import Signal
 from pyvistaqt import QtInteractor
 from vtkmodules.vtkRenderingCore import vtkCellPicker
 
-from ..core.asignacion import Objetivo
-from ..core.cargas import Apoyo, CargaArea, CargaLineal, CargaPuntual
+from ..core.asignacion import Objetivo, barras_de_apoyo_area
+from ..core.cargas import Apoyo, ApoyoArea, CargaArea, CargaLineal, CargaPuntual, Conexion
 from ..core.geometria import Solido, normal_losa, solido_elemento
 from ..core.modelo import Proyecto
 from ..solver.lector_resultados import MallaTensiones
@@ -47,6 +47,9 @@ COLOR_ELEMENTO_SELECCIONADO = (255, 200, 0)
 COLOR_CARA_SELECCIONADA = (255, 120, 0)
 COLOR_APOYO = "royalblue"
 COLOR_CARGA = "crimson"
+COLOR_MOMENTO = "darkorchid"
+COLOR_APOYO_AREA = "seagreen"
+COLOR_CONEXION = "deeppink"
 OPACIDAD_PLANOS = 0.6
 OPACIDAD_PLANOS_EN_ESFUERZOS = 0.12
 #: Un clic es una pulsación que se mueve menos que esto (píxeles).
@@ -70,6 +73,7 @@ class Visor3D(QtInteractor):
 
     seleccion_cambiada = Signal(list)  # list[Objetivo]
     punto_sondeado = Signal(str)  # texto para mostrar al hacer clic en la vista de esfuerzos
+    menu_contextual = Signal()  # clic derecho sobre el modelo (la selección ya está actualizada)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -91,11 +95,14 @@ class Visor3D(QtInteractor):
         self._picker = vtkCellPicker()
         self._picker.SetTolerance(0.0005)
         self._pulsacion: Optional[Tuple[int, int]] = None
+        self._pulsacion_derecha: Optional[Tuple[int, int]] = None
 
         self.set_background("white")
         self.add_axes()
         self.iren.add_observer("LeftButtonPressEvent", self._al_presionar)
         self.iren.add_observer("LeftButtonReleaseEvent", self._al_soltar)
+        self.iren.add_observer("RightButtonPressEvent", self._al_presionar_derecho)
+        self.iren.add_observer("RightButtonReleaseEvent", self._al_soltar_derecho)
 
     # ------------------------------------------------------------------
     # Construcción de la vista del modelo
@@ -218,6 +225,32 @@ class Visor3D(QtInteractor):
         sumar = bool(interactor.GetControlKey() or interactor.GetShiftKey())
         self._clic_en_modelo(x, y, sumar)
 
+    def _al_presionar_derecho(self, *_args) -> None:
+        self._pulsacion_derecha = tuple(self.iren.interactor.GetEventPosition())
+
+    def _al_soltar_derecho(self, *_args) -> None:
+        interactor = self.iren.interactor
+        inicio, self._pulsacion_derecha = self._pulsacion_derecha, None
+        if inicio is None or self._vista != "MODELO":
+            return
+        x, y = interactor.GetEventPosition()
+        if abs(x - inicio[0]) > UMBRAL_ARRASTRE_PX or abs(y - inicio[1]) > UMBRAL_ARRASTRE_PX:
+            return  # fue un arrastre (zoom con el botón derecho), no un clic
+        self.clic_derecho_en(x, y)
+
+    def clic_derecho_en(self, x: int, y: int) -> None:
+        """Clic derecho en el píxel (x, y): si el elemento bajo el cursor no
+        está en la selección pasa a ser la selección; luego pide el menú."""
+
+        clave, celda = self._elegir(x, y)
+        if clave is not None:
+            tipo, id_ = clave
+            ya_elegido = any((o.tipo, o.id) == (tipo, id_) for o in self._seleccion)
+            if not ya_elegido:
+                self.seleccionar([Objetivo(tipo, id_, celda if self._modo == MODO_CARA else None)])
+        if self._seleccion:
+            self.menu_contextual.emit()
+
     def _clic_en_modelo(self, x: int, y: int, sumar: bool) -> None:
         clave, celda = self._elegir(x, y)
         if clave is None:
@@ -268,32 +301,88 @@ class Visor3D(QtInteractor):
     # ------------------------------------------------------------------
     def mostrar_asignaciones(
         self,
-        apoyos: Sequence[Apoyo],
+        apoyos: Sequence,
         cargas_area: Sequence[CargaArea],
         cargas_lineales: Sequence[CargaLineal],
         cargas_puntuales: Sequence[CargaPuntual],
+        conexiones: Sequence[Conexion] = (),
     ) -> None:
-        """Dibuja los apoyos y las cargas del caso activo (las que se pasan)."""
+        """Dibuja los apoyos, las conexiones y las cargas del caso activo
+        (las que se pasan). Las flechas de una carga variable tienen longitud
+        proporcional a su valor, de modo que se ve su forma."""
 
-        for nombre in ("ASIG_APOYOS", "ASIG_CARGAS", "ASIG_ETIQUETAS"):
+        for nombre in ("ASIG_APOYOS", "ASIG_APOYOS_AREA", "ASIG_CONEXIONES", "ASIG_CARGAS", "ASIG_MOMENTOS", "ASIG_ETIQUETAS"):
             self.remove_actor(nombre, render=False)
         proyecto = self._proyecto
         if proyecto is None:
             return
 
         largo = float(np.clip(0.06 * self._escala, 0.3, 1.5))
+        barras = proyecto.todas_las_barras()
 
+        def punto_de(barra_id: str, s: float) -> np.ndarray:
+            barra = proyecto.elemento_barra(barra_id)
+            a = np.array(proyecto.nodos[barra.nodo_inicio].coordenadas)
+            b = np.array(proyecto.nodos[barra.nodo_fin].coordenadas)
+            return a + s * (b - a)
+
+        # -- apoyos puntuales -------------------------------------------------------
         conos = [
             pv.Cone(
                 center=np.array(proyecto.nodos[a.nodo_id].coordenadas) - np.array([0, 0, largo * 0.4]),
                 direction=(0, 0, 1), height=largo * 0.8, radius=largo * 0.45, resolution=16,
             )
-            for a in apoyos if a.nodo_id in proyecto.nodos
+            for a in apoyos if not isinstance(a, ApoyoArea) and a.nodo_id in proyecto.nodos
         ]
         if conos:
             self.add_mesh(pv.merge(conos), color=COLOR_APOYO, name="ASIG_APOYOS", pickable=False, show_scalar_bar=False)
 
+        # -- apoyos de área: conos pequeños a lo largo de las barras apoyadas ------------
+        conos_area: List[pv.PolyData] = []
+        etiquetas_apoyo: List[np.ndarray] = []
+        textos_apoyo: List[str] = []
+        for apoyo in apoyos:
+            if not isinstance(apoyo, ApoyoArea):
+                continue
+            traslaciones = [i for i, activo in enumerate((apoyo.ux, apoyo.uy, apoyo.uz)) if activo]
+            eje = 2 if 2 in traslaciones else (traslaciones[0] if traslaciones else 2)
+            direccion = np.zeros(3)
+            direccion[eje] = 1.0
+            for barra_id in barras_de_apoyo_area(proyecto, apoyo):
+                longitud = proyecto.longitud_barra(barra_id)
+                n = max(3, int(round(longitud * (apoyo.s_fin - apoyo.s_inicio) / (largo * 1.2))) + 1)
+                for s in np.linspace(apoyo.s_inicio, apoyo.s_fin, n):
+                    conos_area.append(
+                        pv.Cone(
+                            center=punto_de(barra_id, s) - direccion * largo * 0.3, direction=direccion,
+                            height=largo * 0.6, radius=largo * 0.28, resolution=12,
+                        )
+                    )
+                etiquetas_apoyo.append(punto_de(barra_id, 0.5 * (apoyo.s_inicio + apoyo.s_fin)) - direccion * largo * 0.9)
+                textos_apoyo.append("apoyo " + "".join(
+                    n_ for n_, activo in zip(("Ux", "Uy", "Uz", "Rx", "Ry", "Rz"), (apoyo.ux, apoyo.uy, apoyo.uz, apoyo.rx, apoyo.ry, apoyo.rz)) if activo
+                ))
+        if conos_area:
+            self.add_mesh(pv.merge(conos_area), color=COLOR_APOYO_AREA, name="ASIG_APOYOS_AREA", pickable=False, show_scalar_bar=False)
+
+        # -- conexiones ----------------------------------------------------------------------
+        marcas: List[pv.PolyData] = []
+        for c in conexiones:
+            if c.nodo_id not in proyecto.nodos:
+                continue
+            centro = np.array(proyecto.nodos[c.nodo_id].coordenadas)
+            marcas.append(pv.Sphere(radius=largo * 0.3, center=centro))
+            if c.nodo_destino is not None and c.nodo_destino in proyecto.nodos:
+                destino = np.array(proyecto.nodos[c.nodo_destino].coordenadas)
+                marcas.append(pv.Sphere(radius=largo * 0.3, center=destino))
+                if np.linalg.norm(destino - centro) > 1e-9:
+                    marcas.append(pv.Line(centro, destino).tube(radius=largo * 0.08))
+        if marcas:
+            self.add_mesh(pv.merge(marcas), color=COLOR_CONEXION, name="ASIG_CONEXIONES", pickable=False, show_scalar_bar=False)
+
+        # -- cargas ------------------------------------------------------------------------------
         flechas: List[pv.PolyData] = []
+        momentos: List[pv.PolyData] = []
         puntos_etiqueta: List[np.ndarray] = []
         textos: List[str] = []
 
@@ -308,42 +397,73 @@ class Visor3D(QtInteractor):
                 continue
             solido = solido_elemento(proyecto, "LOSA", carga.losa_id)
             d = np.asarray(carga.direccion, dtype=float)
+            d = d / np.linalg.norm(d)
             # La cara cargada es la que mira contra la carga.
             cara = min(solido.caras[:2], key=lambda c: float(np.dot(c.normal, d)))
-            muestras = _puntos_en_cara(cara.puntos, 4)
-            for punto in muestras:
-                flechas.append(flecha(punto, d, largo))
+            muestras = _puntos_en_cara(cara.puntos, 5)
+            valores = [abs(carga.presion_en(m)) for m in muestras]
+            maximo = max(valores, default=0.0) or 1.0
+            for punto, valor in zip(muestras, valores):
+                flechas.append(flecha(punto, d, largo * (0.2 + 0.8 * valor / maximo)))
             if muestras:
-                puntos_etiqueta.append(muestras[0] - d / np.linalg.norm(d) * largo)
-                textos.append(f"{carga.presion:g} kPa")
+                puntos_etiqueta.append(muestras[0] - d * largo * 1.1)
+                textos.append(
+                    f"{carga.presion:g} kPa" if carga.perfil is None
+                    else f"{carga.perfil.valor_a:g} → {carga.perfil.valor_b:g} kPa"
+                )
 
         for carga in cargas_lineales:
-            if carga.elemento_id not in proyecto.todas_las_barras():
+            if carga.elemento_id not in barras:
                 continue
-            barra = proyecto.elemento_barra(carga.elemento_id)
-            a = np.array(proyecto.nodos[barra.nodo_inicio].coordenadas)
-            b = np.array(proyecto.nodos[barra.nodo_fin].coordenadas)
             d = np.asarray(carga.direccion, dtype=float)
             d = d / np.linalg.norm(d)
-            for s in np.linspace(carga.s_inicio, carga.s_fin, 5):
-                flechas.append(flecha(a + s * (b - a) - d * largo * 0.25, d, largo * 0.8))
-            puntos_etiqueta.append(a + 0.5 * (carga.s_inicio + carga.s_fin) * (b - a) - d * largo * 1.1)
-            textos.append(f"{abs(carga.w_inicio):g} kN/m")
+            maximo = max(abs(carga.w_inicio), abs(carga.w_fin)) or 1.0
+            n = 6 if not carga.es_uniforme else 5
+            cola = []
+            for s in np.linspace(carga.s_inicio, carga.s_fin, n):
+                t = (s - carga.s_inicio) / max(carga.s_fin - carga.s_inicio, 1e-9)
+                w = carga.w_inicio + t * (carga.w_fin - carga.w_inicio)
+                alto = largo * (0.15 + 0.85 * abs(w) / maximo)
+                base = punto_de(carga.elemento_id, s) - d * largo * 0.2
+                flechas.append(flecha(base, d, alto))
+                cola.append(base - d * alto)
+            if len(cola) > 1 and not carga.es_uniforme:
+                flechas.append(pv.MultipleLines(np.array(cola)).tube(radius=largo * 0.02))
+            puntos_etiqueta.append(punto_de(carga.elemento_id, 0.5 * (carga.s_inicio + carga.s_fin)) - d * largo * 1.15)
+            textos.append(
+                f"{abs(carga.w_inicio):g} kN/m" if carga.es_uniforme
+                else f"{carga.w_inicio:g} → {carga.w_fin:g} kN/m"
+            )
 
         for carga in cargas_puntuales:
-            if carga.nodo_id is None or carga.nodo_id not in proyecto.nodos:
+            if carga.nodo_id is not None and carga.nodo_id in proyecto.nodos:
+                punto = np.array(proyecto.nodos[carga.nodo_id].coordenadas)
+            elif carga.elemento_id in barras and carga.posicion is not None:
+                punto = punto_de(carga.elemento_id, carga.posicion)
+            else:
                 continue
             f = np.array([carga.fx, carga.fy, carga.fz], dtype=float)
-            if np.linalg.norm(f) < 1e-12:
-                continue
-            punto = np.array(proyecto.nodos[carga.nodo_id].coordenadas)
-            d = f / np.linalg.norm(f)
-            flechas.append(flecha(punto - d * largo * 0.15, d, largo * 1.4))
-            puntos_etiqueta.append(punto - d * largo * 1.6)
-            textos.append(f"{np.linalg.norm(f):g} kN")
+            m = np.array([carga.mx, carga.my, carga.mz], dtype=float)
+            if np.linalg.norm(f) > 1e-12:
+                d = f / np.linalg.norm(f)
+                flechas.append(flecha(punto - d * largo * 0.15, d, largo * 1.4))
+                puntos_etiqueta.append(punto - d * largo * 1.6)
+                textos.append(f"{np.linalg.norm(f):g} kN")
+            if np.linalg.norm(m) > 1e-12:
+                d = m / np.linalg.norm(m)
+                # Momento: flecha doble en la dirección del vector (regla de la mano derecha)
+                momentos.append(flecha(punto + d * largo * 0.2, d, largo * 1.0))
+                momentos.append(flecha(punto + d * largo * 0.55, d, largo * 1.0))
+                puntos_etiqueta.append(punto + d * largo * 0.9)
+                textos.append(f"M = {np.linalg.norm(m):g} kN·m")
 
         if flechas:
             self.add_mesh(pv.merge(flechas), color=COLOR_CARGA, name="ASIG_CARGAS", pickable=False, show_scalar_bar=False)
+        if momentos:
+            self.add_mesh(pv.merge(momentos), color=COLOR_MOMENTO, name="ASIG_MOMENTOS", pickable=False, show_scalar_bar=False)
+        puntos_etiqueta += etiquetas_apoyo
+        textos += textos_apoyo
+        if puntos_etiqueta:
             self.add_point_labels(
                 np.array(puntos_etiqueta), textos, name="ASIG_ETIQUETAS", font_size=14, text_color="darkred",
                 shape=None, show_points=False, always_visible=True, pickable=False,

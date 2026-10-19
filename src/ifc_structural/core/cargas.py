@@ -51,6 +51,113 @@ class Apoyo:
 
 
 @dataclass
+class ApoyoArea:
+    """Apoyo continuo ("de área") sobre un elemento: restringe los grados de
+    libertad elegidos en TODOS los puntos de la barra (o del tramo
+    ``s_inicio``..``s_fin``, fracciones 0..1 desde su nodo inicial).
+
+    * Sobre una viga o columna (elemento completo o una de sus caras
+      laterales): la barra queda apoyada a lo largo, como sobre un muro o el
+      terreno.
+    * Sobre una losa (elemento o cara superior/inferior): la losa no se
+      malla en la Fase 1 (se apoya en sus vigas), así que el apoyo se aplica
+      a lo largo de las vigas de soporte de la losa.
+    """
+
+    id: str
+    elemento_tipo: str  # "VIGA", "COLUMNA" o "LOSA"
+    elemento_id: str
+    ux: bool = True
+    uy: bool = True
+    uz: bool = True
+    rx: bool = False
+    ry: bool = False
+    rz: bool = False
+    s_inicio: float = 0.0
+    s_fin: float = 1.0
+    nombre: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.nombre:
+            self.nombre = self.id
+        if not (0.0 <= self.s_inicio < self.s_fin <= 1.0 + 1e-9):
+            raise ValueError("El tramo del apoyo debe cumplir 0 <= s_inicio < s_fin <= 1")
+
+    def grados_restringidos(self) -> List[int]:
+        banderas = [self.ux, self.uy, self.uz, self.rx, self.ry, self.rz]
+        return [i + 1 for i, restringido in enumerate(banderas) if restringido]
+
+
+@dataclass
+class Conexion:
+    """Restricción (constraint) entre dos elementos sólidos.
+
+    Dos tipos, según el caso:
+
+    * **EXTREMO** (``barra_id`` indicado, ``nodo_destino`` vacío): el extremo
+      de ``barra_id`` que está en ``nodo_id`` se separa del nudo y se vuelve
+      a unir con él transmitiendo SOLO las traslaciones marcadas (``ux, uy,
+      uz``) y liberando los tres giros: una articulación (rótula) esférica.
+      Con ``fijar_torsion`` (por defecto) se impide además el giro del extremo
+      alrededor del eje de la barra (la torsión), como hacen los modelos
+      habituales de articulación viga-columna; si no, una barra articulada
+      por ambos extremos puede girar sobre su propio eje (mecanismo).
+    * **ENLACE** (``nodo_destino`` indicado): une dos nudos distintos. Con los
+      seis grados transmitidos es un enlace rígido (brazo infinitamente
+      rígido: el nudo destino se mueve como sólido rígido con el origen); con
+      solo traslaciones, un enlace articulado (las traslaciones marcadas son
+      iguales en ambos nudos).
+
+    Limitación de CalculiX (comprobada con la versión 2.21): las ecuaciones
+    sobre los giros de las vigas B31 no se aplican, de modo que los giros se
+    transmiten todos (unión continua) o ninguno (articulación); no hay
+    articulaciones parciales (p. ej. liberar solo un giro).
+    """
+
+    id: str
+    nodo_id: str
+    barra_id: Optional[str] = None
+    nodo_destino: Optional[str] = None
+    ux: bool = True
+    uy: bool = True
+    uz: bool = True
+    rx: bool = False
+    ry: bool = False
+    rz: bool = False
+    fijar_torsion: bool = True
+    nombre: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.nombre:
+            self.nombre = self.id
+        if (self.barra_id is None) == (self.nodo_destino is None):
+            raise ValueError("Conexion debe indicar 'barra_id' (extremo) o 'nodo_destino' (enlace), no ambos ni ninguno")
+        if len({self.rx, self.ry, self.rz}) != 1:
+            raise ValueError("Los tres giros se transmiten juntos o no se transmite ninguno (limitación de CalculiX)")
+
+    @property
+    def tipo(self) -> str:
+        return "EXTREMO" if self.barra_id is not None else "ENLACE"
+
+    @property
+    def transmite_giros(self) -> bool:
+        return self.rx and self.ry and self.rz
+
+    @property
+    def es_enlace_rigido(self) -> bool:
+        """Enlace con los seis grados transmitidos (se modela con un tramo rígido)."""
+
+        return self.nodo_destino is not None and self.transmite_giros and self.ux and self.uy and self.uz
+
+    def grados_transmitidos(self) -> List[int]:
+        banderas = [self.ux, self.uy, self.uz, self.rx, self.ry, self.rz]
+        return [i + 1 for i, activo in enumerate(banderas) if activo]
+
+    def traslaciones_transmitidas(self) -> List[int]:
+        return [g for g in self.grados_transmitidos() if g <= 3]
+
+
+@dataclass
 class CargaPuntual:
     """Fuerza y/o momento puntual, en el sistema global.
 
@@ -126,13 +233,35 @@ class CargaLineal:
 
 
 @dataclass
+class PerfilPresion:
+    """Variación lineal de una presión a lo largo de un eje global: vale
+    ``valor_a`` en la coordenada ``coord_a`` y ``valor_b`` en ``coord_b``
+    (constante fuera de ese intervalo). Con ``valor_a = 0`` es una carga
+    triangular; con ambos distintos de cero, trapezoidal."""
+
+    eje: int  # 0 = X, 1 = Y, 2 = Z
+    coord_a: float
+    valor_a: float
+    coord_b: float
+    valor_b: float
+
+    def valor_en(self, punto: Vector3) -> float:
+        if abs(self.coord_b - self.coord_a) < 1e-12:
+            return self.valor_a
+        t = (punto[self.eje] - self.coord_a) / (self.coord_b - self.coord_a)
+        t = min(1.0, max(0.0, t))
+        return self.valor_a + t * (self.valor_b - self.valor_a)
+
+
+@dataclass
 class CargaArea:
     """Presión uniforme sobre una losa o muro, en kPa (kN/m2).
 
     ``direccion`` es el vector unitario de aplicación de la presión
     (por defecto, gravedad: -Z global, típico de cargas de piso/techo).
-    En Fase 1 solo se contempla presión uniforme sobre toda la superficie
-    (no variable punto a punto).
+    La presión puede ser uniforme (``presion``) o variar linealmente a lo
+    largo de un eje global (``perfil``: carga triangular o trapezoidal); en
+    ese caso ``presion`` es solo el valor medio, a título informativo.
     """
 
     id: str
@@ -143,6 +272,12 @@ class CargaArea:
     direccion: Vector3 = (0.0, 0.0, -1.0)
     nombre: str = ""
     origen: str = "MANUAL"  # "MANUAL" o "PESO_PROPIO"
+    perfil: Optional[PerfilPresion] = None  # None = presión uniforme
+
+    def presion_en(self, punto: Vector3) -> float:
+        """Presión (kPa) en un punto del espacio (uniforme o según ``perfil``)."""
+
+        return self.presion if self.perfil is None else self.perfil.valor_en(punto)
 
     def __post_init__(self) -> None:
         if not self.nombre:

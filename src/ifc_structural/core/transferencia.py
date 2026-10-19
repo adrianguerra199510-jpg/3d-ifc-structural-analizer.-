@@ -39,7 +39,7 @@ equivalentes".
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from .cargas import CargaArea, CargaLineal, SistemaReferencia
 from .modelo import DireccionLosa, Losa, Proyecto
@@ -74,6 +74,48 @@ def _normalizar(v: Vector3) -> Vector3:
     if n < _TOL:
         raise ValueError("No se puede normalizar un vector de longitud ~0")
     return (v[0] / n, v[1] / n, v[2] / n)
+
+
+def _centroide(puntos: List[Vector3]) -> Vector3:
+    n = len(puntos)
+    return (sum(p[0] for p in puntos) / n, sum(p[1] for p in puntos) / n, sum(p[2] for p in puntos) / n)
+
+
+def _funcion_presion_lado(carga: CargaArea, puntos: List[Vector3], i: int) -> Callable[[float, float], float]:
+    """Presión (kPa) en el centro de la franja tributaria de un lado de la
+    losa, en la estación ``s`` (m desde el inicio del lado) y de ancho
+    ``ancho`` (m): el punto del lado desplazado hacia el interior ``ancho/2``.
+    Con presión uniforme es simplemente ``carga.presion``."""
+
+    if carga.perfil is None:
+        return lambda s, ancho: carga.presion
+    n = len(puntos)
+    p0, p1 = puntos[i], puntos[(i + 1) % n]
+    lado = _resta(p1, p0)
+    d = _normalizar(lado)
+    hacia_centro = _resta(_centroide(puntos), p0)
+    proyeccion = _punto(hacia_centro, d)
+    interior = (hacia_centro[0] - proyeccion * d[0], hacia_centro[1] - proyeccion * d[1], hacia_centro[2] - proyeccion * d[2])
+    interior = _normalizar(interior) if _norma(interior) > _TOL else (0.0, 0.0, 0.0)
+
+    def presion(s: float, ancho: float) -> float:
+        punto = tuple(p0[k] + d[k] * s + interior[k] * ancho / 2.0 for k in range(3))
+        return carga.presion_en(punto)  # type: ignore[arg-type]
+
+    return presion
+
+
+def _subdividir_estaciones(estaciones: List[Tuple[float, float]], partes: int) -> List[Tuple[float, float]]:
+    """Inserta ``partes - 1`` estaciones intermedias (con el ancho
+    interpolado) en cada tramo, para aproximar bien perfiles de presión
+    variable con tramos lineales."""
+
+    resultado = [estaciones[0]]
+    for (s0, w0), (s1, w1) in zip(estaciones, estaciones[1:]):
+        for k in range(1, partes + 1):
+            t = k / partes
+            resultado.append((s0 + t * (s1 - s0), w0 + t * (w1 - w0)))
+    return resultado
 
 
 class ErrorTransferencia(ValueError):
@@ -135,6 +177,7 @@ def _segmentos_desde_perfil(
     estaciones: List[Tuple[float, float]],
     longitud_lado: float,
     invertir: bool,
+    presion: Optional[Callable[[float, float], float]] = None,
 ) -> List[CargaLineal]:
     """Convierte una lista de puntos (s, ancho) de un perfil lineal a trozos
     en objetos CargaLineal con s_inicio/s_fin normalizados a [0, 1].
@@ -144,6 +187,11 @@ def _segmentos_desde_perfil(
     nodo_inicio -> nodo_fin de la viga real.
     """
 
+    if presion is None:
+        presion = lambda s, ancho: carga.presion  # noqa: E731
+    elif carga.perfil is not None:
+        estaciones = _subdividir_estaciones(estaciones, 4)
+
     segmentos: List[CargaLineal] = []
     for idx in range(len(estaciones) - 1):
         s0, w0 = estaciones[idx]
@@ -152,8 +200,8 @@ def _segmentos_desde_perfil(
             continue
         frac0 = s0 / longitud_lado
         frac1 = s1 / longitud_lado
-        presion_a_carga0 = carga.presion * w0
-        presion_a_carga1 = carga.presion * w1
+        presion_a_carga0 = presion(s0, w0) * w0
+        presion_a_carga1 = presion(s1, w1) * w1
         if invertir:
             frac0, frac1 = 1.0 - frac0, 1.0 - frac1
             presion_a_carga0, presion_a_carga1 = presion_a_carga1, presion_a_carga0
@@ -210,23 +258,31 @@ def _transferir_una_direccion(proyecto: Proyecto, losa: Losa, carga: CargaArea) 
     for i in (i_a, i_b):
         viga_id = losa.vigas_soporte[i]
         assert viga_id is not None
-        w = carga.presion * ancho_tributario
+        le = _longitud_lado(puntos, i)
         invertir = _sentido_invertido(proyecto, viga_id, losa.nodos_contorno[i])
-        resultado.append(
-            CargaLineal(
-                id=_nombre_segmento(carga, viga_id, 0),
-                caso_id=carga.caso_id,
-                elemento_id=viga_id,
-                w_inicio=w,
-                w_fin=w,
-                s_inicio=0.0,
-                s_fin=1.0,
-                direccion=carga.direccion,
-                origen="TRANSFERENCIA_LOSA",
-                losa_origen_id=losa.id,
+        if carga.perfil is None:
+            w = carga.presion * ancho_tributario
+            resultado.append(
+                CargaLineal(
+                    id=_nombre_segmento(carga, viga_id, 0),
+                    caso_id=carga.caso_id,
+                    elemento_id=viga_id,
+                    w_inicio=w,
+                    w_fin=w,
+                    s_inicio=0.0,
+                    s_fin=1.0,
+                    direccion=carga.direccion,
+                    origen="TRANSFERENCIA_LOSA",
+                    losa_origen_id=losa.id,
+                )
             )
-        )
-        _ = invertir  # uniforme: el sentido no afecta el resultado
+        else:  # presión variable: ancho constante, valor variable a lo largo del lado
+            estaciones = [(le * k / 8.0, ancho_tributario) for k in range(9)]
+            resultado.extend(
+                _segmentos_desde_perfil(
+                    carga, viga_id, estaciones, le, invertir, _funcion_presion_lado(carga, puntos, i)
+                )
+            )
     return resultado
 
 
@@ -268,7 +324,9 @@ def _transferir_rectangular_dos_direcciones(
             ]
 
         invertir = _sentido_invertido(proyecto, viga_id, losa.nodos_contorno[i])
-        resultado.extend(_segmentos_desde_perfil(carga, viga_id, estaciones, le, invertir))
+        resultado.extend(
+            _segmentos_desde_perfil(carga, viga_id, estaciones, le, invertir, _funcion_presion_lado(carga, puntos, i))
+        )
     return resultado
 
 
@@ -297,7 +355,7 @@ def _transferir_proporcional(proyecto: Proyecto, losa: Losa, carga: CargaArea) -
         stacklevel=2,
     )
 
-    carga_total = carga.presion * area_losa
+    carga_total = carga.presion_en(_centroide(puntos)) * area_losa
     resultado: List[CargaLineal] = []
     for i in range(n):
         viga_id = losa.vigas_soporte[i]

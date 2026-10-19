@@ -17,7 +17,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtGui import QAction, QActionGroup, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -37,9 +37,17 @@ from PySide6.QtWidgets import (
 from ..combinaciones import esfuerzos
 from ..combinaciones.motor_superposicion import calcular_envolvente
 from ..config import Configuracion, cargar_configuracion
-from ..core.asignacion import ErrorAsignacion, Objetivo, cargas_para_objetivo, descripcion
-from ..core.cargas import Apoyo, CargaArea, CargaLineal, CargaPuntual
+from ..core.asignacion import (
+    ErrorAsignacion,
+    Objetivo,
+    apoyo_para_objetivo,
+    asignar_material,
+    cargas_desde_parametros,
+    descripcion,
+)
+from ..core.cargas import Apoyo, ApoyoArea, CargaArea, CargaLineal, CargaPuntual, Conexion
 from ..core.casos_carga import CasoCarga, Combinacion, casos_y_combinaciones_por_defecto
+from ..core.materiales import descripcion_material
 from ..core.modelo import Proyecto
 from ..core.persistencia import cargar_proyecto, guardar_proyecto
 from ..ifc.importador import importar_ifc
@@ -47,6 +55,8 @@ from ..solver.analisis import ResultadoAnalisis, ejecutar_analisis, validar_mode
 from .dialogo_apoyos import DialogoApoyo
 from .dialogo_cargas import DialogoCargas
 from .dialogo_casos import DialogoCasos
+from .dialogo_conexion import DialogoConexion
+from .dialogo_materiales import DialogoAsignarMaterial, DialogoMateriales
 from .panel_asignaciones import PanelAsignaciones
 from .panel_elementos import PanelElementos
 from .panel_resultados import ENVOLVENTE, PanelEsfuerzos
@@ -65,13 +75,16 @@ QToolButton:disabled { background-color: #9aa; }
 AYUDA = (
     "<b>Cómo se usa</b><ol>"
     "<li><b>Archivo → Importar IFC</b>.</li>"
-    "<li>Elija el modo <b>Cara</b>, use <b>Ver → Vista inferior</b> y haga clic en la cara de la base de "
-    "cada columna; pulse <b>Asignar apoyo</b> (Ctrl o Mayús + clic para elegir varias).</li>"
-    "<li>Elija el <b>caso activo</b> (D, L...). Haga clic en una losa (o en su cara superior) y pulse "
-    "<b>Asignar carga</b>. También puede cargar vigas completas o sus caras.</li>"
-    "<li>Pulse <b>▶ ANALIZAR</b> (F5).</li>"
-    "<li>Elija en el panel <b>Esfuerzos</b> el caso, la combinación o la envolvente, y el tipo de esfuerzo. "
-    "Haga clic en el visor para leer el valor en un punto.</li></ol>"
+    "<li>Haga <b>clic</b> en un elemento para seleccionarlo (modo <b>Elemento</b>) o en una de sus caras "
+    "(modo <b>Cara</b>); Ctrl o Mayús + clic suma más. Con <b>clic derecho</b> sobre la selección elige qué "
+    "asignar: carga, apoyo, material o una conexión entre dos elementos.</li>"
+    "<li><b>Apoyos</b>: puntuales en la cara extrema de una columna (use <b>Ver → Vista inferior</b>) o de "
+    "área a lo largo de una barra o de las vigas de una losa; usted elige cuántos grados de libertad se restringen.</li>"
+    "<li><b>Cargas</b>: elija el caso activo, el tipo (presión, distribuida, puntual, momento), su forma "
+    "(uniforme, triangular, trapezoidal) y la dirección de aplicación.</li>"
+    "<li><b>Materiales</b>: cree los suyos (o use las plantillas) y asígnelos a los elementos.</li>"
+    "<li><b>Conectar elementos</b>: articulación o enlace rígido entre dos elementos seleccionados.</li>"
+    "<li>Pulse <b>▶ ANALIZAR</b> (F5) y revise los esfuerzos en el panel <b>Esfuerzos</b>.</li></ol>"
     "Con el botón central del mouse se desplaza la vista; con la rueda se acerca o aleja; arrastrando con "
     "el botón izquierdo se gira."
 )
@@ -85,7 +98,8 @@ class VentanaPrincipal(QMainWindow):
 
         self.configuracion: Configuracion = cargar_configuracion()
         self.proyecto = Proyecto()
-        self.apoyos: List[Apoyo] = []
+        self.apoyos: list = []  # Apoyo (nodales) y ApoyoArea (continuos)
+        self.conexiones: List[Conexion] = []
         self.casos: Dict[str, CasoCarga]
         self.combinaciones: Dict[str, Combinacion]
         self.casos, self.combinaciones = casos_y_combinaciones_por_defecto()
@@ -149,6 +163,12 @@ class VentanaPrincipal(QMainWindow):
         self.accion_apoyo.setToolTip("Asigna un apoyo en la cara extrema seleccionada de una viga o columna")
         self.accion_carga = QAction("Asignar carga", self, triggered=self.asignar_carga)
         self.accion_carga.setToolTip("Asigna una carga a las losas, vigas, columnas o caras seleccionadas")
+        self.accion_material = QAction("Asignar material", self, triggered=self.asignar_material)
+        self.accion_material.setToolTip("Asigna un material a los elementos seleccionados")
+        self.accion_conexion = QAction("Conectar elementos", self, triggered=self.asignar_conexion)
+        self.accion_conexion.setToolTip("Articula o une rígidamente dos elementos seleccionados (constraint)")
+        self.accion_materiales = QAction("Materiales…", self, triggered=self.gestionar_materiales)
+        self.accion_materiales.setToolTip("Crear y editar materiales")
         self.accion_casos = QAction("Casos y combinaciones…", self, triggered=self._gestionar_casos)
         self.accion_analizar = QAction("Analizar", self, shortcut="F5", triggered=self.analizar)
 
@@ -170,9 +190,9 @@ class VentanaPrincipal(QMainWindow):
         menu.addAction(self.accion_salir)
 
         menu = self.menuBar().addMenu("A&signar")
-        menu.addActions([self.accion_apoyo, self.accion_carga])
+        menu.addActions([self.accion_apoyo, self.accion_carga, self.accion_material, self.accion_conexion])
         menu.addSeparator()
-        menu.addAction(self.accion_casos)
+        menu.addActions([self.accion_materiales, self.accion_casos])
 
         menu = self.menuBar().addMenu("A&nalizar")
         menu.addAction(self.accion_analizar)
@@ -213,6 +233,9 @@ class VentanaPrincipal(QMainWindow):
         barra.addWidget(self.combo_caso)
         barra.addAction(self.accion_apoyo)
         barra.addAction(self.accion_carga)
+        barra.addAction(self.accion_material)
+        barra.addAction(self.accion_conexion)
+        barra.addAction(self.accion_materiales)
         barra.addAction(self.accion_casos)
         barra.addSeparator()
         barra.addWidget(QLabel(" Ver: "))
@@ -241,6 +264,7 @@ class VentanaPrincipal(QMainWindow):
         self.accion_modo_cara.toggled.connect(lambda marcado: marcado and self.visor.set_modo(MODO_CARA))
         self.combo_caso.currentIndexChanged.connect(lambda _: self._refrescar_asignaciones())
         self.visor.seleccion_cambiada.connect(self._al_cambiar_seleccion)
+        self.visor.menu_contextual.connect(self._mostrar_menu_contextual)
         self.visor.punto_sondeado.connect(lambda texto: self.statusBar().showMessage(texto))
         self.panel_elementos.elemento_seleccionado.connect(lambda tipo, id_: self.visor.seleccionar([Objetivo(tipo, id_)]))
         self.panel_asignaciones.eliminar_solicitado.connect(self.eliminar_asignaciones)
@@ -268,6 +292,9 @@ class VentanaPrincipal(QMainWindow):
         ocupado = self._worker is not None and self._worker.isRunning()
         self.accion_analizar.setEnabled(hay_modelo and not ocupado)
         self.accion_apoyo.setEnabled(hay_modelo)
+        self.accion_material.setEnabled(hay_modelo or bool(self.proyecto.losas))
+        self.accion_conexion.setEnabled(len(self.proyecto.todas_las_barras()) >= 2)
+        self.accion_materiales.setEnabled(True)
         self.accion_carga.setEnabled(hay_modelo or bool(self.proyecto.losas))
         self.accion_ver_esfuerzos.setEnabled(self.resultado is not None)
 
@@ -305,7 +332,7 @@ class VentanaPrincipal(QMainWindow):
             QApplication.restoreOverrideCursor()
 
         casos, combinaciones = casos_y_combinaciones_por_defecto()
-        self._establecer_proyecto(proyecto, [], casos, combinaciones, {}, {}, {})
+        self._establecer_proyecto(proyecto, [], casos, combinaciones, {}, {}, {}, [])
 
         sin_soporte = [l.id for l in proyecto.losas.values() if not any(l.vigas_soporte)]
         texto = (
@@ -323,9 +350,12 @@ class VentanaPrincipal(QMainWindow):
         )
         return True
 
-    def _establecer_proyecto(self, proyecto, apoyos, casos, combinaciones, cargas_area, cargas_lineales, cargas_puntuales) -> None:
+    def _establecer_proyecto(
+        self, proyecto, apoyos, casos, combinaciones, cargas_area, cargas_lineales, cargas_puntuales, conexiones=None
+    ) -> None:
         self.proyecto = proyecto
         self.apoyos = apoyos
+        self.conexiones = list(conexiones or [])
         self.casos = casos or casos_y_combinaciones_por_defecto()[0]
         self.combinaciones = combinaciones
         self.cargas_area_por_caso = cargas_area
@@ -350,6 +380,7 @@ class VentanaPrincipal(QMainWindow):
         guardar_proyecto(
             Path(ruta), self.proyecto, self.apoyos, self.casos, self.combinaciones,
             self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso,
+            self.conexiones,
         )
         self.statusBar().showMessage(f"Proyecto guardado en {ruta}")
 
@@ -370,7 +401,7 @@ class VentanaPrincipal(QMainWindow):
     # Asignaciones
     # ------------------------------------------------------------------
     def _ids_en_uso(self) -> set:
-        usados = {a.id for a in self.apoyos}
+        usados = {a.id for a in self.apoyos} | {c.id for c in self.conexiones}
         for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso):
             usados.update(c.id for lista in por_caso.values() for c in lista)
         return usados
@@ -394,31 +425,41 @@ class VentanaPrincipal(QMainWindow):
         if not dialogo.exec():
             return
         restricciones = dialogo.restricciones()
-        nodos = dialogo.nodos_elegidos()
-        if not nodos:
-            return
-        ux, uy, uz, rx, ry, rz = restricciones
-        for nodo in nodos:
-            self.apoyos = [a for a in self.apoyos if a.nodo_id != nodo]  # un solo apoyo por nodo
-            self.apoyos.append(
-                Apoyo(id=self._siguiente_id("AP"), nodo_id=nodo, ux=ux, uy=uy, uz=uz, rx=rx, ry=ry, rz=rz,
-                      nombre=f"Apoyo en el nodo {nodo}")
-            )
-        self._marcar_resultados_desactualizados()
-        self._refrescar_asignaciones()
-        self.statusBar().showMessage(f"Apoyo asignado en: {', '.join(nodos)}")
+        creados, errores = [], []
+        nodo_elegido = dialogo.nodo_elegido()
+        if nodo_elegido is not None:  # sin selección: apoyo puntual en el nodo de la lista
+            ux, uy, uz, rx, ry, rz = restricciones
+            creados.append(Apoyo(id="", nodo_id=nodo_elegido, ux=ux, uy=uy, uz=uz, rx=rx, ry=ry, rz=rz,
+                                 nombre=f"Apoyo en el nodo {nodo_elegido}"))
+        desde, hasta = dialogo.tramo()
+        for objetivo in self.visor.seleccion:
+            try:
+                creados.append(apoyo_para_objetivo(
+                    self.proyecto, objetivo, "", restricciones, dialogo.tipo(), desde, hasta,
+                ))
+            except ErrorAsignacion as exc:
+                errores.append(str(exc))
+        for apoyo in creados:
+            if isinstance(apoyo, Apoyo):  # un solo apoyo puntual por nodo
+                self.apoyos = [a for a in self.apoyos if isinstance(a, ApoyoArea) or a.nodo_id != apoyo.nodo_id]
+            apoyo.id = self._siguiente_id("AP")
+            self.apoyos.append(apoyo)
+        if errores:
+            QMessageBox.warning(self, "Algunos apoyos no se asignaron", "\n\n".join(errores))
+        if creados:
+            self._marcar_resultados_desactualizados()
+            self._refrescar_asignaciones()
+            self.statusBar().showMessage(f"{len(creados)} apoyo(s) asignado(s).")
 
     def asignar_carga(self) -> None:
         dialogo = DialogoCargas(self.proyecto, self.visor.seleccion, self.casos, self.caso_activo(), self)
         if not dialogo.exec():
             return
-        caso_id, presion, w, direccion = dialogo.parametros()
+        caso_id, parametros = dialogo.parametros()
         creadas, errores = 0, []
         for objetivo in self.visor.seleccion:
             try:
-                cargas = cargas_para_objetivo(
-                    self.proyecto, objetivo, caso_id, self._siguiente_id("CARGA"), presion, w, direccion
-                )
+                cargas = cargas_desde_parametros(self.proyecto, objetivo, caso_id, "", parametros)
             except ErrorAsignacion as exc:
                 errores.append(str(exc))
                 continue
@@ -436,6 +477,110 @@ class VentanaPrincipal(QMainWindow):
             self._refrescar_asignaciones()
             self.statusBar().showMessage(f"{creadas} carga(s) asignada(s) al caso {caso_id}.")
 
+    def asignar_material(self) -> None:
+        dialogo = DialogoAsignarMaterial(self.proyecto, self.visor.seleccion, self)
+        if not dialogo.exec():
+            return
+        try:
+            cambiados = asignar_material(self.proyecto, self.visor.seleccion, dialogo.material_elegido())
+        except ErrorAsignacion as exc:
+            QMessageBox.warning(self, "No se pudo asignar el material", str(exc))
+            return
+        self.panel_elementos.actualizar(self.proyecto)
+        self._marcar_resultados_desactualizados()
+        self.statusBar().showMessage(f"Material «{dialogo.material_elegido()}» asignado a {len(cambiados)} elemento(s).")
+
+    def gestionar_materiales(self) -> None:
+        dialogo = DialogoMateriales(self.proyecto, self)
+        if dialogo.exec():
+            self.proyecto.materiales = dialogo.resultado()
+            self.panel_elementos.actualizar(self.proyecto)
+            self._marcar_resultados_desactualizados()
+            self.statusBar().showMessage(f"{len(self.proyecto.materiales)} material(es) definidos.")
+
+    def asignar_conexion(self) -> None:
+        barras = list(dict.fromkeys(o for o in self.visor.seleccion if o.tipo in ("VIGA", "COLUMNA")))
+        distintas = {o.id for o in barras}
+        if len(distintas) != 2:
+            QMessageBox.information(
+                self, "Conectar elementos",
+                "Seleccione exactamente dos elementos (vigas o columnas; Ctrl + clic para sumar el segundo). "
+                "Si no comparten un nudo, seleccione en modo «Cara» las caras extremas que quiere unir.",
+            )
+            return
+        a = barras[0]
+        b = next(o for o in barras if o.id != a.id)
+        dialogo = DialogoConexion(self.proyecto, a, b, self)
+        if not dialogo.exec():
+            return
+        try:
+            conexion = dialogo.conexion(self._siguiente_id("CX"))
+        except ErrorAsignacion as exc:
+            QMessageBox.warning(self, "No se pudo conectar", str(exc))
+            return
+        self.conexiones = [
+            c for c in self.conexiones
+            if not (c.barra_id == conexion.barra_id and c.nodo_id == conexion.nodo_id and c.nodo_destino == conexion.nodo_destino)
+        ]
+        self.conexiones.append(conexion)
+        self._marcar_resultados_desactualizados()
+        self._refrescar_asignaciones()
+        self.statusBar().showMessage(f"Conexión creada: {conexion.nombre}")
+
+    # ------------------------------------------------------------------
+    # Menú contextual (clic derecho sobre un elemento)
+    # ------------------------------------------------------------------
+    def construir_menu_contextual(self) -> QMenu:
+        seleccion = self.visor.seleccion
+        menu = QMenu(self)
+        titulo = menu.addAction(
+            descripcion(self.proyecto, seleccion[0]) if len(seleccion) == 1 else f"{len(seleccion)} elementos seleccionados"
+        )
+        titulo.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("Asignar carga…", self.asignar_carga)
+        menu.addAction("Asignar apoyo…", self.asignar_apoyo)
+        menu.addAction("Asignar material…", self.asignar_material)
+        barras = {o.id for o in seleccion if o.tipo in ("VIGA", "COLUMNA")}
+        accion = menu.addAction("Conectar elementos (constraint)…", self.asignar_conexion)
+        accion.setEnabled(len(barras) == 2)
+        if len(barras) != 2:
+            accion.setToolTip("Seleccione dos vigas/columnas (Ctrl + clic)")
+        menu.addSeparator()
+        menu.addAction("Propiedades…", self.mostrar_propiedades)
+        menu.addAction("Quitar la selección", lambda: self.visor.seleccionar([]))
+        return menu
+
+    def _mostrar_menu_contextual(self) -> None:
+        if not self.visor.seleccion:
+            return
+        self.construir_menu_contextual().exec(QCursor.pos())
+
+    def propiedades_texto(self, objetivo: Objetivo) -> str:
+        p = self.proyecto
+        lineas = [f"<b>{descripcion(p, Objetivo(objetivo.tipo, objetivo.id))}</b>"]
+        if objetivo.tipo in ("VIGA", "COLUMNA"):
+            barra = p.elemento_barra(objetivo.id)
+            perfil = p.perfiles[barra.perfil]
+            lineas += [
+                f"Nodos: {barra.nodo_inicio} → {barra.nodo_fin}  (longitud {p.longitud_barra(barra.id):.3f} m)",
+                f"Perfil: {perfil.nombre}  (área {perfil.area:.4g} m², {perfil.ancho or 0:.3g} × {perfil.altura or 0:.3g} m)",
+            ]
+            material = barra.material
+        else:
+            elemento = (p.losas if objetivo.tipo == "LOSA" else p.muros)[objetivo.id]
+            lineas.append(f"Espesor: {elemento.espesor:.3f} m  —  {len(elemento.nodos_contorno)} nodos de contorno")
+            material = elemento.material
+        lineas.append("Material: " + (descripcion_material(p.materiales[material]) if material in p.materiales else material))
+        return "<br>".join(lineas)
+
+    def mostrar_propiedades(self) -> None:
+        elementos = list(dict.fromkeys((o.tipo, o.id) for o in self.visor.seleccion))
+        if elementos:
+            QMessageBox.information(
+                self, "Propiedades", "<br><br>".join(self.propiedades_texto(Objetivo(t, i)) for t, i in elementos[:6])
+            )
+
     def _guardar_carga(self, carga) -> None:
         if isinstance(carga, CargaArea):
             destino = self.cargas_area_por_caso
@@ -447,7 +592,11 @@ class VentanaPrincipal(QMainWindow):
 
     def eliminar_asignaciones(self, claves: Iterable[Tuple[str, str]]) -> None:
         claves = set(claves)
-        self.apoyos = [a for a in self.apoyos if ("Apoyo", a.id) not in claves]
+        self.apoyos = [
+            a for a in self.apoyos
+            if (("Apoyo de área" if isinstance(a, ApoyoArea) else "Apoyo"), a.id) not in claves
+        ]
+        self.conexiones = [c for c in self.conexiones if ("Conexión", c.id) not in claves]
         for tipo, por_caso in (
             ("Carga de área", self.cargas_area_por_caso),
             ("Carga lineal", self.cargas_lineales_por_caso),
@@ -465,9 +614,18 @@ class VentanaPrincipal(QMainWindow):
             self.cargas_area_por_caso.get(caso, []),
             self.cargas_lineales_por_caso.get(caso, []),
             self.cargas_puntuales_por_caso.get(caso, []),
+            self.conexiones,
         )
-        filas = [("Apoyo", a.id, f"{a.nombre} [gdl restringidos: {', '.join(map(str, a.grados_restringidos()))}]", "todos")
-                 for a in self.apoyos]
+        nombres_gdl = {1: "Ux", 2: "Uy", 3: "Uz", 4: "Rx", 5: "Ry", 6: "Rz"}
+        filas = [
+            ("Apoyo de área" if isinstance(a, ApoyoArea) else "Apoyo", a.id,
+             f"{a.nombre} [{', '.join(nombres_gdl[g] for g in a.grados_restringidos())}]", "todos")
+            for a in self.apoyos
+        ]
+        filas += [
+            ("Conexión", c.id, f"{c.nombre} [{c.tipo.lower()}: {', '.join(nombres_gdl[g] for g in c.grados_transmitidos())}]", "todos")
+            for c in self.conexiones
+        ]
         for tipo, por_caso in (
             ("Carga de área", self.cargas_area_por_caso),
             ("Carga lineal", self.cargas_lineales_por_caso),
@@ -502,7 +660,7 @@ class VentanaPrincipal(QMainWindow):
     def analizar(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             return
-        errores, advertencias = validar_modelo(self.proyecto, self.casos, self.combinaciones, self.apoyos)
+        errores, advertencias = validar_modelo(self.proyecto, self.casos, self.combinaciones, self.apoyos, self.conexiones)
         if errores:
             QMessageBox.warning(self, "Todavía no se puede analizar", "\n\n".join(f"• {e}" for e in errores))
             return
@@ -517,6 +675,7 @@ class VentanaPrincipal(QMainWindow):
 
     def _iniciar_hilo(self) -> None:
         proyecto, casos, combinaciones, apoyos = self.proyecto, dict(self.casos), dict(self.combinaciones), list(self.apoyos)
+        conexiones = list(self.conexiones)
         area = {k: list(v) for k, v in self.cargas_area_por_caso.items()}
         lineales = {k: list(v) for k, v in self.cargas_lineales_por_caso.items()}
         puntuales = {k: list(v) for k, v in self.cargas_puntuales_por_caso.items()}
@@ -526,6 +685,7 @@ class VentanaPrincipal(QMainWindow):
             return ejecutar_analisis(
                 proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,
                 configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx_efectiva, avanzar,
+                conexiones=conexiones,
             )
 
         self._worker = TrabajadorAnalisis(trabajo, self)

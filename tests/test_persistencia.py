@@ -38,7 +38,7 @@ def test_guardar_y_cargar_proyecto_round_trip(tmp_path: Path):
     ruta = tmp_path / "proyecto.json"
     guardar_proyecto(ruta, *datos_originales)
 
-    (proyecto, apoyos, casos, combinaciones, cargas_area, cargas_lineales, cargas_puntuales) = cargar_proyecto(ruta)
+    (proyecto, apoyos, casos, combinaciones, cargas_area, cargas_lineales, cargas_puntuales, conexiones) = cargar_proyecto(ruta)
 
     assert proyecto.nombre == "Prueba persistencia"
     assert set(proyecto.vigas) == {"B1"}
