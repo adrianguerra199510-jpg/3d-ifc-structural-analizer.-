@@ -354,8 +354,8 @@ class Visor3D(QtInteractor):
                 for s in np.linspace(apoyo.s_inicio, apoyo.s_fin, n):
                     conos_area.append(
                         pv.Cone(
-                            center=punto_de(barra_id, s) - direccion * largo * 0.3, direction=direccion,
-                            height=largo * 0.6, radius=largo * 0.28, resolution=12,
+                            center=punto_de(barra_id, s) - direccion * largo * 0.5, direction=direccion,
+                            height=largo * 0.9, radius=largo * 0.4, resolution=12,
                         )
                     )
                 etiquetas_apoyo.append(punto_de(barra_id, 0.5 * (apoyo.s_inicio + apoyo.s_fin)) - direccion * largo * 0.9)
@@ -390,7 +390,7 @@ class Visor3D(QtInteractor):
             d = np.asarray(direccion, dtype=float)
             d = d / np.linalg.norm(d)
             return pv.Arrow(start=np.asarray(punta) - d * longitud, direction=d, scale=longitud,
-                            tip_length=0.3, tip_radius=0.1, shaft_radius=0.035)
+                            tip_length=0.3, tip_radius=0.14, shaft_radius=0.05)
 
         for carga in cargas_area:
             if carga.losa_id not in proyecto.losas:
@@ -404,12 +404,12 @@ class Visor3D(QtInteractor):
             valores = [abs(carga.presion_en(m)) for m in muestras]
             maximo = max(valores, default=0.0) or 1.0
             for punto, valor in zip(muestras, valores):
-                flechas.append(flecha(punto, d, largo * (0.2 + 0.8 * valor / maximo)))
+                flechas.append(flecha(punto, d, largo * (0.3 + 1.1 * valor / maximo)))
             if muestras:
                 puntos_etiqueta.append(muestras[0] - d * largo * 1.1)
                 textos.append(
                     f"{carga.presion:g} kPa" if carga.perfil is None
-                    else f"{carga.perfil.valor_a:g} → {carga.perfil.valor_b:g} kPa"
+                    else f"{carga.perfil.valor_a:g} a {carga.perfil.valor_b:g} kPa"
                 )
 
         for carga in cargas_lineales:
@@ -423,7 +423,7 @@ class Visor3D(QtInteractor):
             for s in np.linspace(carga.s_inicio, carga.s_fin, n):
                 t = (s - carga.s_inicio) / max(carga.s_fin - carga.s_inicio, 1e-9)
                 w = carga.w_inicio + t * (carga.w_fin - carga.w_inicio)
-                alto = largo * (0.15 + 0.85 * abs(w) / maximo)
+                alto = largo * (0.3 + 1.1 * abs(w) / maximo)
                 base = punto_de(carga.elemento_id, s) - d * largo * 0.2
                 flechas.append(flecha(base, d, alto))
                 cola.append(base - d * alto)
@@ -432,7 +432,7 @@ class Visor3D(QtInteractor):
             puntos_etiqueta.append(punto_de(carga.elemento_id, 0.5 * (carga.s_inicio + carga.s_fin)) - d * largo * 1.15)
             textos.append(
                 f"{abs(carga.w_inicio):g} kN/m" if carga.es_uniforme
-                else f"{carga.w_inicio:g} → {carga.w_fin:g} kN/m"
+                else f"{carga.w_inicio:g} a {carga.w_fin:g} kN/m"
             )
 
         for carga in cargas_puntuales:

@@ -311,7 +311,9 @@ def cargas_desde_parametros(
                 "no sobre un extremo."
             )
         return _lineales_de_forma(
-            proyecto, objetivo, caso_id, id_, parametros.w, parametros, direccion, f"{_formato(parametros.w)} kN/m"
+            proyecto, objetivo, caso_id, id_, parametros.w, parametros, direccion,
+            f"{_formato(parametros.w)} → {_formato(parametros.forma.w_fin)} kN/m"
+            if parametros.forma.tipo == "TRAPEZOIDAL" else f"{_formato(parametros.w)} kN/m",
         )
 
     if tipo in ("PUNTUAL", "MOMENTO"):
