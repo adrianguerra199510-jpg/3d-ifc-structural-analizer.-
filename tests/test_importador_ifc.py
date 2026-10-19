@@ -8,7 +8,7 @@ import pytest
 
 from ifc_structural.ifc.importador import importar_ifc
 
-from .ayuda_ifc import crear_ifc_prueba
+from .ayuda_ifc import crear_ifc_portico, crear_ifc_prueba
 
 
 @pytest.fixture()
@@ -57,6 +57,10 @@ def test_viga_con_perfil_real_usa_dimensiones_exactas(ruta_ifc_prueba: Path):
     assert n1.z == pytest.approx(3.0, abs=1e-3)
     assert n2.z == pytest.approx(3.0, abs=1e-3)
 
+    # La altura del perfil (0,5 m) apunta hacia donde mide 0,5 m en el modelo:
+    # en este IFC la viga está "acostada" (0,5 m en Y, 0,3 m en Z).
+    assert abs(viga.vector_n1[1]) == pytest.approx(1.0, abs=1e-6)
+
     perfil = proyecto.perfiles[viga.perfil]
     assert perfil.area == pytest.approx(0.3 * 0.5, rel=1e-6)
     assert perfil.altura == pytest.approx(0.5, rel=1e-6)
@@ -81,3 +85,44 @@ def test_losa_tiene_contorno_espesor_y_area_correctos(ruta_ifc_prueba: Path):
     ys = [p[1] for p in puntos]
     assert max(xs) - min(xs) == pytest.approx(4.0, rel=0.02)
     assert max(ys) - min(ys) == pytest.approx(6.0, rel=0.02)
+
+
+@pytest.fixture()
+def proyecto_portico(tmp_path: Path):
+    ruta = tmp_path / "portico.ifc"
+    crear_ifc_portico(str(ruta))
+    return importar_ifc(str(ruta))
+
+
+def test_portico_las_vigas_se_conectan_a_los_ejes_de_las_columnas(proyecto_portico):
+    p = proyecto_portico
+    assert (len(p.columnas), len(p.vigas), len(p.losas)) == (4, 4, 1)
+
+    # Cada extremo de viga debe ser exactamente el tope de una columna.
+    topes = {c.nodo_fin for c in p.columnas.values()}
+    extremos_de_vigas = {n for v in p.vigas.values() for n in (v.nodo_inicio, v.nodo_fin)}
+    assert extremos_de_vigas == topes
+    for v in p.vigas.values():
+        assert p.longitud_barra(v.id) in (pytest.approx(4.0, abs=1e-3), pytest.approx(6.0, abs=1e-3))
+
+
+def test_portico_las_columnas_van_de_la_base_al_tope(proyecto_portico):
+    p = proyecto_portico
+    for c in p.columnas.values():
+        assert p.nodos[c.nodo_inicio].z == pytest.approx(0.0, abs=1e-6)
+        assert p.nodos[c.nodo_fin].z == pytest.approx(3.0, abs=1e-6)
+
+
+def test_portico_la_altura_de_las_vigas_queda_en_vertical(proyecto_portico):
+    p = proyecto_portico
+    for v in p.vigas.values():
+        assert abs(v.vector_n1[2]) == pytest.approx(1.0, abs=1e-6)
+        assert p.perfiles[v.perfil].altura == pytest.approx(0.5)
+
+
+def test_portico_detecta_las_vigas_de_soporte_de_la_losa(proyecto_portico):
+    losa = next(iter(proyecto_portico.losas.values()))
+
+    assert all(losa.vigas_soporte), losa.vigas_soporte
+    assert sorted(losa.vigas_soporte) == sorted(proyecto_portico.vigas)
+    assert losa.espesor == pytest.approx(0.2, abs=1e-3)

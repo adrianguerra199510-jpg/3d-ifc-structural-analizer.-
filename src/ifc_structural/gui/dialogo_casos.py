@@ -8,6 +8,8 @@ ACI 318 / AASHTO LRFD como punto de partida editable.
 
 from __future__ import annotations
 
+import re
+
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -97,7 +100,13 @@ class DialogoCasos(QDialog):
 
     def _agregar_caso(self) -> None:
         id_ = self.edit_nuevo_id.text().strip()
-        if not id_ or id_ in self._casos:
+        if not re.fullmatch(r"[A-Za-z0-9_]+", id_):
+            QMessageBox.warning(
+                self, "Identificador no válido",
+                "El identificador del caso solo puede tener letras, números y guion bajo (se usa como nombre de archivo).",
+            )
+            return
+        if id_ in self._casos:
             return
         self._casos[id_] = CasoCarga(id=id_, nombre=id_, tipo=TipoCaso(self.combo_nuevo_tipo.currentText()))
         self.edit_nuevo_id.clear()

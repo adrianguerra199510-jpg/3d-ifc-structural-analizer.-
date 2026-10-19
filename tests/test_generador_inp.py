@@ -39,10 +39,11 @@ def test_construir_malla_subdivide_segun_quiebres_de_carga():
     }
     cargas_puntuales = {"D": [CargaPuntual(id="CP1", caso_id="D", elemento_id="B1", posicion=0.25, fz=-5.0)]}
 
-    malla = construir_malla(p, cargas_lineales, cargas_puntuales, n_subdivisiones=2)
+    malla = construir_malla(p, cargas_lineales, cargas_puntuales, longitud_elemento=1.0)
 
     # Quiebres esperados: 0, 0.25 (carga puntual), 0.5 (cambio de carga lineal), 1.0
-    # -> 3 tramos, cada uno subdividido en 2 => 6 elementos.
+    # -> 3 tramos de 1 m, 1 m y 2 m; con elementos de 1 m como máximo y mínimo 2
+    # por tramo => 2 + 2 + 2 = 6 elementos.
     assert len(malla.elementos_por_barra["B1"]) == 6
     assert len(malla.orden_nodos_por_barra["B1"]) == 7
 
@@ -71,7 +72,10 @@ def test_generar_inp_contiene_las_secciones_esperadas(tmp_path: Path):
     assert "*BOUNDARY" in texto
     assert "*CLOAD" in texto
     assert "*STEP" in texto
-    assert "*EL FILE,OUTPUT=2D,SECTION FORCES" in texto
+    # Se piden esfuerzos (malla expandida 3D), no fuerzas de sección.
+    assert "*EL FILE\nS\n" in texto
+    assert "SECTION FORCES" not in texto
+    assert "*NODE PRINT" not in texto
     assert "*END STEP" in texto
     # No debe usarse SECTION=GENERAL (no funciona para B31 en ccx 2.21).
     assert "GENERAL" not in texto

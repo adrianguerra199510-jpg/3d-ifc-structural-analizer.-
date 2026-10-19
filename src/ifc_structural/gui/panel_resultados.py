@@ -1,144 +1,165 @@
-"""Panel de resultados: tabla de fuerzas internas por elemento y diagrama
-N/V/M de la viga/columna seleccionada, para el caso o combinación elegido.
+"""Panel de esfuerzos: qué resultado y qué magnitud mostrar en el visor,
+con escala configurable, y la tabla de esfuerzos máximos por viga/columna.
+
+Solo se muestran esfuerzos (kPa del solver convertidos a MPa), no fuerzas
+internas ni desplazamientos.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.figure import Figure
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
-    QHBoxLayout,
+    QDoubleSpinBox,
+    QFormLayout,
     QHeaderView,
     QLabel,
-    QSplitter,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from ..combinaciones.motor_superposicion import COMPONENTES_FUERZA
-from ..solver.generador_inp import MallaAnalisis
-from ..solver.lector_resultados import ResultadosCaso
+from ..combinaciones.esfuerzos import MAGNITUDES
+
+ENVOLVENTE = "__ENVOLVENTE__"
+COLORMAPS = ["turbo", "jet", "viridis", "coolwarm", "rainbow", "plasma"]
 
 
-def _widget_con_etiqueta(texto: str, widget: QWidget) -> QWidget:
-    contenedor = QWidget()
-    layout = QHBoxLayout(contenedor)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.addWidget(QLabel(texto))
-    layout.addWidget(widget)
-    return contenedor
+@dataclass
+class ParametrosVista:
+    """Lo que el usuario eligió mostrar."""
+
+    resultado: str  # id de caso/combinación o ENVOLVENTE
+    magnitud: str  # clave de esfuerzos.MAGNITUDES
+    escala_automatica: bool
+    minimo: float  # MPa
+    maximo: float  # MPa
+    colormap: str
 
 
-class PanelResultados(QWidget):
+class PanelEsfuerzos(QWidget):
+    """Controles de la vista de esfuerzos. Emite ``cambio`` cada vez que
+    algo que afecte a lo que se dibuja cambia, o ``volver_al_modelo``."""
+
+    cambio = Signal()
+    volver_al_modelo = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._malla: Optional[MallaAnalisis] = None
-        self._resultados: Dict[str, ResultadosCaso] = {}
 
-        self.combo_caso = QComboBox()
-        self.combo_caso.currentTextChanged.connect(self._actualizar_tabla)
-        self.combo_barra = QComboBox()
-        self.combo_barra.currentTextChanged.connect(self._actualizar_diagrama)
+        self.combo_resultado = QComboBox()
+        self.combo_magnitud = QComboBox()
+        for magnitud in MAGNITUDES.values():
+            self.combo_magnitud.addItem(magnitud.nombre, magnitud.clave)
 
-        fila_superior = QHBoxLayout()
-        fila_superior.addWidget(QWidgetConEtiqueta("Caso / combinación:", self.combo_caso))
-        fila_superior.addWidget(QWidgetConEtiqueta("Viga/columna:", self.combo_barra))
+        self.check_escala_automatica = QCheckBox("Escala automática")
+        self.check_escala_automatica.setChecked(True)
+        self.spin_minimo = self._spin()
+        self.spin_maximo = self._spin()
+        self.spin_maximo.setValue(10.0)
+        self.combo_colormap = QComboBox()
+        self.combo_colormap.addItems(COLORMAPS)
 
-        self.tabla = QTableWidget(0, 7)
-        self.tabla.setHorizontalHeaderLabels(["Elemento"] + list(COMPONENTES_FUERZA))
+        self.boton_volver = QPushButton("Volver al modelo (selección)")
+        self.etiqueta_resumen = QLabel("Ejecute el análisis para ver los esfuerzos.")
+        self.etiqueta_resumen.setWordWrap(True)
+
+        self.tabla = QTableWidget(0, 3)
+        self.tabla.setHorizontalHeaderLabels(["Barra", "Mínimo [MPa]", "Máximo [MPa]"])
         self.tabla.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tabla.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tabla.setSelectionBehavior(QTableWidget.SelectRows)
 
-        self.figura = Figure(figsize=(5, 6))
-        self.canvas = FigureCanvasQTAgg(self.figura)
-        self._ejes = self.figura.subplots(3, 1, sharex=True)
-        self._ejes[0].set_ylabel("N [kN]")
-        self._ejes[1].set_ylabel("V [kN]")
-        self._ejes[2].set_ylabel("M [kN·m]")
-        self._ejes[2].set_xlabel("Posición sobre el elemento [m]")
-
-        divisor = QSplitter()
-        divisor.addWidget(self.tabla)
-        divisor.addWidget(self.canvas)
+        formulario = QFormLayout()
+        formulario.addRow("Resultado:", self.combo_resultado)
+        formulario.addRow("Esfuerzo:", self.combo_magnitud)
+        formulario.addRow(self.check_escala_automatica)
+        formulario.addRow("Mínimo [MPa]:", self.spin_minimo)
+        formulario.addRow("Máximo [MPa]:", self.spin_maximo)
+        formulario.addRow("Colores:", self.combo_colormap)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(fila_superior)
-        layout.addWidget(divisor)
+        layout.addLayout(formulario)
+        layout.addWidget(self.etiqueta_resumen)
+        layout.addWidget(self.tabla)
+        layout.addWidget(self.boton_volver)
 
-    def establecer_malla(self, malla: MallaAnalisis) -> None:
-        self._malla = malla
-        self.combo_barra.clear()
-        self.combo_barra.addItems(sorted(malla.elementos_por_barra))
+        self._actualizar_escala_habilitada()
+        for senal in (
+            self.combo_resultado.currentIndexChanged,
+            self.combo_magnitud.currentIndexChanged,
+            self.combo_colormap.currentIndexChanged,
+            self.spin_minimo.editingFinished,
+            self.spin_maximo.editingFinished,
+        ):
+            senal.connect(self.cambio)
+        self.check_escala_automatica.toggled.connect(self._al_cambiar_escala_automatica)
+        self.boton_volver.clicked.connect(self.volver_al_modelo)
 
-    def actualizar_resultados(self, resultados_por_caso: Dict[str, ResultadosCaso]) -> None:
-        self._resultados = resultados_por_caso
-        self.combo_caso.clear()
-        self.combo_caso.addItems(sorted(resultados_por_caso))
+    @staticmethod
+    def _spin() -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(-1e6, 1e6)
+        spin.setDecimals(3)
+        spin.setSingleStep(0.5)
+        return spin
 
-    def _actualizar_tabla(self) -> None:
-        if self._malla is None:
-            return
-        caso = self.combo_caso.currentText()
-        resultados = self._resultados.get(caso)
+    def _al_cambiar_escala_automatica(self) -> None:
+        self._actualizar_escala_habilitada()
+        self.cambio.emit()
+
+    def _actualizar_escala_habilitada(self) -> None:
+        manual = not self.check_escala_automatica.isChecked()
+        self.spin_minimo.setEnabled(manual)
+        self.spin_maximo.setEnabled(manual)
+
+    # ------------------------------------------------------------------
+    def establecer_resultados(self, casos: List[Tuple[str, str]], combinaciones: List[Tuple[str, str]]) -> None:
+        """Opciones del combo: [(id, texto)] de casos y de combinaciones;
+        la envolvente solo se ofrece si hay combinaciones."""
+
+        self.combo_resultado.blockSignals(True)
+        self.combo_resultado.clear()
+        if combinaciones:
+            self.combo_resultado.addItem("ENVOLVENTE (todas las combinaciones)", ENVOLVENTE)
+        for id_, texto in combinaciones:
+            self.combo_resultado.addItem(f"Combinación {id_}: {texto}", id_)
+        for id_, texto in casos:
+            self.combo_resultado.addItem(f"Caso {id_}: {texto}", id_)
+        self.combo_resultado.blockSignals(False)
+
+    def parametros(self) -> Optional[ParametrosVista]:
+        if self.combo_resultado.count() == 0:
+            return None
+        return ParametrosVista(
+            resultado=self.combo_resultado.currentData(),
+            magnitud=self.combo_magnitud.currentData(),
+            escala_automatica=self.check_escala_automatica.isChecked(),
+            minimo=self.spin_minimo.value(),
+            maximo=self.spin_maximo.value(),
+            colormap=self.combo_colormap.currentText(),
+        )
+
+    def fijar_escala(self, minimo: float, maximo: float) -> None:
+        """Muestra la escala automática en los cuadros (sin disparar ``cambio``)."""
+
+        for spin, valor in ((self.spin_minimo, minimo), (self.spin_maximo, maximo)):
+            spin.blockSignals(True)
+            spin.setValue(valor)
+            spin.blockSignals(False)
+
+    def mostrar_resumen(self, texto: str, filas: Dict[str, Tuple[float, float]]) -> None:
+        self.etiqueta_resumen.setText(texto)
         self.tabla.setRowCount(0)
-        if resultados is None:
-            return
-        for barra_id, nodos in sorted(self._malla.orden_nodos_por_barra.items()):
-            for i, nodo in enumerate(nodos):
-                valores = resultados.fuerzas_seccion.get(nodo)
-                if valores is None:
-                    continue
-                fila = self.tabla.rowCount()
-                self.tabla.insertRow(fila)
-                etiqueta = f"{barra_id} (nodo {i + 1}/{len(nodos)})"
-                self.tabla.setItem(fila, 0, QTableWidgetItem(etiqueta))
-                for columna, valor in enumerate(valores, start=1):
-                    self.tabla.setItem(fila, columna, QTableWidgetItem(f"{valor:.3g}"))
-        self._actualizar_diagrama()
-
-    def _actualizar_diagrama(self) -> None:
-        if self._malla is None:
-            return
-        caso = self.combo_caso.currentText()
-        barra_id = self.combo_barra.currentText()
-        resultados = self._resultados.get(caso)
-        for eje in self._ejes:
-            eje.clear()
-        if resultados is None or not barra_id:
-            self.canvas.draw_idle()
-            return
-
-        nodos = self._malla.orden_nodos_por_barra.get(barra_id, [])
-        xs = list(self._malla.posiciones_s_por_barra.get(barra_id, []))
-
-        valores_n, valores_v, valores_m = [], [], []
-        for nodo in nodos:
-            v = resultados.fuerzas_seccion.get(nodo, (0.0,) * 6)
-            valores_n.append(v[0])
-            valores_v.append((v[1] ** 2 + v[2] ** 2) ** 0.5)
-            valores_m.append((v[4] ** 2 + v[5] ** 2) ** 0.5)
-
-        self._ejes[0].plot(xs, valores_n, "-o", color="steelblue", markersize=3)
-        self._ejes[0].set_ylabel("N [kN]")
-        self._ejes[1].plot(xs, valores_v, "-o", color="darkorange", markersize=3)
-        self._ejes[1].set_ylabel("V [kN]")
-        self._ejes[2].plot(xs, valores_m, "-o", color="seagreen", markersize=3)
-        self._ejes[2].set_ylabel("M [kN·m]")
-        self._ejes[2].set_xlabel("Posición relativa sobre el elemento (0 a 1)")
-        self.figura.tight_layout()
-        self.canvas.draw_idle()
-
-
-def QWidgetConEtiqueta(texto: str, widget: QWidget) -> QWidget:
-    from PySide6.QtWidgets import QLabel
-
-    contenedor = QWidget()
-    layout = QHBoxLayout(contenedor)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.addWidget(QLabel(texto))
-    layout.addWidget(widget)
-    return contenedor
+        for barra, (minimo, maximo) in sorted(filas.items()):
+            fila = self.tabla.rowCount()
+            self.tabla.insertRow(fila)
+            self.tabla.setItem(fila, 0, QTableWidgetItem(barra))
+            self.tabla.setItem(fila, 1, QTableWidgetItem(f"{minimo:.3f}"))
+            self.tabla.setItem(fila, 2, QTableWidgetItem(f"{maximo:.3f}"))

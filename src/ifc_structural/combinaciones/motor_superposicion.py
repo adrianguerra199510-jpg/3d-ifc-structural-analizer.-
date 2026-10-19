@@ -1,123 +1,78 @@
-"""Superposición lineal de resultados por caso para obtener combinaciones.
+"""Superposición lineal de esfuerzos por caso para obtener combinaciones.
 
 Cada caso de carga se resuelve una única vez en CalculiX (ver
 ``solver.ejecutor_ccx``). Las combinaciones (``core.casos_carga.Combinacion``)
-se obtienen combinando esos resultados por superposición lineal, sin volver
-a invocar el solver — válido porque el análisis es elástico lineal.
+se obtienen combinando esos resultados por superposición lineal del
+**tensor de esfuerzos** nodal, sin volver a invocar el solver — válido
+porque el análisis es elástico lineal. Las magnitudes derivadas (von
+Mises, principales, cortante máximo) se calculan DESPUÉS de combinar el
+tensor, nunca combinando las magnitudes, que no son lineales.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from dataclasses import dataclass
+from typing import Dict, List
+
+import numpy as np
 
 from ..core.casos_carga import Combinacion
-from ..solver.lector_resultados import ResultadosCaso, Vector3, Vector6
-
-#: Nombres de las 6 componentes de fuerza de sección, en el mismo orden
-#: que ``ResultadosCaso.fuerzas_seccion`` (ver solver/lector_resultados.py).
-COMPONENTES_FUERZA = ("N", "V1", "V2", "T", "M1", "M2")
+from . import esfuerzos
 
 
-def _combinar_vector(valores_por_caso: Dict[str, Tuple[float, ...]], combinacion: Combinacion, n: int) -> Tuple[float, ...]:
-    total = [0.0] * n
+def superponer_combinacion(tensiones_por_caso: Dict[str, np.ndarray], combinacion: Combinacion) -> np.ndarray:
+    """Tensor (N, 6) combinado: suma de factor × tensor de cada caso."""
+
+    total = None
     for caso_id, factor in combinacion.factores.items():
         if abs(factor) < 1e-12:
             continue
-        valores = valores_por_caso.get(caso_id)
-        if valores is None:
+        tensor = tensiones_por_caso.get(caso_id)
+        if tensor is None:
             continue
-        for i in range(n):
-            total[i] += factor * valores[i]
-    return tuple(total)
+        total = factor * tensor if total is None else total + factor * tensor
 
-
-def superponer_combinacion(
-    resultados_por_caso: Dict[str, ResultadosCaso], combinacion: Combinacion
-) -> ResultadosCaso:
-    """Combina los resultados de varios casos según los factores de ``combinacion``."""
-
-    nodos = set()
-    for caso_id, factor in combinacion.factores.items():
-        if abs(factor) < 1e-12:
-            continue
-        resultados = resultados_por_caso.get(caso_id)
-        if resultados is None:
-            continue
-        nodos |= set(resultados.desplazamientos) | set(resultados.fuerzas_seccion)
-
-    desplazamientos: Dict[int, Vector3] = {}
-    fuerzas_seccion: Dict[int, Vector6] = {}
-    for nodo in nodos:
-        desplazamientos_por_caso = {
-            caso_id: r.desplazamientos.get(nodo, (0.0, 0.0, 0.0))
-            for caso_id, r in resultados_por_caso.items()
-        }
-        fuerzas_por_caso = {
-            caso_id: r.fuerzas_seccion.get(nodo, (0.0,) * 6)
-            for caso_id, r in resultados_por_caso.items()
-        }
-        desplazamientos[nodo] = _combinar_vector(desplazamientos_por_caso, combinacion, 3)
-        fuerzas_seccion[nodo] = _combinar_vector(fuerzas_por_caso, combinacion, 6)
-
-    return ResultadosCaso(desplazamientos=desplazamientos, fuerzas_seccion=fuerzas_seccion)
+    if total is None:
+        n = next((t.shape[0] for t in tensiones_por_caso.values()), 0)
+        total = np.zeros((n, 6))
+    return total
 
 
 def superponer_todas_las_combinaciones(
-    resultados_por_caso: Dict[str, ResultadosCaso], combinaciones: List[Combinacion]
-) -> Dict[str, ResultadosCaso]:
-    return {c.id: superponer_combinacion(resultados_por_caso, c) for c in combinaciones}
+    tensiones_por_caso: Dict[str, np.ndarray], combinaciones: List[Combinacion]
+) -> Dict[str, np.ndarray]:
+    return {c.id: superponer_combinacion(tensiones_por_caso, c) for c in combinaciones}
 
 
 @dataclass
 class Envolvente:
-    """Envolvente (máximos y mínimos) de las fuerzas de sección de un nodo,
-    evaluada sobre un conjunto de combinaciones (y/o casos) de carga.
+    """Envolvente de una magnitud sobre un conjunto de combinaciones.
+
+    ``valores`` es el valor más desfavorable en cada nodo y
+    ``combinacion_por_nodo`` el id de la combinación que lo produjo.
     """
 
-    maximo: Dict[int, Vector6] = field(default_factory=dict)
-    minimo: Dict[int, Vector6] = field(default_factory=dict)
-    combinacion_del_maximo: Dict[Tuple[int, int], str] = field(default_factory=dict)
-    combinacion_del_minimo: Dict[Tuple[int, int], str] = field(default_factory=dict)
-
-    def maximo_de(self, nodo: int, componente: str) -> float:
-        return self.maximo[nodo][COMPONENTES_FUERZA.index(componente)]
-
-    def minimo_de(self, nodo: int, componente: str) -> float:
-        return self.minimo[nodo][COMPONENTES_FUERZA.index(componente)]
+    clave: str
+    valores: np.ndarray
+    combinacion_por_nodo: np.ndarray
 
 
-def calcular_envolvente(resultados_por_combinacion: Dict[str, ResultadosCaso]) -> Envolvente:
-    """Calcula, para cada nodo de la malla y cada componente de fuerza de
-    sección (N, V1, V2, T, M1, M2), el máximo y el mínimo entre todas las
-    combinaciones evaluadas, junto con qué combinación lo produjo.
-    """
+def calcular_envolvente(tensiones_por_combinacion: Dict[str, np.ndarray], clave: str) -> Envolvente:
+    """Para cada nodo, el valor más desfavorable de la magnitud ``clave``
+    entre todas las combinaciones, y qué combinación lo produjo."""
 
-    envolvente = Envolvente()
-    nodos = set()
-    for resultados in resultados_por_combinacion.values():
-        nodos |= set(resultados.fuerzas_seccion)
+    if not tensiones_por_combinacion:
+        raise ValueError("No hay combinaciones sobre las que calcular la envolvente.")
 
-    for nodo in nodos:
-        maximos = [float("-inf")] * 6
-        minimos = [float("inf")] * 6
-        comb_max = [""] * 6
-        comb_min = [""] * 6
-        for combinacion_id, resultados in resultados_por_combinacion.items():
-            valores = resultados.fuerzas_seccion.get(nodo)
-            if valores is None:
-                continue
-            for i in range(6):
-                if valores[i] > maximos[i]:
-                    maximos[i] = valores[i]
-                    comb_max[i] = combinacion_id
-                if valores[i] < minimos[i]:
-                    minimos[i] = valores[i]
-                    comb_min[i] = combinacion_id
-        envolvente.maximo[nodo] = tuple(maximos)
-        envolvente.minimo[nodo] = tuple(minimos)
-        for i, nombre_componente in enumerate(COMPONENTES_FUERZA):
-            envolvente.combinacion_del_maximo[(nodo, i)] = comb_max[i]
-            envolvente.combinacion_del_minimo[(nodo, i)] = comb_min[i]
-
-    return envolvente
+    ids = list(tensiones_por_combinacion)
+    valores = np.vstack([esfuerzos.calcular(clave, tensiones_por_combinacion[i]) for i in ids])  # (C, N)
+    if esfuerzos.MAGNITUDES[clave].envolvente == "min":
+        indice = np.argmin(valores, axis=0)
+    else:
+        indice = np.argmax(valores, axis=0)
+    columnas = np.arange(valores.shape[1])
+    return Envolvente(
+        clave=clave,
+        valores=valores[indice, columnas],
+        combinacion_por_nodo=np.array(ids, dtype=object)[indice],
+    )

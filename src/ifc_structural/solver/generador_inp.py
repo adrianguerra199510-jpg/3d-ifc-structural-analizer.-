@@ -13,10 +13,7 @@ la documentación:
    usa ``SECTION=RECT``. Si el perfil importado del IFC no es rectangular
    (o no se conocen su altura y ancho reales), se aproxima mediante un
    **rectángulo equivalente** que conserva el área y la inercia fuerte
-   (eje z) del perfil real — ver ``_seccion_equivalente``. Esta
-   aproximación se documenta aquí y en el README; una mejora futura (fuera
-   de la Fase 1) sería mapear a ``CIRC``/``PIPE``/``BOX`` según la forma
-   real del perfil.
+   (eje z) del perfil real — ver ``core.geometria.dimensiones_seccion``.
 
 2. **Cargas lineales**: se comprobó que, para elementos de viga (B31), las
    claves de carga distribuida global ``PX``/``PY``/``PZ`` NO son válidas
@@ -32,32 +29,23 @@ la documentación:
    Esto permite representar cualquier carga lineal, en cualquier
    dirección global, de forma exacta y uniforme para todos los casos.
 
-3. **Resultados**: CalculiX no ofrece ninguna opción de fuerzas de sección
-   (N, V, M, T) para ``*EL PRINT`` (el que escribe el .dat): según el
-   manual, los únicos valores de elemento disponibles ahí son esfuerzos,
-   deformaciones y energías, nunca fuerzas de sección. La opción
-   ``SECTION FORCES`` solo existe para ``*EL FILE``/``*ELEMENT OUTPUT``
-   (que escriben el .frd). Por eso el generador pide ``*EL FILE,
-   OUTPUT=2D, SECTION FORCES`` y el módulo ``lector_resultados`` parsea el
-   .frd resultante (que con ``*EL FILE`` es ASCII puro) en vez del .dat
-   para las fuerzas internas. Esto es una desviación deliberada y
-   documentada del enunciado original ("leer el .dat"): los
-   desplazamientos sí se leen del .dat, pero las fuerzas internas no
-   pueden leerse de ahí porque CalculiX no las ofrece en ese archivo.
+3. **Resultados (esfuerzos)**: CalculiX expande internamente cada viga
+   B31 en hexaedros (``C3D8I``). Con ``*EL FILE`` + ``S`` entrega, en el
+   .frd (ASCII), el tensor de esfuerzos en cada nodo de esa malla
+   expandida, junto con sus coordenadas y conectividad. Es lo que se usa
+   para dibujar mapas de contorno de esfuerzos sobre las vigas y
+   columnas. Los valores en los extremos de cada tramo son
+   extrapolaciones desde los puntos de integración, por lo que son menos
+   precisos que los interiores; un mallado fino (ver
+   ``LONGITUD_ELEMENTO_OBJETIVO``) lo mitiga.
 
-4. Por la misma razón, las reacciones de apoyo tampoco se leen de
-   ``*NODE PRINT, RF``: se comprobó que, para nodos con rotaciones
-   restringidas (apoyos empotrados), CalculiX mezcla la reacción de
-   momento dentro de la reacción de fuerza en el grado de libertad 1,
-   dando valores incorrectos. Las reacciones se derivan, junto con las
-   fuerzas internas, de las fuerzas de sección del elemento adyacente al
-   nodo de apoyo.
-
-Para dar buena resolución a los diagramas de N/V/M (las fuerzas de sección
-se obtienen por punto de integración, esencialmente constantes dentro de
-cada elemento corto), cada viga/columna se subdivide en varios elementos
-B31 cortos entre cada par de "quiebres" de carga (ver
-``N_SUBDIVISIONES_POR_TRAMO``).
+4. **Limitación conocida de ccx**: la expansión de la viga falla ("zero
+   coefficient on the dependent side of an equation") con algunas
+   orientaciones de barras inclinadas cuando uno de sus nodos tiene los
+   giros restringidos. La orientación de 45° exactos en un plano
+   coordenado, la más común, se evita en ``core.geometria``; para el
+   resto se informa al usuario con un mensaje claro (ver
+   ``solver.ejecutor_ccx``).
 """
 
 from __future__ import annotations
@@ -68,14 +56,17 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..core.cargas import Apoyo, CargaLineal, CargaPuntual
-from ..core.modelo import ElementoBarra, PerfilSeccion, Proyecto
+from ..core.geometria import ejes_seccion
+from ..core.modelo import Proyecto
 
 Vector3 = Tuple[float, float, float]
 
-#: Cantidad de sub-elementos en que se divide cada tramo de carga continuo
-#: (entre dos "quiebres" consecutivos) de cada viga/columna, para mejorar
-#: la resolución del diagrama de fuerzas internas.
-N_SUBDIVISIONES_POR_TRAMO = 4
+#: Longitud máxima objetivo (m) de cada elemento B31 de la malla de análisis.
+#: Cada tramo continuo de una viga/columna (entre dos "quiebres" de carga)
+#: se divide en tantos elementos como hagan falta para no superarla; da
+#: buena resolución a los mapas de esfuerzos y reduce el error de
+#: extrapolación en los extremos.
+LONGITUD_ELEMENTO_OBJETIVO = 0.25
 
 #: Densidad ficticia usada únicamente para escalar *DLOAD,GRAV (ver punto 2
 #: del docstring del módulo). No representa la densidad real del material.
@@ -84,25 +75,8 @@ DENSIDAD_FICTICIA = 1.0
 _TOL = 1e-9
 
 
-def _resta(a: Vector3, b: Vector3) -> Vector3:
-    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
-
-def _cruz(a: Vector3, b: Vector3) -> Vector3:
-    return (
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    )
-
-
 def _norma(v: Vector3) -> float:
     return math.sqrt(sum(c * c for c in v))
-
-
-def _normalizar(v: Vector3) -> Vector3:
-    n = _norma(v)
-    return (v[0] / n, v[1] / n, v[2] / n)
 
 
 @dataclass
@@ -130,8 +104,8 @@ class MallaAnalisis:
 
     Cada viga/columna del ``Proyecto`` se traduce en una cadena de varios
     ``ElementoMalla``, para poder aplicar cargas no uniformes y obtener
-    diagramas de fuerzas internas con buena resolución. ``nodos`` y
-    ``elementos`` usan etiquetas enteras (requeridas por CalculiX).
+    mapas de esfuerzos con buena resolución. ``nodos`` y ``elementos``
+    usan etiquetas enteras (requeridas por CalculiX).
     """
 
     nodos: Dict[int, NodoMalla] = field(default_factory=dict)
@@ -147,13 +121,13 @@ def construir_malla(
     proyecto: Proyecto,
     cargas_lineales_por_caso: Dict[str, List[CargaLineal]],
     cargas_puntuales_por_caso: Dict[str, List[CargaPuntual]],
-    n_subdivisiones: int = N_SUBDIVISIONES_POR_TRAMO,
+    longitud_elemento: float = LONGITUD_ELEMENTO_OBJETIVO,
 ) -> MallaAnalisis:
     """Construye la malla de análisis, común a todos los casos de carga.
 
     Usar la MISMA malla para todos los casos es imprescindible para que la
     superposición de resultados (ver combinaciones/motor_superposicion.py)
-    pueda comparar nodo a nodo y elemento a elemento entre casos.
+    pueda comparar nodo a nodo entre casos.
     """
 
     malla = MallaAnalisis()
@@ -164,6 +138,7 @@ def construir_malla(
         return contador[clave]
 
     for barra_id, barra in proyecto.todas_las_barras().items():
+        longitud_barra = proyecto.longitud_barra(barra_id)
         breakpoints = {0.0, 1.0}
         for cargas in cargas_lineales_por_caso.values():
             for cl in cargas:
@@ -181,8 +156,9 @@ def construir_malla(
             s0, s1 = puntos_quiebre[i], puntos_quiebre[i + 1]
             if s1 - s0 < 1e-7:
                 continue
-            for k in range(1, n_subdivisiones + 1):
-                posiciones.append(s0 + (s1 - s0) * k / n_subdivisiones)
+            n_sub = max(2, math.ceil((s1 - s0) * longitud_barra / longitud_elemento))
+            for k in range(1, n_sub + 1):
+                posiciones.append(s0 + (s1 - s0) * k / n_sub)
 
         nodo_ini = proyecto.nodos[barra.nodo_inicio]
         nodo_fin = proyecto.nodos[barra.nodo_fin]
@@ -232,44 +208,6 @@ def construir_malla(
     return malla
 
 
-def _seccion_equivalente(perfil: PerfilSeccion) -> Tuple[float, float]:
-    """Dimensiones (altura, ancho) para ``*BEAM SECTION, SECTION=RECT``.
-
-    Si el perfil ya trae dimensiones reales (sección rectangular, el caso
-    típico en vigas/columnas de hormigón), se usan directamente. En caso
-    contrario se aproxima con un rectángulo equivalente que conserva el
-    área y la inercia fuerte (inercia_z) del perfil real; ver el punto 1
-    del docstring del módulo.
-    """
-
-    if perfil.altura and perfil.ancho:
-        return perfil.altura, perfil.ancho
-
-    area = perfil.area
-    inercia_fuerte = perfil.inercia_z if perfil.inercia_z > 0 else perfil.inercia_y
-    altura = math.sqrt(12.0 * inercia_fuerte / area)
-    ancho = area / altura
-    return altura, ancho
-
-
-def _orientacion_valida(proyecto: Proyecto, barra: ElementoBarra) -> Vector3:
-    """Vector n1 (dirección local aproximada, perpendicular al eje de la
-    barra) a usar en ``*BEAM SECTION``. Si el ``vector_n1`` configurado en
-    el elemento resulta paralelo al eje de la barra (caso típico de
-    columnas verticales con el valor por defecto (0,0,1)), se usa un vector
-    de respaldo no paralelo.
-    """
-
-    a = proyecto.nodos[barra.nodo_inicio]
-    b = proyecto.nodos[barra.nodo_fin]
-    eje = _normalizar((b.x - a.x, b.y - a.y, b.z - a.z))
-
-    for candidato in (barra.vector_n1, (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
-        if _norma(_cruz(eje, candidato)) > 1e-6:
-            return candidato
-    return (0.0, 0.0, 1.0)
-
-
 def _rangos_contiguos(numeros: List[int]) -> List[Tuple[int, int]]:
     """Agrupa una lista de enteros ordenables en rangos contiguos, para
     escribir menos líneas de *BOUNDARY (p. ej. [1,2,3,4,5,6] -> [(1,6)])."""
@@ -289,11 +227,6 @@ def _etiqueta_ccx(nombre: str) -> str:
     .inp (CalculiX no admite espacios ni comas en las etiquetas)."""
 
     return "".join(c if c.isalnum() else "_" for c in nombre).upper()[:80]
-
-
-def _agregar_lista_numeros(lineas: List[str], numeros: List[int], por_linea: int = 10) -> None:
-    for i in range(0, len(numeros), por_linea):
-        lineas.append(",".join(str(n) for n in numeros[i : i + por_linea]))
 
 
 def _carga_global_en_elemento(elemento: ElementoMalla, cargas: List[CargaLineal]) -> Vector3:
@@ -348,15 +281,15 @@ def generar_inp_caso(
         lineas.append("*DENSITY")
         lineas.append(f"{DENSIDAD_FICTICIA}")
 
+    areas: Dict[str, float] = {}
     for barra_id, barra in proyecto.todas_las_barras().items():
-        perfil = proyecto.perfiles[barra.perfil]
-        altura, ancho = _seccion_equivalente(perfil)
-        n1 = _orientacion_valida(proyecto, barra)
+        ejes = ejes_seccion(proyecto, barra)
+        areas[barra_id] = ejes.dim1 * ejes.dim2
         lineas.append(
             f"*BEAM SECTION,ELSET=E_{barra_id},MATERIAL={_etiqueta_ccx(barra.material)},SECTION=RECT"
         )
-        lineas.append(f"{altura:.6g},{ancho:.6g}")
-        lineas.append(f"{n1[0]:.6f},{n1[1]:.6f},{n1[2]:.6f}")
+        lineas.append(f"{ejes.dim1:.6g},{ejes.dim2:.6g}")
+        lineas.append(f"{ejes.e1[0]:.9f},{ejes.e1[1]:.9f},{ejes.e1[2]:.9f}")
 
     apoyos_validos = [a for a in apoyos if a.nodo_id in malla.nodo_ccx_de_nodo_original]
     if apoyos_validos:
@@ -365,9 +298,6 @@ def generar_inp_caso(
             nid = malla.nodo_ccx_de_nodo_original[apoyo.nodo_id]
             for ini, fin in _rangos_contiguos(apoyo.grados_restringidos()):
                 lineas.append(f"{nid},{ini},{fin}")
-
-    lineas.append("*NSET,NSET=NALL")
-    _agregar_lista_numeros(lineas, sorted(malla.nodos))
 
     lineas.append("*STEP")
     lineas.append("*STATIC")
@@ -389,8 +319,7 @@ def generar_inp_caso(
 
     lineas_dload: List[str] = []
     for barra_id, elementos_ids in malla.elementos_por_barra.items():
-        barra = proyecto.elemento_barra(barra_id)
-        area = proyecto.perfiles[barra.perfil].area
+        area = areas[barra_id]
         for eid in elementos_ids:
             elemento = malla.elementos[eid]
             vector = _carga_global_en_elemento(elemento, cargas_lineales)
@@ -407,9 +336,7 @@ def generar_inp_caso(
         lineas.append("*DLOAD")
         lineas.extend(lineas_dload)
 
-    lineas.append("*NODE PRINT,NSET=NALL")
-    lineas.append("U")
-    lineas.append("*EL FILE,OUTPUT=2D,SECTION FORCES")
+    lineas.append("*EL FILE")
     lineas.append("S")
     lineas.append("*END STEP")
 

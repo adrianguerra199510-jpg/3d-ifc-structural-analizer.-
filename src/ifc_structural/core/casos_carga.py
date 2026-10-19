@@ -62,3 +62,18 @@ PLANTILLAS_COMBINACIONES = {
     "ACI318_1.2D_1.0L_1.0E": {"D": 1.2, "L": 1.0, "E": 1.0},
     "AASHTO_RESISTENCIA_I": {"D": 1.25, "SCP": 1.5, "L": 1.75},
 }
+
+
+def casos_y_combinaciones_por_defecto():
+    """Casos D (carga muerta) y L (carga viva) y dos combinaciones ACI 318
+    habituales, para poder analizar sin configurar nada primero."""
+
+    casos = {
+        "D": CasoCarga(id="D", nombre="Carga muerta", tipo=TipoCaso.D),
+        "L": CasoCarga(id="L", nombre="Carga viva", tipo=TipoCaso.L),
+    }
+    combinaciones = {
+        "COMB1": Combinacion(id="COMB1", nombre="1.4D", factores={"D": 1.4}, norma="ACI 318"),
+        "COMB2": Combinacion(id="COMB2", nombre="1.2D + 1.6L", factores={"D": 1.2, "L": 1.6}, norma="ACI 318"),
+    }
+    return casos, combinaciones

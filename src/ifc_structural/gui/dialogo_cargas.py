@@ -1,10 +1,15 @@
-"""Diálogo para asignar cargas de área (sobre losas), lineales (sobre
-vigas/columnas) y puntuales (sobre nodos o sobre un punto de una
-viga/columna)."""
+"""Diálogo para asignar cargas a lo que se seleccionó en el visor.
+
+Qué carga resulta depende de lo seleccionado (ver ``core.asignacion``):
+losas → carga de área; vigas/columnas completas → carga lineal; caras
+laterales de vigas/columnas → carga lineal (presión × ancho de la cara);
+caras extremas → fuerza axial en el nodo. La vista previa muestra, para
+cada elemento seleccionado, la carga que se creará o por qué no se puede.
+"""
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Dict, List, Tuple
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -12,130 +17,96 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
-    QTabWidget,
+    QLabel,
+    QPlainTextEdit,
     QVBoxLayout,
-    QWidget,
 )
 
-from ..core.cargas import CargaArea, CargaLineal, CargaPuntual
+from ..core.asignacion import DIRECCIONES, Objetivo, vista_previa_cargas
+from ..core.casos_carga import CasoCarga
 from ..core.modelo import Proyecto
 
 
-def _spin(minimo=-1e9, maximo=1e9, decimales=3, valor=0.0) -> QDoubleSpinBox:
+def _spin(valor: float, sufijo: str) -> QDoubleSpinBox:
     spin = QDoubleSpinBox()
-    spin.setRange(minimo, maximo)
-    spin.setDecimals(decimales)
+    spin.setRange(-1e9, 1e9)
+    spin.setDecimals(3)
     spin.setValue(valor)
+    spin.setSuffix(sufijo)
     return spin
 
 
 class DialogoCargas(QDialog):
-    """Reúne las tres formas de carga de la Fase 1 en un solo diálogo con
-    pestañas; ``resultado()`` devuelve la carga creada en la pestaña activa
-    al momento de aceptar."""
-
-    def __init__(self, proyecto: Proyecto, casos_disponibles: list, parent=None):
+    def __init__(self, proyecto: Proyecto, objetivos: List[Objetivo], casos: Dict[str, CasoCarga],
+                 caso_activo: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Asignar carga")
+        self.resize(560, 420)
         self._proyecto = proyecto
-        self._casos = casos_disponibles
+        self._objetivos = objetivos
 
-        self.pestanas = QTabWidget()
-        self.pestanas.addTab(self._crear_pestana_area(), "Carga de área (losa)")
-        self.pestanas.addTab(self._crear_pestana_lineal(), "Carga lineal (viga/columna)")
-        self.pestanas.addTab(self._crear_pestana_puntual(), "Carga puntual")
+        self.combo_caso = QComboBox()
+        for caso in casos.values():
+            self.combo_caso.addItem(f"{caso.id} — {caso.nombre}", caso.id)
+        indice = self.combo_caso.findData(caso_activo)
+        if indice >= 0:
+            self.combo_caso.setCurrentIndex(indice)
 
-        botones = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        botones.accepted.connect(self.accept)
-        botones.rejected.connect(self.reject)
+        self.spin_presion = _spin(5.0, " kPa")
+        self.spin_lineal = _spin(10.0, " kN/m")
+        self.combo_direccion = QComboBox()
+        self.combo_direccion.addItems(list(DIRECCIONES))
+
+        formulario = QFormLayout()
+        formulario.addRow("Caso de carga:", self.combo_caso)
+        formulario.addRow("Presión:", self.spin_presion)
+        formulario.addRow("Carga lineal:", self.spin_lineal)
+        formulario.addRow("Dirección:", self.combo_direccion)
+
+        ayuda = QLabel(
+            "La <b>presión</b> se usa en losas y en las caras de vigas/columnas (positiva = empuja hacia "
+            "dentro de la cara). La <b>carga lineal</b> se usa al seleccionar la viga o columna completa. "
+            "La <b>dirección</b> solo cuenta cuando no se eligió una cara (en una cara, la carga es "
+            "perpendicular a ella)."
+        )
+        ayuda.setWordWrap(True)
+
+        self.vista_previa = QPlainTextEdit()
+        self.vista_previa.setReadOnly(True)
+
+        self.botones = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.botones.accepted.connect(self.accept)
+        self.botones.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.pestanas)
-        layout.addWidget(botones)
+        layout.addLayout(formulario)
+        layout.addWidget(ayuda)
+        layout.addWidget(QLabel("<b>Se crearán estas cargas:</b>"))
+        layout.addWidget(self.vista_previa)
+        layout.addWidget(self.botones)
 
-    def _combo_casos(self) -> QComboBox:
-        combo = QComboBox()
-        combo.addItems(self._casos)
-        return combo
+        for senal in (self.spin_presion.valueChanged, self.spin_lineal.valueChanged,
+                      self.combo_direccion.currentIndexChanged):
+            senal.connect(self._actualizar_vista_previa)
+        self._actualizar_vista_previa()
 
-    def _crear_pestana_area(self) -> QWidget:
-        widget = QWidget()
-        self.combo_caso_area = self._combo_casos()
-        self.combo_losa = QComboBox()
-        self.combo_losa.addItems(sorted(self._proyecto.losas))
-        self.spin_presion = _spin(valor=5.0)
-        self.spin_presion.setSuffix(" kPa")
-
-        formulario = QFormLayout(widget)
-        formulario.addRow("Caso de carga:", self.combo_caso_area)
-        formulario.addRow("Losa:", self.combo_losa)
-        formulario.addRow("Presión:", self.spin_presion)
-        return widget
-
-    def _crear_pestana_lineal(self) -> QWidget:
-        widget = QWidget()
-        self.combo_caso_lineal = self._combo_casos()
-        self.combo_barra_lineal = QComboBox()
-        self.combo_barra_lineal.addItems(sorted({**self._proyecto.vigas, **self._proyecto.columnas}))
-        self.spin_w = _spin(valor=-10.0)
-        self.spin_w.setSuffix(" kN/m")
-        self.combo_direccion_lineal = QComboBox()
-        self.combo_direccion_lineal.addItems(["Global Z (gravedad)", "Global X", "Global Y"])
-
-        formulario = QFormLayout(widget)
-        formulario.addRow("Caso de carga:", self.combo_caso_lineal)
-        formulario.addRow("Viga/columna:", self.combo_barra_lineal)
-        formulario.addRow("Intensidad uniforme:", self.spin_w)
-        formulario.addRow("Dirección:", self.combo_direccion_lineal)
-        return widget
-
-    def _crear_pestana_puntual(self) -> QWidget:
-        widget = QWidget()
-        self.combo_caso_puntual = self._combo_casos()
-        self.combo_nodo_puntual = QComboBox()
-        self.combo_nodo_puntual.addItems(sorted(self._proyecto.nodos))
-        self.spin_fx = _spin(valor=0.0)
-        self.spin_fy = _spin(valor=0.0)
-        self.spin_fz = _spin(valor=-10.0)
-        for s in (self.spin_fx, self.spin_fy, self.spin_fz):
-            s.setSuffix(" kN")
-
-        formulario = QFormLayout(widget)
-        formulario.addRow("Caso de carga:", self.combo_caso_puntual)
-        formulario.addRow("Nodo:", self.combo_nodo_puntual)
-        formulario.addRow("Fx:", self.spin_fx)
-        formulario.addRow("Fy:", self.spin_fy)
-        formulario.addRow("Fz:", self.spin_fz)
-        return widget
-
-    def _direccion_vector(self) -> tuple:
-        indice = self.combo_direccion_lineal.currentIndex()
-        return {0: (0.0, 0.0, -1.0), 1: (1.0, 0.0, 0.0), 2: (0.0, 1.0, 0.0)}[indice]
-
-    def resultado(self, id_: str):
-        indice = self.pestanas.currentIndex()
-        if indice == 0:
-            return CargaArea(
-                id=id_,
-                caso_id=self.combo_caso_area.currentText(),
-                presion=self.spin_presion.value(),
-                losa_id=self.combo_losa.currentText(),
+    def _actualizar_vista_previa(self) -> None:
+        if not self._objetivos:
+            self.vista_previa.setPlainText(
+                "No hay nada seleccionado. Seleccione elementos o caras en el visor antes de asignar cargas."
             )
-        if indice == 1:
-            w = self.spin_w.value()
-            return CargaLineal(
-                id=id_,
-                caso_id=self.combo_caso_lineal.currentText(),
-                elemento_id=self.combo_barra_lineal.currentText(),
-                w_inicio=w,
-                w_fin=w,
-                direccion=self._direccion_vector(),
-            )
-        return CargaPuntual(
-            id=id_,
-            caso_id=self.combo_caso_puntual.currentText(),
-            nodo_id=self.combo_nodo_puntual.currentText(),
-            fx=self.spin_fx.value(),
-            fy=self.spin_fy.value(),
-            fz=self.spin_fz.value(),
+            self.botones.button(QDialogButtonBox.Ok).setEnabled(False)
+            return
+        vista = vista_previa_cargas(self._proyecto, self._objetivos, *self.parametros()[1:])
+        self.vista_previa.setPlainText("\n".join(f"{'✓' if ok else '✗'} {texto}" for ok, texto in vista))
+        self.botones.button(QDialogButtonBox.Ok).setEnabled(any(ok for ok, _ in vista))
+
+    def parametros(self) -> Tuple[str, float, float, Tuple[float, float, float]]:
+        """(caso_id, presión kPa, carga lineal kN/m, dirección global)."""
+
+        return (
+            self.combo_caso.currentData(),
+            self.spin_presion.value(),
+            self.spin_lineal.value(),
+            DIRECCIONES[self.combo_direccion.currentText()],
         )

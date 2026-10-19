@@ -1,121 +1,471 @@
-"""Visor 3D del modelo estructural, basado en PyVista embebido en Qt
-(pyvistaqt). Permite seleccionar vigas, columnas, losas y muros con un
-clic; la selección se comunica al resto de la aplicación mediante la
-señal ``elemento_seleccionado``.
+"""Visor 3D del modelo estructural (PyVista embebido en Qt).
 
-Nota de implementación: a diferencia de un enfoque que combina todos los
-elementos de un mismo tipo en una sola malla (más eficiente para modelos
-muy grandes), aquí cada elemento se agrega como una malla y un actor de
-VTK independientes. Es una opción deliberada para la Fase 1: hace que la
-identificación del elemento clicado sea directa y confiable (un actor =
-un elemento), a costa de rendimiento en modelos con miles de elementos —
-aceptable para el alcance de esta fase.
+Dos vistas:
+
+- **Modelo**: vigas y columnas como prismas con su sección real, losas y
+  muros con su espesor. Se seleccionan con el mouse, a nivel de elemento o
+  de cara (modo «Elemento» / «Cara»); Ctrl o Mayús suman a la selección.
+  También se dibujan los apoyos y las cargas del caso activo.
+- **Esfuerzos**: mapa de contorno de una magnitud de esfuerzo sobre la
+  malla expandida de las vigas y columnas, con escala configurable. Al
+  hacer clic se muestra el valor en ese punto.
+
+La selección se hace con un ``vtkCellPicker`` propio (un clic = presionar
+y soltar sin arrastrar, para no interferir con girar la cámara), de modo
+que se conoce con exactitud el elemento y la cara bajo el cursor: cada
+elemento es una malla aparte cuya celda número ``i`` es su cara ``i``
+(ver ``core.geometria``).
 """
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+import logging
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-
-try:
-    import pyvista as pv
-    from pyvistaqt import QtInteractor
-except ImportError:  # pragma: no cover - entornos sin PyVista instalado
-    pv = None
-    QtInteractor = object
-
-import logging
-
+import pyvista as pv
 from PySide6.QtCore import Signal
+from pyvistaqt import QtInteractor
+from vtkmodules.vtkRenderingCore import vtkCellPicker
 
-from ..core.modelo import Losa, Muro, Proyecto
+from ..core.asignacion import Objetivo
+from ..core.cargas import Apoyo, CargaArea, CargaLineal, CargaPuntual
+from ..core.geometria import Solido, normal_losa, solido_elemento
+from ..core.modelo import Proyecto
+from ..solver.lector_resultados import MallaTensiones
 
 logger = logging.getLogger(__name__)
 
-COLOR_VIGA = "steelblue"
-COLOR_COLUMNA = "indianred"
-COLOR_LOSA = "lightgray"
-COLOR_MURO = "khaki"
-COLOR_SELECCION = "gold"
+COLORES_BASE = {
+    "VIGA": (70, 130, 180),
+    "COLUMNA": (205, 92, 92),
+    "LOSA": (190, 190, 190),
+    "MURO": (218, 200, 120),
+}
+COLOR_ELEMENTO_SELECCIONADO = (255, 200, 0)
+COLOR_CARA_SELECCIONADA = (255, 120, 0)
+COLOR_APOYO = "royalblue"
+COLOR_CARGA = "crimson"
+OPACIDAD_PLANOS = 0.6
+OPACIDAD_PLANOS_EN_ESFUERZOS = 0.12
+#: Un clic es una pulsación que se mueve menos que esto (píxeles).
+UMBRAL_ARRASTRE_PX = 4
 
-_COLORES_POR_TIPO = {"VIGA": COLOR_VIGA, "COLUMNA": COLOR_COLUMNA, "LOSA": COLOR_LOSA, "MURO": COLOR_MURO}
+MODO_ELEMENTO = "ELEMENTO"
+MODO_CARA = "CARA"
+
+
+@dataclass
+class _Visual:
+    tipo: str
+    id: str
+    solido: Solido
+    malla: pv.PolyData
+    actor: object
 
 
 class Visor3D(QtInteractor):
-    """Widget de visualización 3D con selección de elementos por clic."""
+    """Widget 3D con selección de elementos y caras por clic."""
 
-    elemento_seleccionado = Signal(str, str)  # (tipo, id)
+    seleccion_cambiada = Signal(list)  # list[Objetivo]
+    punto_sondeado = Signal(str)  # texto para mostrar al hacer clic en la vista de esfuerzos
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._proyecto: Optional[Proyecto] = None
-        self._tipo_id_por_mesh_id: Dict[int, Tuple[str, str]] = {}
-        self._actor_por_tipo_id: Dict[Tuple[str, str], object] = {}
+        self._visuales: Dict[Tuple[str, str], _Visual] = {}
+        self._clave_por_actor: Dict[int, Tuple[str, str]] = {}
+        self._seleccion: List[Objetivo] = []
+        self._modo = MODO_ELEMENTO
+        self._vista = "MODELO"
+        self._visibles = {"VIGA": True, "COLUMNA": True, "LOSA": True, "MURO": True}
+        self._escala = 1.0
+
+        self._grid_esfuerzos: Optional[pv.UnstructuredGrid] = None
+        self._valores_esfuerzos: Optional[np.ndarray] = None
+        self._barra_de_celda: List[str] = []
+        self._actor_esfuerzos = None
+        self._titulo_esfuerzos = ""
+
+        self._picker = vtkCellPicker()
+        self._picker.SetTolerance(0.0005)
+        self._pulsacion: Optional[Tuple[int, int]] = None
+
         self.set_background("white")
-        try:
-            self.enable_mesh_picking(callback=self._al_seleccionar_malla, show=False, show_message=False)
-        except Exception:
-            # En equipos sin aceleración 3D disponible (p. ej. algunos
-            # entornos remotos sin GPU) la selección por clic en el visor
-            # no está disponible, pero el resto de la aplicación (listas,
-            # diálogos, resultados) sigue funcionando con normalidad.
-            logger.warning("No se pudo habilitar la selección por clic en el visor 3D.", exc_info=True)
+        self.add_axes()
+        self.iren.add_observer("LeftButtonPressEvent", self._al_presionar)
+        self.iren.add_observer("LeftButtonReleaseEvent", self._al_soltar)
 
-    def mostrar_proyecto(self, proyecto: Proyecto) -> None:
+    # ------------------------------------------------------------------
+    # Construcción de la vista del modelo
+    # ------------------------------------------------------------------
+    def mostrar_modelo(self, proyecto: Proyecto) -> None:
         self._proyecto = proyecto
-        self.clear()
-        self._tipo_id_por_mesh_id.clear()
-        self._actor_por_tipo_id.clear()
-
-        for barra in proyecto.vigas.values():
-            self._agregar_barra(proyecto, barra, "VIGA")
-        for barra in proyecto.columnas.values():
-            self._agregar_barra(proyecto, barra, "COLUMNA")
-        for losa in proyecto.losas.values():
-            self._agregar_superficie(proyecto, losa, "LOSA")
-        for muro in proyecto.muros.values():
-            self._agregar_superficie(proyecto, muro, "MURO")
-
+        self.volver_al_modelo(reconstruir=True)
         self.reset_camera()
+        self.view_isometric()
         self.render()
 
-    def _agregar_barra(self, proyecto: Proyecto, barra, tipo: str) -> None:
-        n1 = proyecto.nodos[barra.nodo_inicio]
-        n2 = proyecto.nodos[barra.nodo_fin]
-        linea = pv.Line(n1.coordenadas, n2.coordenadas)
-        tubo = linea.tube(radius=0.04)
-        actor = self.add_mesh(tubo, color=_COLORES_POR_TIPO[tipo], pickable=True, name=f"{tipo}_{barra.id}")
-        self._registrar(tubo, actor, tipo, barra.id)
+    def _limpiar_escena(self) -> None:
+        self.clear_actors()
+        self._visuales.clear()
+        self._clave_por_actor.clear()
+        self._actor_esfuerzos = None
 
-    def _agregar_superficie(self, proyecto: Proyecto, elemento, tipo: str) -> None:
-        puntos = np.array([proyecto.nodos[nid].coordenadas for nid in elemento.nodos_contorno])
-        n = len(puntos)
-        caras = np.hstack([[n], np.arange(n)])
-        malla = pv.PolyData(puntos, faces=caras)
-        actor = self.add_mesh(
-            malla, color=_COLORES_POR_TIPO[tipo], opacity=0.55, pickable=True, name=f"{tipo}_{elemento.id}",
-            show_edges=True,
-        )
-        self._registrar(malla, actor, tipo, elemento.id)
-
-    def _registrar(self, malla, actor, tipo: str, id_: str) -> None:
-        self._tipo_id_por_mesh_id[id(malla)] = (tipo, id_)
-        self._actor_por_tipo_id[(tipo, id_)] = actor
-
-    def _al_seleccionar_malla(self, malla) -> None:
-        clave = self._tipo_id_por_mesh_id.get(id(malla))
-        if clave is None:
+    def _reconstruir_visuales(self) -> None:
+        proyecto = self._proyecto
+        if proyecto is None:
             return
-        tipo, id_ = clave
-        self.resaltar(tipo, id_)
-        self.elemento_seleccionado.emit(tipo, id_)
+        elementos = (
+            [("VIGA", i) for i in proyecto.vigas]
+            + [("COLUMNA", i) for i in proyecto.columnas]
+            + [("LOSA", i) for i in proyecto.losas]
+            + [("MURO", i) for i in proyecto.muros]
+        )
+        todos = [proyecto.nodos[n].coordenadas for n in proyecto.nodos]
+        if todos:
+            extension = np.ptp(np.array(todos, dtype=float), axis=0)
+            self._escala = max(float(np.linalg.norm(extension)), 1.0)
 
-    def resaltar(self, tipo: str, id_: str) -> None:
-        """Resalta un elemento (p. ej. tras seleccionarlo en una tabla, no
-        solo con el clic en el visor) y restaura el color del resto."""
+        for tipo, id_ in elementos:
+            solido = solido_elemento(proyecto, tipo, id_)
+            faces = np.hstack([[len(c.indices), *c.indices] for c in solido.caras]).astype(np.int64)
+            malla = pv.PolyData(np.asarray(solido.puntos, dtype=float), faces=faces)
+            malla.cell_data["colores"] = np.tile(COLORES_BASE[tipo], (len(solido.caras), 1)).astype(np.uint8)
+            es_plano = tipo in ("LOSA", "MURO")
+            actor = self.add_mesh(
+                malla,
+                scalars="colores",
+                rgb=True,
+                show_edges=True,
+                edge_color=(40, 40, 40),
+                opacity=OPACIDAD_PLANOS if es_plano else 1.0,
+                pickable=True,
+                name=f"{tipo}_{id_}",
+                show_scalar_bar=False,
+            )
+            self._visuales[(tipo, id_)] = _Visual(tipo, id_, solido, malla, actor)
+            self._clave_por_actor[hash(actor)] = (tipo, id_)
 
-        for (t, i), actor in self._actor_por_tipo_id.items():
-            color = COLOR_SELECCION if (t, i) == (tipo, id_) else _COLORES_POR_TIPO[t]
-            actor.prop.color = color
+    # ------------------------------------------------------------------
+    # Selección
+    # ------------------------------------------------------------------
+    @property
+    def seleccion(self) -> List[Objetivo]:
+        return list(self._seleccion)
+
+    @property
+    def modo(self) -> str:
+        return self._modo
+
+    def set_modo(self, modo: str) -> None:
+        if modo not in (MODO_ELEMENTO, MODO_CARA):
+            raise ValueError(modo)
+        if modo == self._modo:
+            return
+        self._modo = modo
+        # Al cambiar de modo la selección anterior ya no significa lo mismo.
+        self.seleccionar([])
+
+    def seleccionar(self, objetivos: Sequence[Objetivo]) -> None:
+        """Establece la selección (desde el código o desde una tabla)."""
+
+        self._seleccion = list(objetivos)
+        self._pintar_seleccion()
+        self.seleccion_cambiada.emit(self.seleccion)
+
+    def _pintar_seleccion(self) -> None:
+        for clave, visual in self._visuales.items():
+            colores = np.tile(COLORES_BASE[visual.tipo], (len(visual.solido.caras), 1)).astype(np.uint8)
+            for objetivo in self._seleccion:
+                if (objetivo.tipo, objetivo.id) != clave:
+                    continue
+                if objetivo.cara is None:
+                    colores[:] = COLOR_ELEMENTO_SELECCIONADO
+                else:
+                    colores[objetivo.cara] = COLOR_CARA_SELECCIONADA
+            visual.malla.cell_data["colores"][:] = colores
+            visual.malla.Modified()
         self.render()
+
+    def _elegir(self, x: int, y: int):
+        """(clave, índice de celda) bajo el píxel, o (None, -1)."""
+
+        if not self._picker.Pick(x, y, 0, self.renderer):
+            return None, -1
+        actor = self._picker.GetActor()
+        if actor is None:
+            return None, -1
+        return self._clave_por_actor.get(hash(actor)), self._picker.GetCellId()
+
+    def _al_presionar(self, *_args) -> None:
+        # Los observadores de VTK reciben el "estilo" de interacción, no el
+        # interactor: la posición y las teclas se leen del interactor.
+        self._pulsacion = tuple(self.iren.interactor.GetEventPosition())
+
+    def _al_soltar(self, *_args) -> None:
+        interactor = self.iren.interactor
+        inicio, self._pulsacion = self._pulsacion, None
+        if inicio is None:
+            return
+        x, y = interactor.GetEventPosition()
+        if abs(x - inicio[0]) > UMBRAL_ARRASTRE_PX or abs(y - inicio[1]) > UMBRAL_ARRASTRE_PX:
+            return  # fue un arrastre (girar/mover la cámara), no un clic
+        if self._vista == "ESFUERZOS":
+            self._sondear(x, y)
+            return
+        sumar = bool(interactor.GetControlKey() or interactor.GetShiftKey())
+        self._clic_en_modelo(x, y, sumar)
+
+    def _clic_en_modelo(self, x: int, y: int, sumar: bool) -> None:
+        clave, celda = self._elegir(x, y)
+        if clave is None:
+            if not sumar:
+                self.seleccionar([])
+            return
+
+        tipo, id_ = clave
+        objetivo = Objetivo(tipo, id_, celda if self._modo == MODO_CARA else None)
+        if sumar:
+            seleccion = list(self._seleccion)
+            if objetivo in seleccion:
+                seleccion.remove(objetivo)  # Ctrl+clic sobre algo ya elegido lo quita
+            else:
+                seleccion.append(objetivo)
+        else:
+            seleccion = [objetivo]
+        self.seleccionar(seleccion)
+
+    # ------------------------------------------------------------------
+    # Visibilidad y cámara
+    # ------------------------------------------------------------------
+    def set_visibilidad(self, tipo: str, visible: bool) -> None:
+        self._visibles[tipo] = visible
+        if self._vista == "MODELO":
+            self._aplicar_visibilidad()
+            self.render()
+
+    def _aplicar_visibilidad(self) -> None:
+        for visual in self._visuales.values():
+            visual.actor.SetVisibility(self._visibles[visual.tipo])
+            visual.actor.SetPickable(self._visibles[visual.tipo])
+
+    def vista_isometrica(self) -> None:
+        self.view_isometric()
+
+    def vista_planta(self) -> None:
+        self.view_xy()
+
+    def vista_frontal(self) -> None:
+        self.view_xz()
+
+    def vista_lateral(self) -> None:
+        self.view_yz()
+
+    # ------------------------------------------------------------------
+    # Apoyos y cargas
+    # ------------------------------------------------------------------
+    def mostrar_asignaciones(
+        self,
+        apoyos: Sequence[Apoyo],
+        cargas_area: Sequence[CargaArea],
+        cargas_lineales: Sequence[CargaLineal],
+        cargas_puntuales: Sequence[CargaPuntual],
+    ) -> None:
+        """Dibuja los apoyos y las cargas del caso activo (las que se pasan)."""
+
+        for nombre in ("ASIG_APOYOS", "ASIG_CARGAS", "ASIG_ETIQUETAS"):
+            self.remove_actor(nombre, render=False)
+        proyecto = self._proyecto
+        if proyecto is None:
+            return
+
+        largo = float(np.clip(0.06 * self._escala, 0.3, 1.5))
+
+        conos = [
+            pv.Cone(
+                center=np.array(proyecto.nodos[a.nodo_id].coordenadas) - np.array([0, 0, largo * 0.4]),
+                direction=(0, 0, 1), height=largo * 0.8, radius=largo * 0.45, resolution=16,
+            )
+            for a in apoyos if a.nodo_id in proyecto.nodos
+        ]
+        if conos:
+            self.add_mesh(pv.merge(conos), color=COLOR_APOYO, name="ASIG_APOYOS", pickable=False, show_scalar_bar=False)
+
+        flechas: List[pv.PolyData] = []
+        puntos_etiqueta: List[np.ndarray] = []
+        textos: List[str] = []
+
+        def flecha(punta, direccion, longitud):
+            d = np.asarray(direccion, dtype=float)
+            d = d / np.linalg.norm(d)
+            return pv.Arrow(start=np.asarray(punta) - d * longitud, direction=d, scale=longitud,
+                            tip_length=0.3, tip_radius=0.1, shaft_radius=0.035)
+
+        for carga in cargas_area:
+            if carga.losa_id not in proyecto.losas:
+                continue
+            solido = solido_elemento(proyecto, "LOSA", carga.losa_id)
+            d = np.asarray(carga.direccion, dtype=float)
+            # La cara cargada es la que mira contra la carga.
+            cara = min(solido.caras[:2], key=lambda c: float(np.dot(c.normal, d)))
+            muestras = _puntos_en_cara(cara.puntos, 4)
+            for punto in muestras:
+                flechas.append(flecha(punto, d, largo))
+            if muestras:
+                puntos_etiqueta.append(muestras[0] - d / np.linalg.norm(d) * largo)
+                textos.append(f"{carga.presion:g} kPa")
+
+        for carga in cargas_lineales:
+            if carga.elemento_id not in proyecto.todas_las_barras():
+                continue
+            barra = proyecto.elemento_barra(carga.elemento_id)
+            a = np.array(proyecto.nodos[barra.nodo_inicio].coordenadas)
+            b = np.array(proyecto.nodos[barra.nodo_fin].coordenadas)
+            d = np.asarray(carga.direccion, dtype=float)
+            d = d / np.linalg.norm(d)
+            for s in np.linspace(carga.s_inicio, carga.s_fin, 5):
+                flechas.append(flecha(a + s * (b - a) - d * largo * 0.25, d, largo * 0.8))
+            puntos_etiqueta.append(a + 0.5 * (carga.s_inicio + carga.s_fin) * (b - a) - d * largo * 1.1)
+            textos.append(f"{abs(carga.w_inicio):g} kN/m")
+
+        for carga in cargas_puntuales:
+            if carga.nodo_id is None or carga.nodo_id not in proyecto.nodos:
+                continue
+            f = np.array([carga.fx, carga.fy, carga.fz], dtype=float)
+            if np.linalg.norm(f) < 1e-12:
+                continue
+            punto = np.array(proyecto.nodos[carga.nodo_id].coordenadas)
+            d = f / np.linalg.norm(f)
+            flechas.append(flecha(punto - d * largo * 0.15, d, largo * 1.4))
+            puntos_etiqueta.append(punto - d * largo * 1.6)
+            textos.append(f"{np.linalg.norm(f):g} kN")
+
+        if flechas:
+            self.add_mesh(pv.merge(flechas), color=COLOR_CARGA, name="ASIG_CARGAS", pickable=False, show_scalar_bar=False)
+            self.add_point_labels(
+                np.array(puntos_etiqueta), textos, name="ASIG_ETIQUETAS", font_size=14, text_color="darkred",
+                shape=None, show_points=False, always_visible=True, pickable=False,
+            )
+        self.render()
+
+    # ------------------------------------------------------------------
+    # Vista de esfuerzos
+    # ------------------------------------------------------------------
+    def mostrar_esfuerzos(
+        self,
+        malla: MallaTensiones,
+        valores: np.ndarray,
+        barra_de_celda: Sequence[str],
+        titulo: str,
+        rango: Optional[Tuple[float, float]] = None,
+        cmap: str = "turbo",
+        texto: str = "",
+    ) -> None:
+        """Mapa de contorno de ``valores`` (uno por nodo de ``malla``)."""
+
+        self._vista = "ESFUERZOS"
+        for visual in self._visuales.values():
+            if visual.tipo in ("VIGA", "COLUMNA"):
+                visual.actor.SetVisibility(False)
+                visual.actor.SetPickable(False)
+            else:
+                visual.actor.SetVisibility(self._visibles[visual.tipo])
+                visual.actor.SetPickable(False)
+                visual.actor.GetProperty().SetOpacity(OPACIDAD_PLANOS_EN_ESFUERZOS)
+
+        n_celdas = len(malla.ids_elementos)
+        celdas = np.hstack([np.full((n_celdas, 1), 8, dtype=np.int64), malla.conectividad.astype(np.int64)]).ravel()
+        tipos = np.full(n_celdas, pv.CellType.HEXAHEDRON, dtype=np.uint8)
+        grid = pv.UnstructuredGrid(celdas, tipos, np.asarray(malla.coordenadas, dtype=float))
+        grid.point_data["esfuerzo"] = np.asarray(valores, dtype=float)
+
+        self.remove_actor("ESFUERZOS", render=False)
+        self.remove_scalar_bar_si_existe()
+        self._actor_esfuerzos = self.add_mesh(
+            grid,
+            scalars="esfuerzo",
+            cmap=cmap,
+            clim=list(rango) if rango else None,
+            show_edges=False,
+            name="ESFUERZOS",
+            pickable=True,
+            scalar_bar_args={"title": "MPa", "vertical": True, "n_labels": 8, "fmt": "%.2f",
+                             "title_font_size": 16, "label_font_size": 14},
+        )
+        self._grid_esfuerzos = grid
+        self._valores_esfuerzos = np.asarray(valores, dtype=float)
+        self._barra_de_celda = list(barra_de_celda)
+        self._titulo_esfuerzos = titulo
+        self.remove_actor("TEXTO_ESFUERZOS", render=False)
+        if texto:
+            self.add_text(texto, position="upper_left", font_size=11, color="black", name="TEXTO_ESFUERZOS")
+        self.render()
+
+    def remove_scalar_bar_si_existe(self) -> None:
+        for titulo in list(self.scalar_bars.keys()):
+            self.remove_scalar_bar(titulo, render=False)
+
+    def volver_al_modelo(self, reconstruir: bool = False) -> None:
+        """Vuelve a la vista del modelo (o la reconstruye desde cero)."""
+
+        self._vista = "MODELO"
+        if reconstruir:
+            self._limpiar_escena()
+            self.add_axes()
+            self._reconstruir_visuales()
+            self._seleccion = []
+        else:
+            self.remove_actor("ESFUERZOS", render=False)
+            self.remove_actor("TEXTO_ESFUERZOS", render=False)
+            self.remove_scalar_bar_si_existe()
+            for visual in self._visuales.values():
+                visual.actor.GetProperty().SetOpacity(OPACIDAD_PLANOS if visual.tipo in ("LOSA", "MURO") else 1.0)
+        self._aplicar_visibilidad()
+        self._grid_esfuerzos = None
+        self._pintar_seleccion()
+
+    @property
+    def vista(self) -> str:
+        return self._vista
+
+    def _sondear(self, x: int, y: int) -> None:
+        """Muestra el valor del esfuerzo en el punto bajo el cursor."""
+
+        if self._grid_esfuerzos is None or self._actor_esfuerzos is None:
+            return
+        if not self._picker.Pick(x, y, 0, self.renderer) or self._picker.GetActor() is not self._actor_esfuerzos:
+            return
+        celda = self._picker.GetCellId()
+        punto = np.array(self._picker.GetPickPosition())
+        ids = np.array(self._grid_esfuerzos.get_cell(celda).point_ids)
+        cercano = ids[np.argmin(np.linalg.norm(self._grid_esfuerzos.points[ids] - punto, axis=1))]
+        barra = self._barra_de_celda[celda] if celda < len(self._barra_de_celda) else "?"
+        self.punto_sondeado.emit(
+            f"{self._titulo_esfuerzos}: {self._valores_esfuerzos[cercano]:.3f} — barra {barra} "
+            f"(en x={punto[0]:.2f}, y={punto[1]:.2f}, z={punto[2]:.2f} m)"
+        )
+
+
+def _puntos_en_cara(puntos: np.ndarray, n: int) -> List[np.ndarray]:
+    """Cuadrícula de n×n puntos dentro de una cara plana (para dibujar
+    las flechas de una carga de área)."""
+
+    from shapely.geometry import Point, Polygon
+
+    centro = puntos.mean(axis=0)
+    u = puntos[1] - puntos[0]
+    u = u / np.linalg.norm(u)
+    v = np.cross(normal_losa(puntos), u)
+    plano = [((p - centro) @ u, (p - centro) @ v) for p in puntos]
+    poligono = Polygon(plano)
+    (a0, b0, a1, b1) = poligono.bounds
+    resultado = []
+    for i in range(n):
+        for j in range(n):
+            a = a0 + (i + 0.5) * (a1 - a0) / n
+            b = b0 + (j + 0.5) * (b1 - b0) / n
+            if poligono.contains(Point(a, b)):
+                resultado.append(centro + a * u + b * v)
+    return resultado

@@ -136,3 +136,72 @@ def crear_ifc_prueba(ruta: str) -> None:
     model.create_entity("IfcRelContainedInSpatialStructure", GlobalId=guid.new(), RelatingStructure=piso, RelatedElements=[losa])
 
     model.write(ruta)
+
+
+def crear_ifc_portico(ruta: str) -> None:
+    """Edificio de un vano y un piso, como saldría de Revit: 4 columnas de
+    0,4 x 0,4 m (ejes en (0,0), (4,0), (4,6), (0,6); altura 3 m), 4 vigas de
+    0,3 x 0,5 m (altura vertical) que terminan en las CARAS de las columnas
+    (no en sus ejes), y una losa de 4 x 6 m con su cara superior en z = 3.
+    """
+
+    model = ifcopenshell.file(schema="IFC4")
+    longitud = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Name="METRE")
+    unidades = model.create_entity("IfcUnitAssignment", Units=[longitud])
+    origen = model.create_entity("IfcAxis2Placement3D", Location=model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0, 0.0)))
+    contexto = model.create_entity(
+        "IfcGeometricRepresentationContext", ContextType="Model", CoordinateSpaceDimension=3,
+        Precision=1e-5, WorldCoordinateSystem=origen,
+    )
+    proyecto = model.create_entity(
+        "IfcProject", GlobalId=guid.new(), Name="Pórtico de prueba", UnitsInContext=unidades, RepresentationContexts=[contexto]
+    )
+    sitio = model.create_entity("IfcSite", GlobalId=guid.new(), Name="Sitio", ObjectPlacement=_placement(model))
+    edificio = model.create_entity("IfcBuilding", GlobalId=guid.new(), Name="Edificio", ObjectPlacement=_placement(model))
+    piso = model.create_entity("IfcBuildingStorey", GlobalId=guid.new(), Name="Piso 1", ObjectPlacement=_placement(model))
+    model.create_entity("IfcRelAggregates", GlobalId=guid.new(), RelatingObject=proyecto, RelatedObjects=[sitio])
+    model.create_entity("IfcRelAggregates", GlobalId=guid.new(), RelatingObject=sitio, RelatedObjects=[edificio])
+    model.create_entity("IfcRelAggregates", GlobalId=guid.new(), RelatingObject=edificio, RelatedObjects=[piso])
+
+    material = _material_con_propiedades(model, "HORMIGON_ARMADO", 2.5e10, 0.2, 2400.0)
+
+    def asociar(elemento, relacionado):
+        model.create_entity("IfcRelAssociatesMaterial", GlobalId=guid.new(), RelatingMaterial=relacionado, RelatedObjects=[elemento])
+        model.create_entity("IfcRelContainedInSpatialStructure", GlobalId=guid.new(), RelatingStructure=piso, RelatedElements=[elemento])
+
+    esquinas = [(0.0, 0.0), (4.0, 0.0), (4.0, 6.0), (0.0, 6.0)]
+    for i, (x, y) in enumerate(esquinas, start=1):
+        _, forma = _solido_extruido(model, contexto, 0.4, 0.4, 3.0)
+        columna = model.create_entity(
+            "IfcColumn", GlobalId=guid.new(), Name=f"C{i}", ObjectPlacement=_placement(model, x, y, 0.0), Representation=forma
+        )
+        asociar(columna, material)
+
+    # Vigas: ejes a z = 2,75 (cara superior a ras de la parte alta de las
+    # columnas); terminan 0,2 m antes del eje de cada columna.
+    perfil_viga, _ = _solido_extruido(model, contexto, 0.3, 0.5, 1.0, nombre_perfil="R30X50")
+    perfil_material = model.create_entity("IfcMaterialProfile", Profile=perfil_viga, Material=material)
+    conjunto = model.create_entity("IfcMaterialProfileSet", MaterialProfiles=[perfil_material])
+    uso = model.create_entity("IfcMaterialProfileSetUsage", ForProfileSet=conjunto, CardinalPoint=5)
+    tramos = [
+        ("B1", (0.2, 0.0), 3.6, (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),  # a lo largo de X en y=0
+        ("B2", (4.0, 0.2), 5.6, (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),  # a lo largo de Y en x=4
+        ("B3", (0.2, 6.0), 3.6, (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),  # a lo largo de X en y=6
+        ("B4", (0.0, 0.2), 5.6, (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),  # a lo largo de Y en x=0
+    ]
+    for nombre, (x, y), largo, eje, ref in tramos:
+        _, forma = _solido_extruido(model, contexto, 0.3, 0.5, largo, nombre_perfil="R30X50")
+        viga = model.create_entity(
+            "IfcBeam", GlobalId=guid.new(), Name=nombre,
+            ObjectPlacement=_placement(model, x, y, 2.75, axis=eje, ref_direction=ref), Representation=forma,
+        )
+        asociar(viga, uso)
+
+    # Losa: cara superior a z = 3,0 y espesor 0,2 (plano medio a z = 2,9).
+    _, forma_losa = _solido_extruido(model, contexto, 4.0, 6.0, 0.2)
+    losa = model.create_entity(
+        "IfcSlab", GlobalId=guid.new(), Name="L1", ObjectPlacement=_placement(model, 2.0, 3.0, 2.8), Representation=forma_losa
+    )
+    asociar(losa, material)
+
+    model.write(ruta)

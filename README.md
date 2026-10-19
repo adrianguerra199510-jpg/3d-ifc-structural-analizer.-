@@ -6,22 +6,50 @@ una experiencia de uso inspirada en Autodesk Inventor Nastran.
 
 ## Alcance de la Fase 1
 
-- Importar un IFC con `ifcopenshell` y listar vigas, columnas y losas (ID,
-  nombre, nodos, perfil, material, espesor).
-- Visualizar la geometría en 3D con PyVista y seleccionar elementos/caras.
-- Asignar **cargas de área** (kPa) sobre losas, transferidas a vigas por
-  **áreas tributarias** (modo por defecto). Asignar cargas lineales y
-  puntuales sobre vigas.
-- Asignar apoyos en nodos.
-- Definir casos de carga y al menos una combinación.
-- Generar un `.inp` de CalculiX con elementos **B31** para vigas/columnas,
-  material elástico lineal, secciones y cargas.
-- Ejecutar `ccx` mediante `subprocess` y verificar que terminó con éxito.
-- Leer el `.dat` con N, V, M por elemento y mostrarlos en tabla y diagrama.
+- Importar un IFC con `ifcopenshell` y listar vigas, columnas y losas. Los
+  extremos de vigas y columnas que quedan a menos de 0,4 m se conectan
+  automáticamente y las vigas que sostienen cada losa se detectan solas.
+- Visualizar la geometría en 3D (sólidos reales) y **seleccionar con el mouse**
+  elementos completos o **caras** de los elementos.
+- Asignar **apoyos y cargas sobre lo seleccionado** (ver «Cómo se usa»).
+- Casos de carga D y L y combinaciones ACI 318 creados por defecto (editables).
+- Generar el `.inp` de CalculiX con elementos **B31** y ejecutar `ccx`.
+- Mostrar **solo esfuerzos** (von Mises, σ1, σ3, τmax) en MPa como mapa de
+  colores sobre el sólido de cada barra, por caso, por combinación o como
+  envolvente de combinaciones. No se muestran fuerzas, desplazamientos ni
+  reacciones.
 
 Fuera de alcance en esta fase: modo shell para losas (placas S4/S3), no
-linealidad, sismo, mallado de sólidos, reportes PDF. La arquitectura ya deja
-espacio para esas extensiones (ver `core/modelo.py::Losa.modo_analisis`).
+linealidad, sismo, mallado de sólidos, reportes PDF.
+
+## Cómo se usa
+
+1. **Importar IFC** (barra de herramientas).
+2. **Seleccionar** en el visor con clic izquierdo. Modo **Elemento** (toda la
+   viga/columna/losa) o modo **Cara** (una cara del sólido). `Ctrl`/`Shift` +
+   clic suma o quita elementos de la selección; clic en vacío deselecciona.
+   Para alcanzar la base de una columna use *Vistas ▾ → Inferior*.
+3. **Asignar apoyo**: con las caras extremas seleccionadas (base de columnas),
+   elija empotramiento, articulado o personalizado.
+4. **Asignar carga**: sobre la cara superior/inferior de una losa (presión en
+   kPa), sobre una viga o columna completa (kN/m, con dirección) o sobre sus
+   caras (presión; las caras laterales dan carga lineal, las extremas una
+   fuerza axial). Elija el caso de carga en el diálogo.
+5. **▶ ANALIZAR** (o `F5`): valida el modelo (estabilidad, barras sueltas,
+   losas sin vigas, etc.), ejecuta CalculiX por cada caso y abre la pestaña
+   **Esfuerzos**.
+6. En **Esfuerzos** elija resultado (caso, combinación o envolvente), la
+   magnitud, la escala (automática o manual en MPa) y haga clic en el modelo
+   para leer el valor en un punto. «Volver al modelo» regresa a la edición;
+   si cambia algo hay que volver a analizar.
+
+Limitaciones conocidas: CalculiX no detecta estructuras inestables, por eso la
+aplicación comprueba el equilibrio de cuerpo rígido antes de calcular; los
+esfuerzos en los extremos de las barras son extrapolados y pueden ser
+inexactos en los nudos (concentraciones); para barras inclinadas con giros
+restringidos CalculiX puede fallar y se muestra un diagnóstico; las cargas
+sobre muros no se transfieren y los apoyos solo se asignan en extremos de
+vigas y columnas.
 
 ## Transferencia de cargas de área → vigas (decisión de diseño)
 
@@ -109,15 +137,20 @@ src/ifc_structural/
 │   ├── modelo.py                 # Proyecto, Nodo, Material, Perfil, Viga, Columna, Losa, Muro
 │   ├── cargas.py                  # CargaPuntual, CargaLineal, CargaArea, Apoyo
 │   ├── casos_carga.py             # CasoCarga, Combinacion
-│   └── transferencia.py           # áreas tributarias (1 y 2 direcciones) + peso propio
+│   ├── transferencia.py           # áreas tributarias (1 y 2 direcciones) + peso propio
+│   ├── geometria.py               # sólidos y caras de cada elemento
+│   ├── asignacion.py              # selección → apoyos y cargas
+│   ├── vigas_soporte.py           # detección de vigas bajo cada losa
+│   └── conectividad.py            # unión de nodos cercanos
 ├── ifc/
 │   └── importador.py              # lectura de IFC con ifcopenshell
 ├── solver/
 │   ├── generador_inp.py           # escritura del .inp de CalculiX
 │   ├── ejecutor_ccx.py            # ejecución de ccx vía subprocess
-│   └── lector_resultados.py       # parseo del .dat (N, V, M, desplazamientos, reacciones)
+│XX
 ├── combinaciones/
-│   └── motor_superposicion.py     # superposición lineal de casos → combinaciones
+│   ├── motor_superposicion.py     # superposición lineal de tensores → combinaciones
+│   └── esfuerzos.py               # von Mises, principales, cortante máximo
 └── gui/
     ├── ventana_principal.py
     ├── visor_3d.py                 # widget PyVista + selección
@@ -125,5 +158,7 @@ src/ifc_structural/
     ├── dialogo_cargas.py
     ├── dialogo_apoyos.py
     ├── dialogo_casos.py
-    └── panel_resultados.py
+    ├── panel_resultados.py         # panel de esfuerzos
+    ├── panel_asignaciones.py
+    └── trabajador_analisis.py      # hilo del análisis
 ```

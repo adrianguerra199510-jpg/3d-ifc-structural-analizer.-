@@ -1,102 +1,133 @@
-"""Lectura de resultados de CalculiX: desplazamientos y fuerzas de sección.
+"""Lectura de resultados de CalculiX: malla expandida de las vigas y tensor
+de esfuerzos en cada uno de sus nodos.
 
-Ver el docstring de ``generador_inp.py`` (puntos 3 y 4) para la
-justificación de por qué las fuerzas internas y las reacciones se leen del
-.frd (bloque de fuerzas de sección) en vez del .dat: CalculiX no ofrece
-una opción de fuerzas de sección para ``*EL PRINT``.
+Con ``*EL FILE`` + ``S`` (ver ``generador_inp.py``, punto 3) CalculiX
+escribe en el .frd (ASCII) la malla expandida de las vigas B31 —
+hexaedros de 8 nodos— y el tensor de esfuerzos nodal. Los hexaedros
+conservan el número del elemento B31 del que provienen, lo que permite
+asociar cada celda con su barra.
 
-Formato del .frd relevante aquí (``*EL FILE, OUTPUT=2D, SECTION FORCES``,
-confirmado empíricamente con CalculiX 2.21): es un archivo de texto con
-bloques delimitados por líneas que empiezan con ``-4`` (encabezado de
-bloque, p. ej. ``" -4  STRESS      6    1"``) y terminan en una línea
-``-3``. Dentro del bloque, cada línea de datos empieza con ``-1`` y tiene
-el id de nodo en las columnas 4-13 seguido de N valores de 12 caracteres
-cada uno (formato Fortran ``E12.5``), sin separador entre ellos (los
-signos "pegan" los números), por lo que se debe parsear por ancho fijo y
-no por separación en espacios.
+Formato del .frd (confirmado empíricamente con CalculiX 2.21): bloques
+delimitados por líneas ``-4`` (encabezado de variable) y ``-3`` (fin).
+Cada línea de datos empieza con `` -1`` y tiene el identificador en las
+columnas 4-13 seguido de valores de 12 caracteres (formato ``E12.5``) sin
+separador entre ellos (los signos "pegan" los números), por lo que se
+parsea por ancho fijo y no por separación en espacios.
 
-Para "fuerzas de sección" (SECTION FORCES), las 6 columnas del .frd
-(etiquetadas SXX,SYY,SZZ,SXY,SYZ,SZX por herencia del formato de
-tensores) representan, según el manual de CalculiX:
-
-    SXX -> V1 (cortante, dirección local 1)
-    SYY -> V2 (cortante, dirección local 2)
-    SZZ -> N  (fuerza normal/axial)
-    SXY -> T  (momento torsor)
-    SYZ -> M1 (momento flector respecto del eje local 1)
-    SZX -> M2 (momento flector respecto del eje local 2)
+- Bloque ``2C``: nodos (id + x, y, z).
+- Bloque ``3C``: elementos. Línea `` -1`` (id, tipo, grupo, material)
+  seguida de una línea `` -2`` con los ids de sus nodos (campos de 10
+  caracteres). Tipo 1 = hexaedro de 8 nodos.
+- Bloque ``-4  STRESS``: SXX, SYY, SZZ, SXY, SYZ, SZX por nodo.
 """
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
-Vector3 = Tuple[float, float, float]
-Vector6 = Tuple[float, float, float, float, float, float]
+import numpy as np
 
 _ANCHO_CAMPO = 12
 _INICIO_VALORES = 13
-_LARGO_CAMPO_NODO = 10
-
-
-@dataclass
-class ResultadosCaso:
-    """Resultados crudos (por nodo de la malla ccx) de un caso de carga."""
-
-    desplazamientos: Dict[int, Vector3] = field(default_factory=dict)
-    fuerzas_seccion: Dict[int, Vector6] = field(default_factory=dict)
+_LARGO_ID = 10
+_TIPO_HEXAEDRO_8 = 1
 
 
 class ErrorLecturaResultados(ValueError):
     pass
 
 
-def leer_desplazamientos_dat(ruta_dat: Path) -> Dict[int, Vector3]:
-    """Lee el bloque "displacements (vx,vy,vz)" del .dat de CalculiX."""
+@dataclass
+class MallaTensiones:
+    """Malla expandida (hexaedros) sobre la que se evalúan los esfuerzos."""
 
-    texto = ruta_dat.read_text(encoding="utf-8", errors="ignore")
-    resultado: Dict[int, Vector3] = {}
-    match = re.search(r"displacements[^\n]*\n\n(.*?)(?:\n\s*\n|\Z)", texto, re.S)
-    if not match:
-        return resultado
-    for linea in match.group(1).splitlines():
-        partes = linea.split()
-        if len(partes) != 4:
-            continue
-        try:
-            nodo = int(partes[0])
-            resultado[nodo] = (float(partes[1]), float(partes[2]), float(partes[3]))
-        except ValueError:
-            continue
-    return resultado
+    ids_nodos: np.ndarray  # (N,) etiquetas de nodo de ccx, ascendentes
+    coordenadas: np.ndarray  # (N, 3)
+    ids_elementos: np.ndarray  # (M,) coinciden con los ids de ElementoMalla
+    conectividad: np.ndarray  # (M, 8) índices 0-based en ``ids_nodos``
+
+    @property
+    def n_nodos(self) -> int:
+        return len(self.ids_nodos)
 
 
-def _parsear_linea_ancho_fijo(linea: str, n_valores: int) -> Tuple[int, List[float]]:
-    nodo = int(linea[3 : 3 + _LARGO_CAMPO_NODO])
+def _parsear_valores(linea: str, n_valores: int) -> List[float]:
     valores = []
     inicio = _INICIO_VALORES
     for _ in range(n_valores):
-        campo = linea[inicio : inicio + _ANCHO_CAMPO]
-        valores.append(float(campo))
+        valores.append(float(linea[inicio : inicio + _ANCHO_CAMPO]))
         inicio += _ANCHO_CAMPO
-    return nodo, valores
+    return valores
 
 
-def leer_fuerzas_seccion_frd(ruta_frd: Path) -> Dict[int, Vector6]:
-    """Lee el bloque de fuerzas de sección (SECTION FORCES) del .frd.
+def leer_malla_frd(ruta_frd: Path) -> MallaTensiones:
+    """Lee la malla expandida (nodos y hexaedros) del .frd."""
 
-    Devuelve, por nodo de la malla ccx, la tupla ``(N, V1, V2, T, M1, M2)``
-    ya reordenada según la convención documentada en el docstring del
-    módulo (y verificada empíricamente).
-    """
+    lineas = ruta_frd.read_text(encoding="utf-8", errors="ignore").splitlines()
 
-    texto = ruta_frd.read_text(encoding="utf-8", errors="ignore")
-    resultado: Dict[int, Vector6] = {}
+    ids_nodos: List[int] = []
+    coordenadas: List[List[float]] = []
+    elementos: Dict[int, List[int]] = {}
+
+    bloque = None
+    elemento_actual = None
+    for linea in lineas:
+        if linea.startswith("    2C"):
+            bloque = "NODOS"
+            continue
+        if linea.startswith("    3C"):
+            bloque = "ELEMENTOS"
+            continue
+        if linea.startswith(" -3"):
+            bloque = None
+            continue
+        if bloque == "NODOS" and linea.startswith(" -1"):
+            ids_nodos.append(int(linea[3 : 3 + _LARGO_ID]))
+            coordenadas.append(_parsear_valores(linea, 3))
+        elif bloque == "ELEMENTOS":
+            if linea.startswith(" -1"):
+                id_el = int(linea[3 : 3 + _LARGO_ID])
+                tipo = int(linea[13:18])
+                if tipo != _TIPO_HEXAEDRO_8:
+                    raise ErrorLecturaResultados(
+                        f"Tipo de elemento no soportado en el .frd: {tipo} (se esperaba 1, hexaedro de 8 nodos)"
+                    )
+                elemento_actual = id_el
+                elementos[id_el] = []
+            elif linea.startswith(" -2") and elemento_actual is not None:
+                campos = linea[3:]
+                elementos[elemento_actual].extend(
+                    int(campos[i : i + _LARGO_ID]) for i in range(0, len(campos.rstrip()), _LARGO_ID)
+                )
+
+    if not ids_nodos or not elementos:
+        raise ErrorLecturaResultados(f"El archivo {ruta_frd.name} no contiene malla expandida (nodos/elementos).")
+
+    ids = np.array(ids_nodos, dtype=np.int64)
+    orden = np.argsort(ids)
+    ids = ids[orden]
+    coords = np.array(coordenadas, dtype=float)[orden]
+
+    ids_el = np.array(sorted(elementos), dtype=np.int64)
+    conectividad = np.array([elementos[i] for i in ids_el], dtype=np.int64)
+    indices = np.searchsorted(ids, conectividad)
+    if not np.array_equal(ids[indices], conectividad):
+        raise ErrorLecturaResultados("La conectividad del .frd referencia nodos inexistentes.")
+
+    return MallaTensiones(ids_nodos=ids, coordenadas=coords, ids_elementos=ids_el, conectividad=indices)
+
+
+def leer_tensiones_frd(ruta_frd: Path, malla: MallaTensiones) -> np.ndarray:
+    """Tensor de esfuerzos nodal, (N, 6) en el orden SXX, SYY, SZZ, SXY,
+    SYZ, SZX y en el orden de ``malla.ids_nodos`` (unidades: kPa si el
+    modelo está en kN y m)."""
+
+    lineas = ruta_frd.read_text(encoding="utf-8", errors="ignore").splitlines()
+    por_nodo: Dict[int, List[float]] = {}
     en_bloque = False
-    for linea in texto.splitlines():
+    for linea in lineas:
         if linea.startswith(" -4"):
             en_bloque = "STRESS" in linea
             continue
@@ -104,17 +135,14 @@ def leer_fuerzas_seccion_frd(ruta_frd: Path) -> Dict[int, Vector6]:
             en_bloque = False
             continue
         if en_bloque and linea.startswith(" -1"):
-            try:
-                nodo, valores = _parsear_linea_ancho_fijo(linea, 6)
-            except (ValueError, IndexError):
-                continue
-            sxx, syy, szz, sxy, syz, szx = valores
-            resultado[nodo] = (szz, sxx, syy, sxy, syz, szx)  # N,V1,V2,T,M1,M2
-    return resultado
+            por_nodo[int(linea[3 : 3 + _LARGO_ID])] = _parsear_valores(linea, 6)
 
+    if not por_nodo:
+        raise ErrorLecturaResultados(f"El archivo {ruta_frd.name} no contiene el bloque de esfuerzos (STRESS).")
 
-def leer_resultados_caso(ruta_dat: Path, ruta_frd: Path) -> ResultadosCaso:
-    return ResultadosCaso(
-        desplazamientos=leer_desplazamientos_dat(ruta_dat),
-        fuerzas_seccion=leer_fuerzas_seccion_frd(ruta_frd),
-    )
+    faltantes = [n for n in malla.ids_nodos if n not in por_nodo]
+    if faltantes:
+        raise ErrorLecturaResultados(
+            f"Faltan esfuerzos en {len(faltantes)} nodos de la malla (p. ej. el nodo {faltantes[0]})."
+        )
+    return np.array([por_nodo[n] for n in malla.ids_nodos], dtype=float)

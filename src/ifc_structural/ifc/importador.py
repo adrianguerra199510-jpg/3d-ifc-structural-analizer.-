@@ -55,7 +55,9 @@ import ifcopenshell.geom
 import ifcopenshell.util.element as util_element
 import ifcopenshell.util.unit as util_unit
 
+from ..core.conectividad import conectar_nodos
 from ..core.modelo import DireccionLosa, Material, ModoAnalisisLosa, PerfilSeccion, Proyecto
+from ..core.vigas_soporte import asignar_vigas_soporte
 
 logger = logging.getLogger(__name__)
 
@@ -237,33 +239,66 @@ def _torsion_rectangular(ancho: float, altura: float) -> float:
     return max(beta * b**3 * h, 1e-9)
 
 
-def _obtener_o_crear_perfil(proyecto: Proyecto, elemento, vertices: np.ndarray) -> str:
+def _elegir_orientacion(ejes: np.ndarray, minimos: np.ndarray, maximos: np.ndarray, altura_perfil: Optional[float]):
+    """Elige hacia dónde apunta la altura de la sección (``vector_n1``).
+
+    Las dos direcciones transversales de la caja orientada son ``ejes[:, 1]``
+    y ``ejes[:, 2]``. Si se conoce la altura real del perfil, se usa la
+    dirección cuya extensión medida es más parecida; si no (o si la sección
+    es cuadrada), en vigas se toma la más vertical y en columnas la de mayor
+    extensión. Devuelve (n1, altura, ancho) medidos sobre la geometría.
+    """
+
+    direcciones = [ejes[:, 1], ejes[:, 2]]
+    extensiones = [float(maximos[1] - minimos[1]), float(maximos[2] - minimos[2])]
+    if altura_perfil is not None and abs(extensiones[0] - extensiones[1]) > 1e-3:
+        k = 0 if abs(extensiones[0] - altura_perfil) <= abs(extensiones[1] - altura_perfil) else 1
+    elif abs(ejes[2, 0]) > 0.7:  # columna (eje principal casi vertical)
+        k = int(np.argmax(extensiones))
+    else:  # viga: la dirección transversal más vertical
+        k = 0 if abs(direcciones[0][2]) >= abs(direcciones[1][2]) else 1
+    n1 = direcciones[k] if direcciones[k][2] >= 0 else -direcciones[k]
+    return tuple(float(c) for c in n1), extensiones[k], extensiones[1 - k]
+
+
+def _obtener_o_crear_perfil(proyecto: Proyecto, elemento, vertices: np.ndarray):
+    """Devuelve (nombre del perfil, vector_n1 de la barra)."""
+
+    _, ejes, minimos, maximos = _pca(vertices)
     real = _perfil_real_desde_material(elemento)
     if real is not None:
         nombre, area, iy, iz, it, altura, ancho = real
-        clave = f"{nombre}"
-        if clave not in proyecto.perfiles:
+        n1, _, _ = _elegir_orientacion(ejes, minimos, maximos, altura)
+        if nombre not in proyecto.perfiles:
             proyecto.agregar_perfil(
                 PerfilSeccion(
-                    nombre=clave, area=area, inercia_y=iy, inercia_z=iz,
+                    nombre=nombre, area=area, inercia_y=iy, inercia_z=iz,
                     inercia_torsional=it, altura=altura, ancho=ancho,
                 )
             )
-        return clave
+        return nombre, n1
 
-    # Sin perfil real: aproximar con la OBB de la geometría (ver docstring).
-    _, _, minimos, maximos = _pca(vertices)
-    extensiones = sorted(maximos - minimos)
-    ancho, altura = extensiones[0], extensiones[1]
-    area = ancho * altura
-    iy = ancho * altura**3 / 12.0
-    iz = altura * ancho**3 / 12.0
-    it = _torsion_rectangular(ancho, altura)
+    # Sin perfil real: aproximar con la caja orientada de la geometría.
+    n1, altura, ancho = _elegir_orientacion(ejes, minimos, maximos, None)
     nombre = f"APROX_{elemento.GlobalId}"
     proyecto.agregar_perfil(
-        PerfilSeccion(nombre=nombre, area=area, inercia_y=iy, inercia_z=iz, inercia_torsional=it, altura=altura, ancho=ancho)
+        PerfilSeccion(
+            nombre=nombre,
+            area=ancho * altura,
+            inercia_y=altura * ancho**3 / 12.0,
+            inercia_z=ancho * altura**3 / 12.0,
+            inercia_torsional=_torsion_rectangular(ancho, altura),
+            altura=altura,
+            ancho=ancho,
+        )
     )
-    return nombre
+    return nombre, n1
+
+
+def _limpiar(punto: np.ndarray) -> Tuple[float, float, float]:
+    """Coordenadas como floats de Python redondeados al micrómetro (sin -0.0)."""
+
+    return tuple(round(float(c), 6) + 0.0 for c in punto)
 
 
 def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: float, tipo: str) -> None:
@@ -276,21 +311,27 @@ def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: floa
     eje_principal = ejes[:, 0]
     punto_inicio = centro + eje_principal * minimos[0]
     punto_fin = centro + eje_principal * maximos[0]
+    # El sentido del eje principal de la PCA es arbitrario: las columnas se
+    # orientan siempre de la base (inicio) al tope (fin).
+    if tipo != "VIGA" and punto_fin[2] < punto_inicio[2]:
+        punto_inicio, punto_fin = punto_fin, punto_inicio
 
-    nodo_inicio = proyecto.nodo_o_existente(*punto_inicio)
-    nodo_fin = proyecto.nodo_o_existente(*punto_fin)
+    nodo_inicio = proyecto.nodo_o_existente(*_limpiar(punto_inicio))
+    nodo_fin = proyecto.nodo_o_existente(*_limpiar(punto_fin))
 
     material = _obtener_o_crear_material(proyecto, elemento)
-    perfil = _obtener_o_crear_perfil(proyecto, elemento, vertices)
+    perfil, n1 = _obtener_o_crear_perfil(proyecto, elemento, vertices)
 
     nombre = elemento.Name or elemento.GlobalId
     if tipo == "VIGA":
         proyecto.agregar_viga(
-            nodo_inicio.id, nodo_fin.id, material, perfil, nombre=nombre, ifc_guid=elemento.GlobalId
+            nodo_inicio.id, nodo_fin.id, material, perfil, nombre=nombre, ifc_guid=elemento.GlobalId,
+            vector_n1=n1,
         )
     else:
         proyecto.agregar_columna(
-            nodo_inicio.id, nodo_fin.id, material, perfil, nombre=nombre, ifc_guid=elemento.GlobalId
+            nodo_inicio.id, nodo_fin.id, material, perfil, nombre=nombre, ifc_guid=elemento.GlobalId,
+            vector_n1=n1,
         )
 
 
@@ -367,7 +408,7 @@ def _procesar_elemento_planar(proyecto: Proyecto, elemento, vertices: np.ndarray
     nodos_contorno_ids: List[str] = []
     for pu, pv in coords_2d:
         punto_3d = centro + eje_u * pu + eje_v * pv
-        nodo = proyecto.nodo_o_existente(*punto_3d)
+        nodo = proyecto.nodo_o_existente(*_limpiar(punto_3d))
         nodos_contorno_ids.append(nodo.id)
 
     material = _obtener_o_crear_material(proyecto, elemento)
@@ -392,10 +433,14 @@ def importar_ifc(ruta_ifc: str) -> Proyecto:
         _importar_barra(proyecto, elemento, ajustes, factor_longitud, "VIGA")
     for elemento in modelo_ifc.by_type("IfcColumn"):
         _importar_barra(proyecto, elemento, ajustes, factor_longitud, "COLUMNA")
+    unidos = conectar_nodos(proyecto)
+    if unidos:
+        logger.info("Se unieron %d extremos de barras que casi coincidían (idealización por ejes).", unidos)
     for elemento in modelo_ifc.by_type("IfcSlab"):
         _importar_losa(proyecto, elemento, ajustes, factor_longitud)
     for elemento in modelo_ifc.by_type("IfcWall"):
         _importar_muro(proyecto, elemento, ajustes, factor_longitud)
+    asignar_vigas_soporte(proyecto)
 
     logger.info(
         "Importación completa: %d vigas, %d columnas, %d losas, %d muros.",
