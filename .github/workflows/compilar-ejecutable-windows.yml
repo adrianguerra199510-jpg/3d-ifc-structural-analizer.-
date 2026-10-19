@@ -37,13 +37,10 @@ jobs:
             --onedir --windowed --noconfirm `
             --paths src `
             --collect-all ifcopenshell `
-            --collect-all pyvista `
+            --collect-data pyvista `
             --collect-all pyvistaqt `
-            --collect-all vtkmodules `
             --collect-all shapely `
-            --collect-all scipy `
-            --hidden-import PySide6.QtOpenGL `
-            src/ifc_structural/app.py
+            iniciar_app.py
 
       - name: Comprimir el ejecutable
         run: Compress-Archive -Path dist/AnalizadorEstructuralIFC -DestinationPath AnalizadorEstructuralIFC-windows.zip
