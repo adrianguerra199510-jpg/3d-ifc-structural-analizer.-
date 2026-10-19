@@ -1,0 +1,74 @@
+name: Compilar ejecutable de Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/confident-edison-t6vckl
+    paths:
+      - "src/**"
+      - "requirements.txt"
+      - ".github/workflows/compilar-ejecutable-windows.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  compilar:
+    runs-on: windows-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Compilar con PyInstaller
+        run: |
+          pyinstaller --name AnalizadorEstructuralIFC `
+            --onedir --windowed --noconfirm `
+            --paths src `
+            --collect-all ifcopenshell `
+            --collect-all pyvista `
+            --collect-all pyvistaqt `
+            --collect-all vtkmodules `
+            --collect-all shapely `
+            --collect-all scipy `
+            --hidden-import PySide6.QtOpenGL `
+            src/ifc_structural/app.py
+
+      - name: Comprimir el ejecutable
+        run: Compress-Archive -Path dist/AnalizadorEstructuralIFC -DestinationPath AnalizadorEstructuralIFC-windows.zip
+
+      - name: Publicar como artefacto de la ejecución
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnalizadorEstructuralIFC-windows
+          path: AnalizadorEstructuralIFC-windows.zip
+          retention-days: 90
+
+      - name: Publicar como release descargable
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ejecutable-windows
+          name: "Ejecutable de Windows (compilación automática)"
+          body: |
+            Ejecutable de Windows de la aplicación, generado automáticamente
+            por GitHub Actions a partir de la rama `claude/confident-edison-t6vckl`
+            (commit ${{ github.sha }}).
+
+            Esta es la Fase 1 del proyecto: requiere tener CalculiX (`ccx`)
+            instalado por separado y configurado en `config.json` (ver README).
+
+            Descargue `AnalizadorEstructuralIFC-windows.zip`, descomprímalo y
+            ejecute `AnalizadorEstructuralIFC.exe` dentro de la carpeta.
+          files: AnalizadorEstructuralIFC-windows.zip
+          prerelease: true

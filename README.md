@@ -55,6 +55,23 @@ Se calcula a partir de la densidad del material y el área de la sección (o el
 espesor para losas/muros) y se aplica como `*DLOAD` tipo `GRAV` en el caso de
 carga `D` (carga muerta).
 
+## Descargar el ejecutable de Windows
+
+No es necesario instalar Python para probar la aplicación en Windows: cada
+cambio en el código dispara automáticamente (vía GitHub Actions) la
+compilación de un ejecutable, publicado en la pestaña
+[**Releases**](../../releases/tag/ejecutable-windows) del repositorio como
+`AnalizadorEstructuralIFC-windows.zip`. Descomprímalo y ejecute
+`AnalizadorEstructuralIFC.exe`.
+
+Este ejecutable **no incluye CalculiX**: `ccx` debe instalarse por separado
+en Windows y su ruta configurarse en `config.json` (ver más abajo), ya que
+es un programa de terceros con su propia licencia/distribución.
+
+El flujo de compilación está en
+`.github/workflows/compilar-ejecutable-windows.yml` y puede dispararse
+manualmente desde la pestaña Actions ("Run workflow").
+
 ## Instalación
 
 ```bash
