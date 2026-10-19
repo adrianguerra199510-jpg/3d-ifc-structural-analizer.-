@@ -97,13 +97,19 @@ def test_resaltar_desde_el_visor_no_emite(panel):
     assert {c[1:] for c in panel.claves_seleccionadas()} == {("VIGA", "B1"), ("LOSA", "L1")}
 
 
-def test_filtro_muestra_coincidencias_y_sus_padres(panel):
+def test_filtro_deja_solo_coincidencias_y_sus_padres(panel):
+    panel.arbol.collapseAll()  # también con las ramas contraídas
     panel.buscador.setText("columna")
-    visibles = [k for k, v in _items(panel).items() if any(not i.isHidden() for i in v)]
-    assert ("ELEMENTO", "COLUMNA", "C1") in visibles
-    assert ("ELEMENTO", "VIGA", "B1") not in visibles
+    claves = set(_items(panel))
+    assert ("ELEMENTO", "COLUMNA", "C1") in claves
+    assert ("ELEMENTO", "VIGA", "B1") not in claves
+    assert ("GRUPO", "Elementos") in claves  # los padres se conservan
+    panel.buscador.setText("carga")
+    claves = set(_items(panel))
+    assert ("GRUPO", "Cargas") in claves and ("ASIGNACION", "Carga lineal", "C1") in claves
+    assert ("GRUPO", "Materiales") not in claves
     panel.buscador.setText("")
-    assert all(not i.isHidden() for v in _items(panel).values() for i in v)
+    assert ("ELEMENTO", "VIGA", "B1") in set(_items(panel))  # sin filtro vuelve todo
 
 
 def test_supr_elimina_asignaciones_seleccionadas(panel, app):

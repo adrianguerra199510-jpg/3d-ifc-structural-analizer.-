@@ -93,6 +93,7 @@ class PanelArbol(QWidget):
         self._abiertos: Set[tuple] = set()
         self._cerrados: Set[tuple] = set()
         self._destinos: Dict[tuple, List[Tuple[str, str]]] = {}
+        self._ultimo = None
 
         self.buscador = QLineEdit()
         self.buscador.setPlaceholderText("Buscar: B1, apoyo, carga, acero…")
@@ -185,8 +186,11 @@ class PanelArbol(QWidget):
         resultado=None,
         desactualizado: bool = False,
     ) -> None:
-        """Reconstruye el árbol conservando lo expandido y lo seleccionado."""
+        """Reconstruye el árbol conservando lo expandido y lo seleccionado
+        (y aplicando el filtro de búsqueda, si lo hay)."""
 
+        self._ultimo = (proyecto, apoyos, conexiones, casos, combinaciones, cargas_area, cargas_lineales,
+                        cargas_puntuales, resultado, desactualizado)
         seleccionadas = {self._clave(i) for i in self.arbol.selectedItems()}
         self._silencio = True
         self.arbol.clear()
@@ -334,9 +338,12 @@ class PanelArbol(QWidget):
 
         # -- estado: expandido y seleccionado --------------------------------------------------
         self._restaurar(self.arbol.invisibleRootItem(), seleccionadas)
-        self.arbol.resizeColumnToContents(0) if self.arbol.columnWidth(0) < 120 else None
+        texto = self.buscador.text().strip().lower()
+        if texto:  # solo quedan las coincidencias (y sus padres), todo expandido
+            for i in range(self.arbol.topLevelItemCount()):
+                self._podar(self.arbol.topLevelItem(i), texto, False)
+            self.arbol.expandAll()
         self._silencio = False
-        self._filtrar(self.buscador.text())
 
     @staticmethod
     def _clave(item: QTreeWidgetItem) -> tuple:
@@ -438,19 +445,19 @@ class PanelArbol(QWidget):
     # ------------------------------------------------------------------
     # Filtro
     # ------------------------------------------------------------------
-    def _filtrar(self, texto: str) -> None:
-        texto = texto.strip().lower()
+    def _filtrar(self, _texto: str = "") -> None:
+        """Rehace el árbol con el filtro actual (se reconstruye en vez de
+        ocultar filas: Qt dibuja mal las filas ocultas dentro de ramas contraídas)."""
 
-        def visible(item: QTreeWidgetItem, forzado: bool = False) -> bool:
-            propio = not texto or texto in item.text(0).lower() or texto in item.text(1).lower()
-            hijos = [visible(item.child(i), forzado or propio) for i in range(item.childCount())]
-            mostrar = forzado or propio or any(hijos)
-            item.setHidden(not mostrar)
-            if texto and any(hijos):
-                item.setExpanded(True)
-            return mostrar
+        if getattr(self, "_ultimo", None) is not None:
+            self.actualizar(*self._ultimo)
 
-        for i in range(self.arbol.topLevelItemCount()):
-            visible(self.arbol.topLevelItem(i))
-        self.arbol.doItemsLayout()
-        self.arbol.viewport().update()
+    def _podar(self, item: QTreeWidgetItem, texto: str, forzado: bool) -> bool:
+        """Quita los hijos que no coinciden con ``texto`` (si un elemento
+        coincide se conserva todo lo que cuelga de él). Devuelve si el ítem se conserva."""
+
+        propio = texto in item.text(0).lower() or texto in item.text(1).lower()
+        for i in reversed(range(item.childCount())):
+            if not self._podar(item.child(i), texto, forzado or propio):
+                item.takeChild(i)
+        return forzado or propio or item.childCount() > 0
