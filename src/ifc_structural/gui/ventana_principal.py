@@ -66,8 +66,7 @@ from .dialogo_materiales import DialogoAsignarMaterial, DialogoMateriales
 from .estilo import etiqueta_logo
 from .iconos import icono, icono_aplicacion, icono_blanco
 from .pagina_bienvenida import PaginaBienvenida
-from .panel_asignaciones import PanelAsignaciones
-from .panel_elementos import PanelElementos
+from .panel_arbol import PanelArbol
 from .panel_resultados import ENVOLVENTE, PanelEsfuerzos
 from .trabajador_analisis import TrabajadorAnalisis
 from .visor_3d import MODO_CARA, MODO_ELEMENTO, Visor3D
@@ -111,6 +110,7 @@ class VentanaPrincipal(QMainWindow):
 
         self.resultado: Optional[ResultadoAnalisis] = None
         self._resultado_desactualizado = False
+        self._desde_arbol = False  # la selección del visor la provocó el árbol (evita el bucle)
         self._worker: Optional[TrabajadorAnalisis] = None
         self._dialogo_progreso: Optional[QProgressDialog] = None
 
@@ -129,22 +129,18 @@ class VentanaPrincipal(QMainWindow):
         self.paginas.addWidget(self.contenedor_visor)
         self.setCentralWidget(self.paginas)
 
-        self.panel_elementos = PanelElementos(self)
-        dock_elementos = QDockWidget("Elementos del modelo", self)
+        self.panel_arbol = PanelArbol(self)
+        dock_elementos = QDockWidget("Modelo", self)
         self._docks = []
-        dock_elementos.setWidget(self.panel_elementos)
-        dock_elementos.setMinimumWidth(255)
+        dock_elementos.setWidget(self.panel_arbol)
+        dock_elementos.setMinimumWidth(300)
         self.addDockWidget(Qt.LeftDockWidgetArea, dock_elementos)
         self._docks.append(dock_elementos)
 
-        self.panel_asignaciones = PanelAsignaciones(self)
         self.panel_esfuerzos = PanelEsfuerzos(self)
-        self.pestanas = QTabWidget()
-        self.pestanas.addTab(self.panel_asignaciones, "Asignaciones")
-        self.pestanas.addTab(self.panel_esfuerzos, "Esfuerzos")
-        dock_derecho = QDockWidget("Asignaciones y resultados", self)
+        dock_derecho = QDockWidget("Resultados", self)
         dock_derecho.setMinimumWidth(320)
-        dock_derecho.setWidget(self.pestanas)
+        dock_derecho.setWidget(self.panel_esfuerzos)
         self.addDockWidget(Qt.RightDockWidgetArea, dock_derecho)
         self._docks.append(dock_derecho)
         for dock in self._docks:
@@ -339,8 +335,13 @@ class VentanaPrincipal(QMainWindow):
         self.visor.seleccion_cambiada.connect(self._al_cambiar_seleccion)
         self.visor.menu_contextual.connect(self._mostrar_menu_contextual)
         self.visor.punto_sondeado.connect(lambda texto: self.statusBar().showMessage(texto))
-        self.panel_elementos.elemento_seleccionado.connect(lambda tipo, id_: self.visor.seleccionar([Objetivo(tipo, id_)]))
-        self.panel_asignaciones.eliminar_solicitado.connect(self.eliminar_asignaciones)
+        self.panel_arbol.elementos_seleccionados.connect(self._seleccion_desde_arbol)
+        self.panel_arbol.eliminar_solicitado.connect(self.eliminar_asignaciones)
+        self.panel_arbol.menu_solicitado.connect(self._mostrar_menu_arbol)
+        self.panel_arbol.resultado_solicitado.connect(self._mostrar_resultado_de_arbol)
+        self.panel_arbol.editar_materiales.connect(self.gestionar_materiales)
+        self.panel_arbol.editar_casos.connect(self._gestionar_casos)
+        self.panel_arbol.propiedades_solicitadas.connect(self.mostrar_propiedades)
         self.panel_esfuerzos.cambio.connect(self.mostrar_esfuerzos)
         self.panel_esfuerzos.volver_al_modelo.connect(self.volver_al_modelo)
 
@@ -374,6 +375,8 @@ class VentanaPrincipal(QMainWindow):
         self.accion_ver_esfuerzos.setEnabled(self.resultado is not None)
 
     def _al_cambiar_seleccion(self, objetivos: List[Objetivo]) -> None:
+        if not self._desde_arbol:
+            self.panel_arbol.resaltar(list(dict.fromkeys((o.tipo, o.id) for o in objetivos)))
         if not objetivos:
             self._etiqueta_seleccion.setText("Sin selección")
             return
@@ -472,11 +475,11 @@ class VentanaPrincipal(QMainWindow):
         self.panel_esfuerzos.mostrar_resumen("Ejecute el análisis para ver los esfuerzos.", {})
 
         self.paginas.setCurrentWidget(self.contenedor_visor)  # sale de la pantalla de inicio
-        for dock in self._docks:
-            dock.show()
-        self.resizeDocks(self._docks, [300, 360], Qt.Horizontal)
+        self._docks[0].show()  # el panel de resultados aparece al analizar
+        self._docks[1].hide()
+        self.resizeDocks(self._docks[:1], [380], Qt.Horizontal)
         self.visor.mostrar_modelo(proyecto)
-        self.panel_elementos.actualizar(proyecto)
+        self._refrescar_arbol()
         self._actualizar_combo_caso()
         self.accion_ver_modelo.setChecked(True)
         self._refrescar_asignaciones()
@@ -525,6 +528,7 @@ class VentanaPrincipal(QMainWindow):
     def _marcar_resultados_desactualizados(self) -> None:
         if self.resultado is not None and not self._resultado_desactualizado:
             self._resultado_desactualizado = True
+            self._refrescar_arbol()
             self.statusBar().showMessage(
                 "Los esfuerzos mostrados son anteriores a los últimos cambios: vuelva a pulsar ANALIZAR."
             )
@@ -595,7 +599,7 @@ class VentanaPrincipal(QMainWindow):
         except ErrorAsignacion as exc:
             QMessageBox.warning(self, "No se pudo asignar el material", str(exc))
             return
-        self.panel_elementos.actualizar(self.proyecto)
+        self._refrescar_arbol()
         self._marcar_resultados_desactualizados()
         self.statusBar().showMessage(f"Material «{dialogo.material_elegido()}» asignado a {len(cambiados)} elemento(s).")
 
@@ -603,7 +607,7 @@ class VentanaPrincipal(QMainWindow):
         dialogo = DialogoMateriales(self.proyecto, self)
         if dialogo.exec():
             self.proyecto.materiales = dialogo.resultado()
-            self.panel_elementos.actualizar(self.proyecto)
+            self._refrescar_arbol()
             self._marcar_resultados_desactualizados()
             self.statusBar().showMessage(f"{len(self.proyecto.materiales)} material(es) definidos.")
 
@@ -725,23 +729,86 @@ class VentanaPrincipal(QMainWindow):
             self.cargas_puntuales_por_caso.get(caso, []),
             self.conexiones,
         )
-        nombres_gdl = {1: "Ux", 2: "Uy", 3: "Uz", 4: "Rx", 5: "Ry", 6: "Rz"}
-        filas = [
-            ("Apoyo de área" if isinstance(a, ApoyoArea) else "Apoyo", a.id,
-             f"{a.nombre} [{', '.join(nombres_gdl[g] for g in a.grados_restringidos())}]", "todos")
-            for a in self.apoyos
-        ]
-        filas += [
-            ("Conexión", c.id, f"{c.nombre} [{c.tipo.lower()}: {', '.join(nombres_gdl[g] for g in c.grados_transmitidos())}]", "todos")
-            for c in self.conexiones
-        ]
-        for tipo, por_caso in (
-            ("Carga de área", self.cargas_area_por_caso),
-            ("Carga lineal", self.cargas_lineales_por_caso),
-            ("Carga puntual", self.cargas_puntuales_por_caso),
-        ):
-            filas += [(tipo, c.id, c.nombre, caso_id) for caso_id, lista in por_caso.items() for c in lista]
-        self.panel_asignaciones.mostrar(filas)
+        self._refrescar_arbol()
+
+    # ------------------------------------------------------------------
+    # Árbol del modelo
+    # ------------------------------------------------------------------
+    def _refrescar_arbol(self) -> None:
+        self.panel_arbol.actualizar(
+            self.proyecto, self.apoyos, self.conexiones, self.casos, self.combinaciones,
+            self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso,
+            self.resultado, self._resultado_desactualizado,
+        )
+
+    def _seleccion_desde_arbol(self, elementos) -> None:
+        self._desde_arbol = True
+        try:
+            self.visor.seleccionar([Objetivo(tipo, id_) for tipo, id_ in elementos])
+        finally:
+            self._desde_arbol = False
+
+    def _mostrar_resultado_de_arbol(self, id_: str) -> None:
+        indice = self.panel_esfuerzos.combo_resultado.findData(id_)
+        if indice < 0 or self.resultado is None:
+            return
+        self.panel_esfuerzos.combo_resultado.setCurrentIndex(indice)
+        self._docks[1].show()
+        self.mostrar_esfuerzos()
+
+    def asignar_material_elegido(self, nombre: str) -> None:
+        try:
+            cambiados = asignar_material(self.proyecto, self.visor.seleccion, nombre)
+        except ErrorAsignacion as exc:
+            QMessageBox.warning(self, "No se pudo asignar el material", str(exc))
+            return
+        self._refrescar_arbol()
+        self._marcar_resultados_desactualizados()
+        self.statusBar().showMessage(f"Material «{nombre}» asignado a {len(cambiados)} elemento(s).")
+
+    def construir_menu_arbol(self, claves) -> Optional[QMenu]:
+        """Menú contextual del árbol según lo que se haya señalado."""
+
+        if not claves:
+            return None
+        tipos = {c[0] for c in claves}
+        grupos = {c[1] for c in claves if c[0] == "GRUPO"}
+        if tipos & {"ELEMENTO", "ASIGNACION"} and self.visor.seleccion:
+            menu = self.construir_menu_contextual()
+            asignaciones = [(c[1], c[2]) for c in claves if c[0] == "ASIGNACION"]
+            if asignaciones:
+                menu.addSeparator()
+                menu.addAction(icono("eliminar"), f"Eliminar {len(asignaciones)} asignación(es)",
+                               lambda a=asignaciones: self.eliminar_asignaciones(a))
+            return menu
+        menu = QMenu(self)
+        if "MATERIAL" in tipos:
+            nombre = next(c[1] for c in claves if c[0] == "MATERIAL")
+            accion = menu.addAction(icono("material"), f"Asignar «{nombre}» a la selección",
+                                    lambda n=nombre: self.asignar_material_elegido(n))
+            accion.setEnabled(bool(self.visor.seleccion))
+            menu.addAction(icono("materiales"), "Crear / editar materiales…", self.gestionar_materiales)
+        elif "RESULTADO" in tipos:
+            clave = next(c[1] for c in claves if c[0] == "RESULTADO")
+            menu.addAction(icono("esfuerzos"), "Mostrar en el visor", lambda c=clave: self._mostrar_resultado_de_arbol(c))
+        elif tipos & {"CASO", "COMBINACION"} or grupos & {"Casos de carga", "Combinaciones", "Caso"}:
+            menu.addAction(icono("casos"), "Casos de carga y combinaciones…", self._gestionar_casos)
+        elif "Materiales" in grupos:
+            menu.addAction(icono("materiales"), "Crear / editar materiales…", self.gestionar_materiales)
+        elif "Apoyos" in grupos:
+            menu.addAction(icono("apoyo"), "Asignar apoyo a la selección…", self.asignar_apoyo)
+        elif "Cargas" in grupos:
+            menu.addAction(icono("carga_dist"), "Asignar carga a la selección…", self.asignar_carga)
+        elif "Conexiones" in grupos:
+            menu.addAction(icono("conectar"), "Conectar elementos…", self.asignar_conexion)
+        else:
+            return None
+        return menu
+
+    def _mostrar_menu_arbol(self, claves) -> None:
+        menu = self.construir_menu_arbol(claves)
+        if menu is not None:
+            menu.exec(QCursor.pos())
 
     def _gestionar_casos(self) -> None:
         con_cargas = {
@@ -836,7 +903,8 @@ class VentanaPrincipal(QMainWindow):
         )
         self._actualizar_estado_de_acciones()
         self.accion_ver_esfuerzos.setChecked(True)
-        self.pestanas.setCurrentWidget(self.panel_esfuerzos)
+        self._docks[1].show()
+        self._refrescar_arbol()
         self.mostrar_esfuerzos()
         if resultado.advertencias:
             QMessageBox.warning(self, "Análisis completo, con advertencias", "\n\n".join(f"• {a}" for a in resultado.advertencias))

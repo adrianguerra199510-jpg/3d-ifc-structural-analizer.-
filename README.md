@@ -63,6 +63,11 @@ vigas y columnas.
 
 - **Pantalla de inicio** con los tres pasos (importar, asignar, analizar); los paneles
   aparecen al cargar un modelo y se reabren desde *Ver*.
+- **Panel único a la izquierda en forma de árbol** con todo el proyecto: elementos (con sus asignaciones colgando
+  de cada uno), apoyos, conexiones, cargas por caso, materiales, casos, combinaciones y resultados. Seleccionar
+  en el árbol selecciona en el visor y viceversa; clic derecho abre el menú de lo que se puede hacer, *Supr*
+  elimina asignaciones, doble clic en un resultado lo muestra, y hay un buscador. El panel de resultados
+  (a la derecha) aparece al analizar.
 - **Barra de herramientas agrupada** con iconos propios: archivo, modo de selección
   (elemento / cara), caso activo, asignaciones (apoyo, carga, material, conexión),
   materiales y casos, y el botón verde **ANALIZAR** (F5).
@@ -184,12 +189,10 @@ src/ifc_structural/
 └── gui/
     ├── ventana_principal.py
     ├── visor_3d.py                 # widget PyVista + selección
-    ├── panel_elementos.py
     ├── dialogo_cargas.py
     ├── dialogo_apoyos.py
     ├── dialogo_casos.py
     ├── panel_resultados.py         # panel de esfuerzos
-    ├── panel_asignaciones.py
     ├── trabajador_analisis.py      # hilo del análisis
     ├── iconos.py                   # logo e iconos SVG
     ├── estilo.py                   # paleta, estilo y hoja de estilos

@@ -150,6 +150,9 @@ CUERPOS: Dict[str, str] = {
     "advertencia": (
         '<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5" stroke="@A@"/><circle cx="12" cy="17.3" r=".8" fill="@A@" stroke="@A@"/>'
     ),
+    "expandir": '<path d="M7 5l5 5 5-5M7 12l5 5 5-5"/>',
+    "contraer": '<path d="M7 11l5-5 5 5M7 18l5-5 5 5"/>',
+    "buscar": '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21" stroke="@A@"/>',
     "correcto": '<circle cx="12" cy="12" r="9"/><path d="M7.8 12.4l2.9 2.9 5.6-6" stroke="@A@"/>',
 }
 
