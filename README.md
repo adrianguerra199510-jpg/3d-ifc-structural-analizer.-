@@ -91,22 +91,24 @@ Se calcula a partir de la densidad del material y el área de la sección (o el
 espesor para losas/muros) y se aplica como `*DLOAD` tipo `GRAV` en el caso de
 carga `D` (carga muerta).
 
-## Descargar el ejecutable de Windows
+## Versión portable para Windows (incluye CalculiX)
 
-No es necesario instalar Python para probar la aplicación en Windows: cada
-cambio en el código dispara automáticamente (vía GitHub Actions) la
-compilación de un ejecutable, publicado en la pestaña
-[**Releases**](../../releases/tag/ejecutable-windows) del repositorio como
-`AnalizadorEstructuralIFC-windows.zip`. Descomprímalo y ejecute
-`AnalizadorEstructuralIFC.exe`.
+La carpeta portable **no necesita instalar Python ni CalculiX**: trae el
+solver `ccx.exe` (CalculiX 2.21, licencia GPL, ver `herramientas/ccx/LEEME.txt`)
+y la aplicación lo encuentra sola.
 
-Este ejecutable **no incluye CalculiX**: `ccx` debe instalarse por separado
-en Windows y su ruta configurarse en `config.json` (ver más abajo), ya que
-es un programa de terceros con su propia licencia/distribución.
+- **Descargarla ya compilada**: pestaña [**Releases**](../../releases/tag/ejecutable-windows),
+  archivo `AnalizadorEstructuralIFC-portable.zip` (la genera GitHub Actions con
+  `.github/workflows/compilar-ejecutable-windows.yml`, ejecutando el mismo
+  script de abajo y una autoprueba de CalculiX).
+- **Compilarla uno mismo**: con Python 3.10–3.13 instalado, doble clic en
+  `COMPILAR_PORTABLE.bat`. Crea un entorno aislado, instala dependencias,
+  compila con PyInstaller, agrega `herramientas/ccx`, ejecuta la autoprueba y
+  deja `Portable/AnalizadorEstructuralIFC/` y `AnalizadorEstructuralIFC-portable.zip`.
 
-El flujo de compilación está en
-`.github/workflows/compilar-ejecutable-windows.yml` y puede dispararse
-manualmente desde la pestaña Actions ("Run workflow").
+`AnalizadorEstructuralIFC.exe --autoprueba` resuelve una viga en voladizo y la
+compara con la teoría de vigas (escribe `autoprueba.txt`): sirve para comprobar
+CalculiX en cualquier PC.
 
 ## Instalación
 
@@ -114,12 +116,13 @@ manualmente desde la pestaña Actions ("Run workflow").
 pip install -r requirements.txt
 ```
 
-CalculiX (`ccx`) debe estar instalado en el sistema. La ruta al ejecutable se
-configura en `config.json`:
+CalculiX (`ccx`) debe estar disponible: con `"ruta_ccx": "auto"` (valor por
+defecto, en `config.json`) se usa el de `herramientas/ccx` (Windows) o el que
+esté en el `PATH`. Para usar otro, escriba su ruta completa:
 
 ```json
 {
-  "ruta_ccx": "ccx"
+  "ruta_ccx": "auto"
 }
 ```
 

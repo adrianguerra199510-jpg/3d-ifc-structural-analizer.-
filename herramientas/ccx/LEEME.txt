@@ -1,0 +1,16 @@
+CalculiX (ccx) 2.21 para Windows de 64 bits
+===========================================
+
+Este directorio contiene el solver CalculiX CrunchiX (ccx.exe) y las
+bibliotecas que necesita (OpenBLAS, LAPACK, ARPACK y el runtime de MinGW/MSVC),
+tomados del paquete "calculix 2.21 (build h27aae45_3)" de conda-forge:
+https://conda.anaconda.org/conda-forge/win-64/calculix-2.21-h27aae45_3.conda
+
+CalculiX es software libre bajo licencia GPL v2 o posterior (autor: Guido
+Dhondt, http://www.calculix.de). El codigo fuente esta disponible en esa
+pagina y en https://github.com/conda-forge/calculix-feedstock . Las
+bibliotecas de runtime de GCC se distribuyen bajo GPL v3 con la excepcion de
+runtime (COPYING3 y COPYING.RUNTIME).
+
+La aplicacion busca automaticamente este ccx.exe (clave "ruta_ccx": "auto" en
+config.json). Para usar otro CalculiX, escriba su ruta completa en esa clave.

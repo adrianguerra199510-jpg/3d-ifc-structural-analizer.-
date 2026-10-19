@@ -525,7 +525,7 @@ class VentanaPrincipal(QMainWindow):
         def trabajo(avanzar):
             return ejecutar_analisis(
                 proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,
-                configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx, avanzar,
+                configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx_efectiva, avanzar,
             )
 
         self._worker = TrabajadorAnalisis(trabajo, self)

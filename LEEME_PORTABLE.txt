@@ -1,0 +1,26 @@
+ANALIZADOR ESTRUCTURAL 3D DESDE IFC - version portable
+======================================================
+
+Como usarlo
+-----------
+1. Descomprima esta carpeta donde quiera (escritorio, USB, red...).
+   No hace falta instalar nada: ni Python ni CalculiX.
+2. Ejecute AnalizadorEstructuralIFC.exe.
+3. "Importar IFC", seleccione elementos o caras con el mouse, asigne apoyos y
+   cargas, y pulse el boton verde ANALIZAR.
+
+Contenido
+---------
+AnalizadorEstructuralIFC.exe   El programa.
+ccx\                           CalculiX 2.21 (solver, licencia GPL) con sus DLL.
+config.json                    Configuracion. "ruta_ccx": "auto" usa el ccx\ incluido.
+trabajo_ccx\                   Se crea al analizar: archivos de calculo (se pueden borrar).
+
+Comprobar que CalculiX funciona en su PC
+----------------------------------------
+Desde una consola (cmd) en esta carpeta:
+    AnalizadorEstructuralIFC.exe --autoprueba
+Escribe autoprueba.txt con el resultado (debe decir CORRECTO).
+
+Si Windows muestra un error de DLL, instale "Visual C++ Redistributable
+2015-2022 (x64)" de Microsoft.

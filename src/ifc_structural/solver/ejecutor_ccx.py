@@ -82,11 +82,12 @@ def ejecutar_ccx(
             capture_output=True,
             text=True,
             timeout=tiempo_limite,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # sin ventana de consola en Windows
         )
     except FileNotFoundError as exc:
         raise ErrorEjecucionCcx(
             f"No se encontró el ejecutable de CalculiX ('{ruta_ejecutable}'). "
-            "Verifique la clave 'ruta_ccx' en config.json."
+            "Instálelo o indique su ruta en la clave 'ruta_ccx' de config.json."
         ) from exc
     except subprocess.TimeoutExpired as exc:
         raise ErrorEjecucionCcx(

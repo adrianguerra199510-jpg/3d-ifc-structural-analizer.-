@@ -1,5 +1,5 @@
 {
-  "ruta_ccx": "ccx",
+  "ruta_ccx": "auto",
   "directorio_trabajo": "./trabajo_ccx",
   "unidades": {
     "longitud": "m",

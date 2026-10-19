@@ -8,6 +8,8 @@ on:
     paths:
       - "src/**"
       - "requirements.txt"
+      - "herramientas/**"
+      - "COMPILAR_PORTABLE.bat"
       - ".github/workflows/compilar-ejecutable-windows.yml"
 
 permissions:
@@ -25,31 +27,30 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Instalar dependencias
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+      - name: Compilar la versión portable (mismo script que usa el usuario)
+        shell: cmd
+        run: echo N| call COMPILAR_PORTABLE.bat
 
-      - name: Compilar con PyInstaller
+      - name: Comprobar que se generó el portable con CalculiX
+        shell: pwsh
         run: |
-          pyinstaller --name AnalizadorEstructuralIFC `
-            --onedir --windowed --noconfirm `
-            --paths src `
-            --collect-all ifcopenshell `
-            --collect-data pyvista `
-            --collect-all pyvistaqt `
-            --collect-all shapely `
-            iniciar_app.py
+          if (-not (Test-Path Portable/AnalizadorEstructuralIFC/AnalizadorEstructuralIFC.exe)) { throw "Falta el .exe" }
+          if (-not (Test-Path Portable/AnalizadorEstructuralIFC/ccx/ccx.exe)) { throw "Falta ccx.exe" }
+          if (-not (Test-Path AnalizadorEstructuralIFC-portable.zip)) { throw "Falta el zip" }
 
-      - name: Comprimir el ejecutable
-        run: Compress-Archive -Path dist/AnalizadorEstructuralIFC -DestinationPath AnalizadorEstructuralIFC-windows.zip
+      - name: Autoprueba de CalculiX en el portable ya compilado
+        shell: pwsh
+        run: |
+          $exe = "Portable/AnalizadorEstructuralIFC/AnalizadorEstructuralIFC.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "--autoprueba" -Wait -PassThru
+          Get-Content Portable/AnalizadorEstructuralIFC/autoprueba.txt
+          if ($p.ExitCode -ne 0) { throw "La autoprueba de CalculiX falló (código $($p.ExitCode))" }
 
       - name: Publicar como artefacto de la ejecución
         uses: actions/upload-artifact@v4
         with:
-          name: AnalizadorEstructuralIFC-windows
-          path: AnalizadorEstructuralIFC-windows.zip
+          name: AnalizadorEstructuralIFC-portable
+          path: AnalizadorEstructuralIFC-portable.zip
           retention-days: 90
 
       - name: Publicar como release descargable
@@ -62,10 +63,9 @@ jobs:
             por GitHub Actions a partir de la rama `claude/confident-edison-t6vckl`
             (commit ${{ github.sha }}).
 
-            Esta es la Fase 1 del proyecto: requiere tener CalculiX (`ccx`)
-            instalado por separado y configurado en `config.json` (ver README).
+            Versión portable: **incluye CalculiX** (no hay que instalar nada).
 
-            Descargue `AnalizadorEstructuralIFC-windows.zip`, descomprímalo y
+            Descargue `AnalizadorEstructuralIFC-portable.zip`, descomprímalo y
             ejecute `AnalizadorEstructuralIFC.exe` dentro de la carpeta.
-          files: AnalizadorEstructuralIFC-windows.zip
+          files: AnalizadorEstructuralIFC-portable.zip
           prerelease: true

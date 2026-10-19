@@ -16,6 +16,10 @@ from .gui.ventana_principal import VentanaPrincipal
 
 
 def main() -> int:
+    if "--autoprueba" in sys.argv:
+        from .autoprueba import ejecutar_autoprueba
+
+        return ejecutar_autoprueba()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     app = QApplication(sys.argv)
     ventana = VentanaPrincipal()
