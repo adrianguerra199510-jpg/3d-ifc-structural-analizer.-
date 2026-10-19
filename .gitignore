@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Config local (puede contener rutas específicas de la máquina)
+config.json
+
+# Archivos de trabajo de CalculiX
+trabajo_ccx/
+*.inp
+*.dat
+*.frd
+*.cvg
+*.sta
+*.12d
+!ejemplos/**/*.inp
+
+.vscode/
+.idea/

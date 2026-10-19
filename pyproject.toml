@@ -1,0 +1,9 @@
+[project]
+name = "ifc-structural"
+version = "0.1.0"
+description = "Analizador estructural 3D a partir de modelos IFC, con solver CalculiX"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

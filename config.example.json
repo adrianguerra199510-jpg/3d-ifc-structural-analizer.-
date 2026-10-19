@@ -1,0 +1,9 @@
+{
+  "ruta_ccx": "ccx",
+  "directorio_trabajo": "./trabajo_ccx",
+  "unidades": {
+    "longitud": "m",
+    "fuerza": "kN",
+    "presion": "kPa"
+  }
+}
