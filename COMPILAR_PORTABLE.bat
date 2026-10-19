@@ -1,6 +1,8 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
+rem Algunos equipos no tienen System32 en el PATH (xcopy, powershell, etc. no se encuentran)
+set "PATH=%PATH%;%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem;%SystemRoot%\System32\WindowsPowerShell\v1.0"
 title Analizador Estructural IFC - Compilar version portable
 
 echo ===================================================
