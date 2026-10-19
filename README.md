@@ -38,7 +38,15 @@ linealidad, sismo, mallado de sólidos, reportes PDF.
 5. **▶ ANALIZAR** (o `F5`): valida el modelo (estabilidad, barras sueltas,
    losas sin vigas, etc.), ejecuta CalculiX por cada caso y abre la pestaña
    **Esfuerzos**.
-6. En **Esfuerzos** elija resultado (caso, combinación o envolvente), la
+6. **Casos y combinaciones** (botón de la barra o menú *Asignar*): formulario con
+   dos pestañas. En *Casos de carga* se crean con identificador, nombre y
+   tipo (D, L, W, E…). En *Combinaciones* se escribe el nombre y el **factor de
+   cada caso** (0 = no participa), o se parte de una plantilla ACI 318 /
+   AASHTO y se edita; se muestra la fórmula resultante («1.2·D + 1.6·L»).
+   «Guardar» confirma el formulario en la lista y «OK» aplica todo; «Cancelar»
+   no cambia nada. Al eliminar un caso se quita de las combinaciones y se
+   borran sus cargas (con aviso previo). Al asignar una carga se elige el caso.
+7. En **Esfuerzos** elija resultado (caso, combinación o envolvente), la
    magnitud, la escala (automática o manual en MPa) y haga clic en el modelo
    para leer el valor en un punto. «Volver al modelo» regresa a la edición;
    si cambia algo hay que volver a analizar.

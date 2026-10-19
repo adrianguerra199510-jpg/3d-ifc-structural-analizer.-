@@ -477,12 +477,24 @@ class VentanaPrincipal(QMainWindow):
         self.panel_asignaciones.mostrar(filas)
 
     def _gestionar_casos(self) -> None:
-        dialogo = DialogoCasos(self.casos, self.combinaciones, self)
-        if dialogo.exec():
-            self.casos, self.combinaciones = dialogo.resultado()
-            self._actualizar_combo_caso()
-            self._refrescar_asignaciones()
-            self._marcar_resultados_desactualizados()
+        con_cargas = {
+            caso_id
+            for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso)
+            for caso_id, lista in por_caso.items() if lista
+        }
+        dialogo = DialogoCasos(self.casos, self.combinaciones, con_cargas, self)
+        if not dialogo.exec():
+            return
+        self.casos, self.combinaciones = dialogo.resultado()
+        for caso_id in dialogo.casos_eliminados():
+            for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso):
+                por_caso.pop(caso_id, None)
+        self._actualizar_combo_caso()
+        self._refrescar_asignaciones()
+        self._marcar_resultados_desactualizados()
+        self.statusBar().showMessage(
+            f"{len(self.casos)} caso(s) de carga y {len(self.combinaciones)} combinación(es) definidos."
+        )
 
     # ------------------------------------------------------------------
     # Análisis
