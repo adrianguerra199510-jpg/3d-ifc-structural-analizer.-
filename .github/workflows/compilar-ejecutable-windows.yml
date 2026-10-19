@@ -34,16 +34,16 @@ jobs:
       - name: Comprobar que se generó el portable con CalculiX
         shell: pwsh
         run: |
-          if (-not (Test-Path Portable/AnalizadorEstructuralIFC/AnalizadorEstructuralIFC.exe)) { throw "Falta el .exe" }
-          if (-not (Test-Path Portable/AnalizadorEstructuralIFC/ccx/ccx.exe)) { throw "Falta ccx.exe" }
+          if (-not (Test-Path C:/AnalizadorEstructuralIFC_portable/AnalizadorEstructuralIFC/AnalizadorEstructuralIFC.exe)) { throw "Falta el .exe" }
+          if (-not (Test-Path C:/AnalizadorEstructuralIFC_portable/AnalizadorEstructuralIFC/ccx/ccx.exe)) { throw "Falta ccx.exe" }
           if (-not (Test-Path AnalizadorEstructuralIFC-portable.zip)) { throw "Falta el zip" }
 
       - name: Autoprueba de CalculiX en el portable ya compilado
         shell: pwsh
         run: |
-          $exe = "Portable/AnalizadorEstructuralIFC/AnalizadorEstructuralIFC.exe"
+          $exe = "C:/AnalizadorEstructuralIFC_portable/AnalizadorEstructuralIFC/AnalizadorEstructuralIFC.exe"
           $p = Start-Process -FilePath $exe -ArgumentList "--autoprueba" -Wait -PassThru
-          Get-Content Portable/AnalizadorEstructuralIFC/autoprueba.txt
+          Get-Content C:/AnalizadorEstructuralIFC_portable/AnalizadorEstructuralIFC/autoprueba.txt
           if ($p.ExitCode -ne 0) { throw "La autoprueba de CalculiX falló (código $($p.ExitCode))" }
 
       - name: Publicar como artefacto de la ejecución

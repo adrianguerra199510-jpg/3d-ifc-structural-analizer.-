@@ -104,7 +104,9 @@ y la aplicación lo encuentra sola.
 - **Compilarla uno mismo**: con Python 3.10–3.13 instalado, doble clic en
   `COMPILAR_PORTABLE.bat`. Crea un entorno aislado, instala dependencias,
   compila con PyInstaller, agrega `herramientas/ccx`, ejecuta la autoprueba y
-  deja `Portable/AnalizadorEstructuralIFC/` y `AnalizadorEstructuralIFC-portable.zip`.
+  deja la carpeta `C:\AnalizadorEstructuralIFC_portable\AnalizadorEstructuralIFC\` y, junto al `.bat`,
+  `AnalizadorEstructuralIFC-portable.zip`. Compila en rutas cortas de `C:\` porque
+  Windows limita las rutas a 260 caracteres y PySide6 tiene rutas muy profundas.
 
 `AnalizadorEstructuralIFC.exe --autoprueba` resuelve una viga en voladizo y la
 compara con la teoría de vigas (escribe `autoprueba.txt`): sirve para comprobar

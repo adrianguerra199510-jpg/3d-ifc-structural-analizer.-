@@ -14,6 +14,14 @@ echo le agrega CalculiX (ccx) y genera una carpeta portable
 echo y un .zip. La primera vez descarga varios cientos de MB
 echo y puede tardar 10-20 minutos. Se necesita internet.
 echo.
+echo Todo se compila en una carpeta CORTA de la unidad del sistema
+echo (%SystemDrive%\ifcbuild) porque Windows no admite rutas de mas
+echo de 260 caracteres y PySide6 tiene rutas muy profundas.
+echo.
+
+set "BUILD=%SystemDrive%\ifcbuild"
+set "SALIDA=%SystemDrive%\AnalizadorEstructuralIFC_portable"
+set "CARPETA=%SALIDA%\AnalizadorEstructuralIFC"
 
 rem ---- 1. Buscar un Python compatible (3.10 a 3.13) -------------------
 set "PY="
@@ -45,12 +53,14 @@ if not exist "herramientas\ccx\ccx.exe" (
 )
 
 rem ---- 2. Entorno virtual e instalacion de dependencias ---------------
-echo [1/5] Creando el entorno aislado ^(.venv_build^)...
-if not exist ".venv_build\Scripts\python.exe" (
-    %PY% -m venv .venv_build
+echo [1/5] Creando el entorno aislado ^(%BUILD%\venv^)...
+if exist "%~dp0.venv_build" rmdir /s /q "%~dp0.venv_build" >nul 2>nul
+if not exist "%BUILD%" mkdir "%BUILD%"
+if not exist "%BUILD%\venv\Scripts\python.exe" (
+    %PY% -m venv "%BUILD%\venv"
     if errorlevel 1 goto :error
 )
-set "VPY=%~dp0.venv_build\Scripts\python.exe"
+set "VPY=%BUILD%\venv\Scripts\python.exe"
 
 echo.
 echo [2/5] Instalando dependencias ^(puede tardar^)...
@@ -64,27 +74,26 @@ if errorlevel 1 goto :error
 rem ---- 3. Compilar -----------------------------------------------------
 echo.
 echo [3/5] Compilando con PyInstaller ^(varios minutos^)...
-if exist "Portable" rmdir /s /q "Portable"
-if exist "build" rmdir /s /q "build"
+if exist "%SALIDA%" rmdir /s /q "%SALIDA%"
+if exist "%BUILD%\work" rmdir /s /q "%BUILD%\work"
 "%VPY%" -m PyInstaller --name AnalizadorEstructuralIFC --onedir --windowed --noconfirm ^
-    --distpath Portable --workpath build ^
-    --paths src ^
+    --distpath "%SALIDA%" --workpath "%BUILD%\work" --specpath "%BUILD%" ^
+    --paths "%~dp0src" ^
     --collect-all ifcopenshell ^
     --collect-data pyvista ^
     --collect-all pyvistaqt ^
     --collect-all shapely ^
-    iniciar_app.py
+    "%~dp0iniciar_app.py"
 if errorlevel 1 goto :error
-set "CARPETA=Portable\AnalizadorEstructuralIFC"
 if not exist "%CARPETA%\AnalizadorEstructuralIFC.exe" goto :error
 
 rem ---- 4. Agregar CalculiX y archivos de apoyo -------------------------
 echo.
 echo [4/5] Agregando CalculiX a la carpeta portable...
-xcopy /E /I /Y /Q "herramientas\ccx" "%CARPETA%\ccx" >nul
+xcopy /E /I /Y /Q "%~dp0herramientas\ccx" "%CARPETA%\ccx" >nul
 if errorlevel 1 goto :error
-copy /Y "config.example.json" "%CARPETA%\config.json" >nul
-copy /Y "LEEME_PORTABLE.txt" "%CARPETA%\LEEME.txt" >nul
+copy /Y "%~dp0config.example.json" "%CARPETA%\config.json" >nul
+copy /Y "%~dp0LEEME_PORTABLE.txt" "%CARPETA%\LEEME.txt" >nul
 
 rem ---- 5. Autoprueba: resuelve una viga con el ccx incluido -------------
 echo.
@@ -107,15 +116,15 @@ if exist "%CARPETA%\trabajo_ccx" rmdir /s /q "%CARPETA%\trabajo_ccx"
 
 echo.
 echo Creando el archivo .zip portable...
-if exist "AnalizadorEstructuralIFC-portable.zip" del "AnalizadorEstructuralIFC-portable.zip"
-powershell -NoProfile -Command "Compress-Archive -Path '%CARPETA%' -DestinationPath 'AnalizadorEstructuralIFC-portable.zip'"
+if exist "%~dp0AnalizadorEstructuralIFC-portable.zip" del "%~dp0AnalizadorEstructuralIFC-portable.zip"
+powershell -NoProfile -Command "Compress-Archive -Path '%CARPETA%' -DestinationPath '%~dp0AnalizadorEstructuralIFC-portable.zip'"
 
 echo.
 echo ===================================================
 echo  LISTO
 echo  Carpeta portable : %CARPETA%
 echo  Ejecutable       : %CARPETA%\AnalizadorEstructuralIFC.exe
-echo  Zip para copiar  : AnalizadorEstructuralIFC-portable.zip
+echo  Zip para copiar  : %~dp0AnalizadorEstructuralIFC-portable.zip
 echo.
 echo  Copie la carpeta ^(o el zip^) a cualquier PC con Windows 10/11
 echo  de 64 bits: no necesita instalar Python ni CalculiX.
@@ -123,6 +132,7 @@ echo ===================================================
 echo.
 set /p RESPUESTA=Desea ejecutarlo ahora? (S/N): 
 if /I "%RESPUESTA%"=="S" start "" "%CARPETA%\AnalizadorEstructuralIFC.exe"
+start "" explorer "%SALIDA%"
 pause
 exit /b 0
 
