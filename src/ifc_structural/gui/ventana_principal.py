@@ -11,6 +11,7 @@ Flujo de uso:
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 from pathlib import Path
@@ -18,7 +19,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QCursor
+from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -54,6 +55,7 @@ from ..core.cargas import (
     Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion, UnionSuperficie,
 )
 from ..core.casos_carga import CasoCarga, Combinacion, casos_y_combinaciones_por_defecto
+from ..core.edicion import eliminar_elementos
 from ..core.materiales import descripcion_material
 from ..core.modelo import Proyecto
 from ..core.persistencia import cargar_cargas_superficie, cargar_proyecto, guardar_proyecto
@@ -121,6 +123,10 @@ class VentanaPrincipal(QMainWindow):
 
         self.resultado: Optional[ResultadoAnalisis] = None
         self._resultado_desactualizado = False
+        self._deshacer: list = []  # estados anteriores del modelo editable (el último es el más reciente)
+        self._rehacer: list = []
+        self._estado_actual = None
+        self._restaurando = False
         self._desde_arbol = False  # la selección del visor la provocó el árbol (evita el bucle)
         self._worker: Optional[TrabajadorAnalisis] = None
         self._timer_animacion = QTimer(self)
@@ -200,6 +206,16 @@ class VentanaPrincipal(QMainWindow):
         self.accion_abrir = accion("Abrir", self._abrir_proyecto, "abrir", "Ctrl+O", "Abrir un proyecto guardado (Ctrl+O)")
         self.accion_guardar = accion("Guardar", self._guardar_proyecto, "guardar", "Ctrl+S", "Guardar el proyecto (Ctrl+S)")
         self.accion_salir = accion("Salir", self.close)
+        self.accion_deshacer = accion("Deshacer", self.deshacer, "deshacer", "Ctrl+Z", "Deshacer el último cambio (Ctrl+Z)")
+        self.accion_rehacer = accion("Rehacer", self.rehacer, "rehacer", "Ctrl+Y", "Rehacer el cambio deshecho (Ctrl+Y o Ctrl+Mayús+Z)")
+        self.accion_deshacer.setEnabled(False)
+        self.accion_rehacer.setEnabled(False)
+        QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self.rehacer)
+        self.accion_eliminar = accion("Eliminar", self.eliminar_seleccion, "eliminar", None,
+                                      "Eliminar del modelo los elementos seleccionados (Supr con el visor activo)")
+        self.accion_eliminar.setShortcut(QKeySequence(Qt.Key_Delete))
+        self.accion_eliminar.setShortcutContext(Qt.WidgetShortcut)  # solo con el foco en el visor (el árbol usa Supr para las asignaciones)
+        self.visor.addAction(self.accion_eliminar)
 
         self.accion_modo_elemento = accion(
             "Elemento", icono_="sel_elemento", ayuda="Seleccionar elementos completos con el mouse",
@@ -243,6 +259,11 @@ class VentanaPrincipal(QMainWindow):
         menu.addActions([self.accion_importar, self.accion_abrir, self.accion_guardar])
         menu.addSeparator()
         menu.addAction(self.accion_salir)
+
+        menu = self.menuBar().addMenu("&Editar")
+        menu.addActions([self.accion_deshacer, self.accion_rehacer])
+        menu.addSeparator()
+        menu.addAction(self.accion_eliminar)
 
         menu = self.menuBar().addMenu("A&signar")
         menu.addActions([self.accion_apoyo, self.accion_carga, self.accion_material, self.accion_conexion])
@@ -311,6 +332,10 @@ class VentanaPrincipal(QMainWindow):
         for accion in (self.accion_importar, self.accion_abrir, self.accion_guardar):
             barra.widgetForAction(accion).setToolButtonStyle(Qt.ToolButtonIconOnly)  # más compacto
         barra.addSeparator()
+        barra.addActions([self.accion_deshacer, self.accion_rehacer, self.accion_eliminar])
+        for accion in (self.accion_deshacer, self.accion_rehacer, self.accion_eliminar):
+            barra.widgetForAction(accion).setToolButtonStyle(Qt.ToolButtonIconOnly)
+        barra.addSeparator()
         barra.addActions([self.accion_modo_elemento, self.accion_modo_cara])
         barra.addSeparator()
 
@@ -359,9 +384,10 @@ class VentanaPrincipal(QMainWindow):
         self.pagina_bienvenida.importar_solicitado.connect(self._importar_ifc)
         self.pagina_bienvenida.abrir_solicitado.connect(self._abrir_proyecto)
         self.barra_vista.vista_solicitada.connect(self._cambiar_vista)
-        self.barra_vista.zona_activada.connect(self.visor.set_modo_zona)
+        self.barra_vista.navegacion_cambiada.connect(self.visor.set_navegacion)
         self.barra_vista.flechas_visibles.connect(lambda v: self.visor.configurar_flechas(visibles=v))
         self.barra_vista.escala_flechas.connect(lambda e: self.visor.configurar_flechas(escala=e))
+        self.barra_vista.escala_apoyos.connect(self.visor.configurar_apoyos)
         self.barra_vista.visibilidad_cambiada.connect(lambda t, v: self._cambiar_visibilidad(t, v, desde_menu=False))
         self.visor.seleccion_cambiada.connect(self._al_cambiar_seleccion)
         self.visor.menu_contextual.connect(self._mostrar_menu_contextual)
@@ -524,6 +550,7 @@ class VentanaPrincipal(QMainWindow):
         self.accion_ver_modelo.setChecked(True)
         self._refrescar_asignaciones()
         self._actualizar_estado_de_acciones()
+        self._reiniciar_historial()
 
     def _guardar_proyecto(self) -> None:
         ruta, _ = QFileDialog.getSaveFileName(self, "Guardar proyecto", "", "Proyecto (*.json)")
@@ -568,12 +595,109 @@ class VentanaPrincipal(QMainWindow):
         return f"{prefijo}{n}"
 
     def _marcar_resultados_desactualizados(self) -> None:
+        self._registrar_cambio()
         if self.resultado is not None and not self._resultado_desactualizado:
             self._resultado_desactualizado = True
             self._refrescar_arbol()
             self.statusBar().showMessage(
                 "Los esfuerzos mostrados son anteriores a los últimos cambios: vuelva a pulsar ANALIZAR."
             )
+
+    # ------------------------------------------------------------------
+    # Deshacer / rehacer y eliminar elementos
+    # ------------------------------------------------------------------
+    def _instantanea(self):
+        """Copia del estado editable. Las mallas de los sólidos (grandes e inmutables) se comparten."""
+
+        memo = {}
+        for s in self.proyecto.solidos.values():
+            for matriz in (s.vertices, s.triangulos, s.cara_de_triangulo):
+                memo[id(matriz)] = matriz
+            for cara in s.caras:
+                for matriz in (cara.triangulos, cara.centro, cara.normal):
+                    memo[id(matriz)] = matriz
+        estado = (self.proyecto, self.apoyos, self.casos, self.combinaciones, self.cargas_area_por_caso,
+                  self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso, self.conexiones,
+                  self.cargas_superficie_por_caso)
+        return copy.deepcopy(estado, memo)
+
+    def _reiniciar_historial(self) -> None:
+        self._deshacer.clear()
+        self._rehacer.clear()
+        self._estado_actual = self._instantanea()
+        self._actualizar_acciones_historial()
+
+    def _registrar_cambio(self) -> None:
+        """Se llama justo después de cada cambio del modelo: el estado anterior pasa a la pila de deshacer."""
+
+        if self._restaurando or self._estado_actual is None:
+            return
+        self._deshacer.append(self._estado_actual)
+        del self._deshacer[:-60]  # los últimos 60 cambios
+        self._rehacer.clear()
+        self._estado_actual = self._instantanea()
+        self._actualizar_acciones_historial()
+
+    def _actualizar_acciones_historial(self) -> None:
+        self.accion_deshacer.setEnabled(bool(self._deshacer))
+        self.accion_rehacer.setEnabled(bool(self._rehacer))
+
+    def _restaurar(self, estado) -> None:
+        (self.proyecto, self.apoyos, self.casos, self.combinaciones, self.cargas_area_por_caso,
+         self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso, self.conexiones,
+         self.cargas_superficie_por_caso) = copy.deepcopy(estado, {id(m): m for m in self._matrices_de(estado[0])})
+        self._restaurando = True
+        try:
+            self.visor.reemplazar_modelo(self.proyecto)
+            self.accion_ver_modelo.setChecked(True)
+            self._estado_actual = self._instantanea()
+            self._marcar_resultados_desactualizados()
+            self._actualizar_combo_caso()
+            self._refrescar_asignaciones()
+            self._actualizar_estado_de_acciones()
+        finally:
+            self._restaurando = False
+        self._actualizar_acciones_historial()
+
+    @staticmethod
+    def _matrices_de(proyecto):
+        for s in proyecto.solidos.values():
+            yield from (s.vertices, s.triangulos, s.cara_de_triangulo)
+            for cara in s.caras:
+                yield from (cara.triangulos, cara.centro, cara.normal)
+
+    def deshacer(self) -> None:
+        if not self._deshacer or self._worker is not None and self._worker.isRunning():
+            return
+        self._rehacer.append(self._estado_actual)
+        self._restaurar(self._deshacer.pop())
+        self.statusBar().showMessage("Cambio deshecho.")
+
+    def rehacer(self) -> None:
+        if not self._rehacer or self._worker is not None and self._worker.isRunning():
+            return
+        self._deshacer.append(self._estado_actual)
+        self._restaurar(self._rehacer.pop())
+        self.statusBar().showMessage("Cambio rehecho.")
+
+    def eliminar_seleccion(self) -> None:
+        """Quita del modelo los elementos seleccionados (en modo Cara, el elemento al que pertenece cada cara)."""
+
+        elementos = list(dict.fromkeys((o.tipo, o.id) for o in self.visor.seleccion))
+        if not elementos:
+            self.statusBar().showMessage("Seleccione los elementos que quiere eliminar.")
+            return
+        self.visor.seleccionar([])
+        self.apoyos, self.conexiones, resultado = eliminar_elementos(
+            self.proyecto, elementos, self.apoyos, self.conexiones, self.cargas_area_por_caso,
+            self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso, self.cargas_superficie_por_caso,
+        )
+        self.visor.reemplazar_modelo(self.proyecto)
+        self.accion_ver_modelo.setChecked(True)
+        self._marcar_resultados_desactualizados()
+        self._refrescar_asignaciones()
+        self._actualizar_estado_de_acciones()
+        self.statusBar().showMessage(f"Eliminado: {resultado.resumen()}. Ctrl+Z lo deshace.")
 
     def _hay_solidos_libres(self) -> bool:
         return any(o.tipo == "SOLIDO" for o in self.visor.seleccion)
@@ -770,6 +894,7 @@ class VentanaPrincipal(QMainWindow):
         menu.addAction("Asignar carga…", self.asignar_carga)
         menu.addAction("Asignar apoyo…", self.asignar_apoyo)
         menu.addAction("Asignar material…", self.asignar_material)
+        menu.addAction(icono("eliminar"), "Eliminar del modelo", self.eliminar_seleccion)
         hay_caras = all(o.cara is not None for o in seleccion)
         if not self._hay_solidos_libres():  # en un sólido libre las dos primeras ya son de superficie
             for texto, funcion in (("Asignar apoyo en la superficie… (análisis 3D)", self.asignar_apoyo_superficie),

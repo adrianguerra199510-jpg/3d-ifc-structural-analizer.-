@@ -106,6 +106,21 @@ CUERPOS: Dict[str, str] = {
         '<rect x="4" y="5" width="12" height="10" rx="1" stroke-dasharray="3 2.4"/>'
         '<path d="M13 12l7 2.5-3 1.2 2 3.3-1.6.9-2-3.3-2.4 2z" fill="@A@" fill-opacity=".35" stroke="@A@"/>'
     ),
+    "mover": (
+        '<path d="M12 3v18M3 12h18"/><path d="M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" stroke="@A@"/>'
+    ),
+    "rotar": (
+        '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4.5v4.6h-4.6" stroke="@A@"/>'
+    ),
+    "deshacer": (
+        '<path d="M9 7L4.5 11.5 9 16"/><path d="M5 11.5h9a5 5 0 0 1 0 10h-3" stroke="@A@"/>'
+    ),
+    "rehacer": (
+        '<path d="M15 7l4.5 4.5L15 16"/><path d="M19 11.5h-9a5 5 0 0 0 0 10h3" stroke="@A@"/>'
+    ),
+    "eliminar": (
+        '<path d="M5 7h14M10 7V4.5h4V7M7 7l1 13h8l1-13"/><path d="M10.5 11v5.5M13.5 11v5.5" stroke="@A@"/>'
+    ),
     "modelo": (
         '<path d="M12 3l8.5 4.8v8.4L12 21l-8.5-4.8V7.8z"/><path d="M12 12l8.5-4.2M12 12v9M12 12L3.5 7.8" stroke="@A@"/>'
     ),

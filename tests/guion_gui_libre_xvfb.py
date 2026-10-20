@@ -66,6 +66,9 @@ def main(salida: Path) -> None:
         dx, dy = c.GetComputedDisplayValue(visor.renderer)
         return int(dx), int(dy)
 
+    def proyecto_actual():
+        return ventana.proyecto
+
     def vista(nombre, **k):
         getattr(visor, nombre)(**k)
         visor.reset_camera()
@@ -148,7 +151,10 @@ def main(salida: Path) -> None:
     barra.deslizador_flechas.setValue(250)
     bombear()
     largo_grande = visor.actors["ASIG_CARGAS"].GetMapper().GetInput().GetBounds()
-    verificar((largo_grande[5] - largo_grande[4]) > 1.15 * (largo_normal[5] - largo_normal[4]), "el deslizador agranda las flechas")
+    def diagonal(b):
+        return float(np.linalg.norm([b[1] - b[0], b[3] - b[2], b[5] - b[4]]))
+
+    verificar(diagonal(largo_grande) > 1.05 * diagonal(largo_normal), "el deslizador agranda las flechas")
     barra.deslizador_flechas.setValue(100)
     bombear()
 
@@ -177,14 +183,60 @@ def main(salida: Path) -> None:
     ventana.accion_modo_elemento.trigger()
     vista("view_xy")
     cx, cy = a_pantalla(0.3, 0.1, 0.55)
-    arrastrar(cx + 6, cy + 6, cx - 6, cy - 6, Qt.ControlModifier)
+    arrastrar(cx + 6, cy + 6, cx - 6, cy - 6)
     verificar(Objetivo("SOLIDO", ids["PLACA_L"]) in visor.seleccion, f"zona que toca a la placa en L: {visor.seleccion}")
     # modo zona activado desde la barra: arrastrar sin teclas ya no gira la vista
-    ventana.barra_vista.boton_zona.setChecked(True)
-    arrastrar(min(xa, xb) - margen, min(ya, yb) - margen, max(xa, xb) + margen, max(ya, yb) + margen)
+    arrastrar(min(xa, xb) - margen, min(ya, yb) - margen, max(xa, xb) + margen, max(ya, yb) + margen)  # sin teclas: ya es selección
     verificar(len(visor.seleccion) == len(proyecto.solidos), f"la ventana grande elige los 4 sólidos: {visor.seleccion}")
-    ventana.barra_vista.boton_zona.setChecked(False)
     visor.seleccionar([])
+    vista("view_isometric")
+
+    # Navegación estándar: arrastrar con el botón izquierdo NO mueve la cámara; central desplaza; Ctrl+central gira; rueda = zoom
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    camara = visor.renderer.GetActiveCamera()
+
+    def estado():
+        return np.array(camara.GetPosition()), np.array(camara.GetFocalPoint())
+
+    def arrastrar_boton(boton, x0, y0, x1, y1, modificador=Qt.NoModifier):
+        alto = visor.height() - 1
+        QTest.mousePress(visor, boton, modificador, QPoint(x0, alto - y0))
+        QTest.mouseMove(visor, QPoint((x0 + x1) // 2, alto - (y0 + y1) // 2))
+        QTest.mouseMove(visor, QPoint(x1, alto - y1))
+        QTest.mouseRelease(visor, boton, modificador, QPoint(x1, alto - y1))
+        bombear()
+
+    cx0, cy0 = a_pantalla(0.2, 0.15, 0.2)
+    antes = estado()
+    arrastrar_boton(Qt.LeftButton, cx0 - 60, cy0 - 40, cx0 + 80, cy0 + 50)
+    despues = estado()
+    verificar(np.allclose(antes[0], despues[0]) and np.allclose(antes[1], despues[1]), "el arrastre izquierdo no mueve la cámara")
+    arrastrar_boton(Qt.MiddleButton, cx0, cy0, cx0 + 70, cy0 - 30)
+    despues = estado()
+    verificar(not np.allclose(antes[1], despues[1]), "el botón central desplaza la vista")
+    verificar(abs(np.linalg.norm(despues[0] - despues[1]) - np.linalg.norm(antes[0] - antes[1])) < 1e-6, "desplazar no cambia la distancia")
+    antes = estado()
+    arrastrar_boton(Qt.MiddleButton, cx0, cy0, cx0 + 90, cy0, Qt.ControlModifier)
+    despues = estado()
+    verificar(not np.allclose(antes[0], despues[0]) and np.allclose(antes[1], despues[1]), "Ctrl + central gira alrededor del foco")
+    verificar(abs(np.array(camara.GetViewUp())[2]) > 0.5, "el giro mantiene el eje Z vertical")
+    distancia = np.linalg.norm(np.array(camara.GetPosition()) - np.array(camara.GetFocalPoint()))
+    angulo = camara.GetViewAngle()
+    visor_centro = QPointF(visor.width() / 2, visor.height() / 2)
+    from PySide6.QtCore import QPoint as _P
+
+    QApplication.sendEvent(visor, QWheelEvent(visor_centro, visor.mapToGlobal(visor_centro), _P(0, 0), _P(0, 120), Qt.NoButton,
+                                              Qt.NoModifier, Qt.NoScrollPhase, False))
+    bombear()
+    verificar(camara.GetViewAngle() < angulo - 1e-6, "la rueda hace zoom")
+    # con «Rotar» activo, arrastrar con el botón izquierdo gira la vista
+    ventana.barra_vista.botones_navegacion["ROTAR"].setChecked(True)
+    antes = estado()
+    arrastrar_boton(Qt.LeftButton, cx0, cy0, cx0 + 60, cy0 + 20)
+    verificar(not np.allclose(antes[0], estado()[0]), "con el modo Rotar el arrastre izquierdo gira")
+    ventana.barra_vista.botones_navegacion["SELECCION"].setChecked(True)
     vista("view_isometric")
 
     # Constraint entre dos elementos enteros: se unen sus caras más cercanas (tapa del poste y cara inferior de la placa en L)
@@ -235,6 +287,27 @@ def main(salida: Path) -> None:
     ventana.panel_esfuerzos.check_deformada.setChecked(True)
     bombear(30)
     ventana.grab().save(str(salida / "05_deformada.png"))
+    # Eliminar elementos y deshacer / rehacer
+    ventana.volver_al_modelo()
+    ventana.accion_modo_elemento.trigger()
+    n_cargas = sum(len(v) for v in ventana.cargas_superficie_por_caso.values())
+    visor.seleccionar([Objetivo("SOLIDO", ids["PLACA_L"])])
+    ventana.eliminar_seleccion()
+    verificar(ids["PLACA_L"] not in proyecto_actual().solidos, "la placa en L se elimina")
+    verificar(not proyecto_actual().uniones, "se elimina también su constraint")
+    verificar(sum(len(v) for v in ventana.cargas_superficie_por_caso.values()) == n_cargas - 1, "y su presión")
+    verificar(ventana.accion_deshacer.isEnabled() and not ventana.accion_rehacer.isEnabled(), "se puede deshacer")
+    ventana.accion_deshacer.trigger()
+    bombear()
+    verificar(ids["PLACA_L"] in proyecto_actual().solidos and len(proyecto_actual().uniones) == 1, "deshacer restaura la placa y el constraint")
+    verificar(sum(len(v) for v in ventana.cargas_superficie_por_caso.values()) == n_cargas, "y la presión")
+    verificar(ventana.accion_rehacer.isEnabled(), "se puede rehacer")
+    ventana.accion_rehacer.trigger()
+    bombear()
+    verificar(ids["PLACA_L"] not in proyecto_actual().solidos, "rehacer vuelve a eliminarla")
+    ventana.accion_deshacer.trigger()
+    bombear()
+    ventana.grab().save(str(salida / "06_deshacer.png"))
     print("OK")
 
 

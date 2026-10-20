@@ -80,6 +80,26 @@ vigas y columnas.
 - **Barra de vista** sobre el visor: isométrica, planta, frontal, lateral, inferior,
   encuadrar, visibilidad por tipo de elemento (los iconos llevan el color del elemento)
   y el cambio Modelo / Esfuerzos.
+- **Ratón en el visor** (como SAP2000, AutoCAD o Revit: el visor está quieto en modo selección y la vista solo
+  se mueve cuando se pide):
+
+  | Acción | Qué hace |
+  |---|---|
+  | Clic izquierdo | selecciona (Ctrl o Mayús suma o quita) |
+  | Arrastrar con el izquierdo | rectángulo de selección: de izquierda a derecha, lo que queda dentro; de derecha a izquierda, lo que toca |
+  | Rueda | zoom |
+  | Botón central (rueda pulsada) arrastrando | desplaza la vista |
+  | Ctrl o Mayús + botón central arrastrando | gira la vista alrededor del punto enfocado, con el eje Z siempre vertical |
+  | Clic derecho | menú del elemento |
+
+  Sin botón central (touchpad): el grupo **Ratón** de la barra de vista cambia lo que hace el arrastre
+  izquierdo a *Mover* o *Rotar* (un clic sin arrastrar sigue seleccionando); *Seleccionar* es el modo normal.
+- **Editar:** *Deshacer* (Ctrl+Z) y *Rehacer* (Ctrl+Y o Ctrl+Mayús+Z) para todos los cambios del modelo
+  (asignaciones, materiales, casos, constraints y eliminaciones; los últimos 60). *Eliminar* (**Supr** con el
+  visor activo, o clic derecho → «Eliminar del modelo») quita los elementos seleccionados con sus apoyos,
+  cargas, conexiones y constraints, y los nodos que quedan sin uso; Ctrl+Z lo recupera.
+- **Tamaño de los símbolos:** los apoyos y las flechas de las cargas se dimensionan según el modelo (y, si hay
+  barras, la longitud típica); los deslizadores **Apoyos** y **Cargas** de la barra de vista los agrandan o achican.
 - **Clic derecho** sobre un elemento: carga, apoyo, material, conexión, propiedades.
 - Barra de estado con el modo de selección, el caso activo y la selección actual.
 
@@ -198,8 +218,7 @@ y la conserva como **sólido de forma libre**:
   y se guardan en el proyecto. Solo se aplican en ANALIZAR 3D; el botón *Conectar* sigue siendo la
   articulación o el enlace rígido entre barras del análisis de barras (con un sólido, losa o muro
   abre este diálogo). Un nodo no puede ser a la vez esclavo de dos constraints.
-- **Selección por zona.** Arrastre un rectángulo con **Ctrl** o **Mayús** (o active el botón
-  **Zona** de la barra de vista para hacerlo sin teclas): de izquierda a derecha (azul, continuo)
+- **Selección por zona.** Arrastre un rectángulo con el botón izquierdo (Ctrl o Mayús suma a la selección): de izquierda a derecha (azul, continuo)
   se eligen solo los elementos —o superficies, en modo Cara— que quedan por completo dentro; de derecha
   a izquierda (verde, discontinuo), todo lo que toca. En modo Cara solo cuentan las caras que miran a
   la cámara. Con Ctrl/Mayús se suma a la selección actual.

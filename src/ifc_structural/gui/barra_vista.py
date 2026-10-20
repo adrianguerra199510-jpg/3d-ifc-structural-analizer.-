@@ -4,7 +4,7 @@ elemento y leyenda de colores."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSlider, QToolButton, QWidget
+from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QLabel, QSlider, QToolButton, QWidget
 
 from .iconos import icono
 from .visor_3d import COLORES_BASE
@@ -30,7 +30,8 @@ class BarraVista(QWidget):
     visibilidad_cambiada = Signal(str, bool)  # tipo, visible
     flechas_visibles = Signal(bool)  # mostrar u ocultar las flechas de las cargas
     escala_flechas = Signal(float)  # tamaño de las flechas (1 = automático)
-    zona_activada = Signal(bool)  # arrastrar con el botón izquierdo dibuja un rectángulo de selección
+    escala_apoyos = Signal(float)  # tamaño de los símbolos de apoyo (1 = automático)
+    navegacion_cambiada = Signal(str)  # qué hace arrastrar con el botón izquierdo: SELECCION, MOVER o ROTAR
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -79,17 +80,46 @@ class BarraVista(QWidget):
         fila.addSpacing(6)
         fila.addWidget(separador)
         fila.addSpacing(6)
-        self.boton_zona = QToolButton()
-        self.boton_zona.setText("Zona")
-        self.boton_zona.setIcon(icono("zona"))
-        self.boton_zona.setCheckable(True)
-        self.boton_zona.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.boton_zona.setToolTip(
-            "Seleccionar arrastrando un rectángulo (también Ctrl o Mayús + arrastrar).\n"
-            "De izquierda a derecha: solo lo que queda dentro. De derecha a izquierda: todo lo que toca."
-        )
-        self.boton_zona.toggled.connect(self.zona_activada.emit)
-        fila.addWidget(self.boton_zona)
+        etiqueta_nav = QLabel("Ratón:")
+        etiqueta_nav.setObjectName("chipLeyenda")
+        fila.addWidget(etiqueta_nav)
+        self.grupo_navegacion = QButtonGroup(self)
+        self.grupo_navegacion.setExclusive(True)
+        self.botones_navegacion = {}
+        for modo, texto, nombre_icono, ayuda in (
+            ("SELECCION", "Seleccionar", "zona",
+             "Arrastrar con el botón izquierdo selecciona: de izquierda a derecha lo que queda dentro del rectángulo, "
+             "de derecha a izquierda todo lo que toca (Ctrl o Mayús suma a la selección)."),
+            ("MOVER", "Mover", "mover", "Arrastrar con el botón izquierdo desplaza la vista (también: botón central)."),
+            ("ROTAR", "Rotar", "rotar", "Arrastrar con el botón izquierdo gira la vista (también: Ctrl o Mayús + botón central)."),
+        ):
+            boton = QToolButton()
+            boton.setText(texto)
+            boton.setIcon(icono(nombre_icono))
+            boton.setCheckable(True)
+            boton.setChecked(modo == "SELECCION")
+            boton.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            boton.setToolTip(ayuda + "\nRueda del ratón: zoom.")
+            boton.toggled.connect(lambda activo, m=modo: activo and self.navegacion_cambiada.emit(m))
+            self.grupo_navegacion.addButton(boton)
+            fila.addWidget(boton)
+            self.botones_navegacion[modo] = boton
+        separador = QFrame()
+        separador.setFrameShape(QFrame.VLine)
+        separador.setStyleSheet("color: #d3dae3;")
+        fila.addSpacing(6)
+        fila.addWidget(separador)
+        fila.addSpacing(6)
+        etiqueta_apoyos = QLabel("Apoyos")
+        etiqueta_apoyos.setObjectName("chipLeyenda")
+        fila.addWidget(etiqueta_apoyos)
+        self.deslizador_apoyos = QSlider(Qt.Horizontal)
+        self.deslizador_apoyos.setRange(20, 400)  # % del tamaño automático
+        self.deslizador_apoyos.setValue(100)
+        self.deslizador_apoyos.setFixedWidth(90)
+        self.deslizador_apoyos.setToolTip("Tamaño de los símbolos de apoyo (100 % = automático)")
+        self.deslizador_apoyos.valueChanged.connect(lambda v: self.escala_apoyos.emit(v / 100.0))
+        fila.addWidget(self.deslizador_apoyos)
         self.boton_flechas = QToolButton()
         self.boton_flechas.setText("Cargas")
         self.boton_flechas.setIcon(icono("carga"))

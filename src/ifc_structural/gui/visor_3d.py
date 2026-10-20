@@ -62,6 +62,12 @@ UMBRAL_ARRASTRE_PX = 4
 MODO_ELEMENTO = "ELEMENTO"
 MODO_CARA = "CARA"
 
+#: Qué hace el arrastre con el botón izquierdo: seleccionar (por defecto, como en SAP2000, AutoCAD o Revit),
+#: desplazar la vista o girarla. La rueda hace zoom; el botón central desplaza, y con Ctrl o Mayús gira.
+NAV_SELECCION = "SELECCION"
+NAV_MOVER = "MOVER"
+NAV_ROTAR = "ROTAR"
+
 
 @dataclass
 class _Visual:
@@ -94,6 +100,7 @@ class Visor3D(QtInteractor):
         self._escala = 1.0
         self._flechas_visibles = True
         self._escala_flechas = 1.0
+        self._escala_apoyos = 1.0
         self._argumentos_asignaciones = None
 
         self._grid_esfuerzos: Optional[pv.UnstructuredGrid] = None
@@ -105,23 +112,18 @@ class Visor3D(QtInteractor):
         self._desplazamientos: Optional[np.ndarray] = None
         self._escala_deformada = 1.0
 
-        # selección por zona (arrastrar un rectángulo)
-        self._modo_zona = False
-        self._caja_inicio: Optional[Tuple[float, float]] = None  # píxeles de VTK (origen abajo a la izquierda)
-        self._caja_sumar = False
+        # navegación y selección por zona (arrastrar un rectángulo)
+        self._navegacion = NAV_SELECCION
+        self._arrastre: Optional[dict] = None  # gesto en curso: acción, botón, inicio y última posición (píxeles de VTK)
         self._caja_actor = None
 
         self._picker = vtkCellPicker()
         self._picker.SetTolerance(0.0005)
-        self._pulsacion: Optional[Tuple[int, int]] = None
-        self._pulsacion_derecha: Optional[Tuple[int, int]] = None
 
         self.set_background("#ffffff", top="#dde6f1")  # degradado suave de abajo (blanco) a arriba
         self.add_axes()
-        self.iren.add_observer("LeftButtonPressEvent", self._al_presionar)
-        self.iren.add_observer("LeftButtonReleaseEvent", self._al_soltar)
-        self.iren.add_observer("RightButtonPressEvent", self._al_presionar_derecho)
-        self.iren.add_observer("RightButtonReleaseEvent", self._al_soltar_derecho)
+        self.setMouseTracking(False)
+        self.setFocusPolicy(Qt.StrongFocus)  # para que Supr elimine lo seleccionado solo cuando el visor tiene el foco
 
     # ------------------------------------------------------------------
     # Construcción de la vista del modelo
@@ -131,6 +133,13 @@ class Visor3D(QtInteractor):
         self.volver_al_modelo(reconstruir=True)
         self.reset_camera()
         self.view_isometric()
+        self.render()
+
+    def reemplazar_modelo(self, proyecto: Proyecto) -> None:
+        """Dibuja otro estado del proyecto (deshacer, rehacer o eliminar) sin mover la cámara."""
+
+        self._proyecto = proyecto
+        self.volver_al_modelo(reconstruir=True)
         self.render()
 
     def _limpiar_escena(self) -> None:
@@ -153,7 +162,7 @@ class Visor3D(QtInteractor):
         todos += [s.minimo for s in proyecto.solidos.values()] + [s.maximo for s in proyecto.solidos.values()]
         if todos:
             extension = np.ptp(np.array(todos, dtype=float), axis=0)
-            self._escala = max(float(np.linalg.norm(extension)), 1.0)
+            self._escala = max(float(np.linalg.norm(extension)), 1e-3)
 
         for tipo, id_ in elementos:
             solido = solido_elemento(proyecto, tipo, id_)
@@ -243,43 +252,143 @@ class Visor3D(QtInteractor):
     # ------------------------------------------------------------------
     # Selección por zona: arrastrar un rectángulo
     # ------------------------------------------------------------------
-    def set_modo_zona(self, activo: bool) -> None:
-        """Con el modo zona activo, arrastrar con el botón izquierdo dibuja un rectángulo de selección en vez de
-        girar la vista (Ctrl o Mayús + arrastrar lo hace en cualquier momento)."""
+    def set_navegacion(self, modo: str) -> None:
+        """Qué hace arrastrar con el botón izquierdo: ``NAV_SELECCION`` (rectángulo de selección), ``NAV_MOVER``
+        (desplaza la vista) o ``NAV_ROTAR`` (gira la vista)."""
 
-        self._modo_zona = bool(activo)
+        if modo not in (NAV_SELECCION, NAV_MOVER, NAV_ROTAR):
+            raise ValueError(modo)
+        self._navegacion = modo
+        self.setCursor({NAV_SELECCION: Qt.ArrowCursor, NAV_MOVER: Qt.OpenHandCursor, NAV_ROTAR: Qt.SizeAllCursor}[modo])
+
+    @property
+    def navegacion(self) -> str:
+        return self._navegacion
 
     def _pixel_vtk(self, ev) -> Tuple[float, float]:
         ratio = self.devicePixelRatioF()
         return ev.position().x() * ratio, (self.height() - 1 - ev.position().y()) * ratio
 
+    # Todo el ratón se gestiona aquí (no se delega en el estilo de VTK, que gira con el botón izquierdo):
+    #   izquierdo      seleccionar (clic) o rectángulo de selección (arrastre); Ctrl/Mayús suma a la selección
+    #   central        desplazar la vista; con Ctrl o Mayús, girarla
+    #   rueda          zoom
+    #   derecho        menú contextual (clic)
     def mousePressEvent(self, ev) -> None:
-        mod = ev.modifiers()
+        self.setFocus()
+        boton, mod = ev.button(), ev.modifiers()
         con_tecla = bool(mod & (Qt.ControlModifier | Qt.ShiftModifier))
-        if ev.button() == Qt.LeftButton and self._vista == "MODELO" and (self._modo_zona or con_tecla):
-            self._caja_inicio = self._pixel_vtk(ev)
-            self._caja_sumar = con_tecla
-            return  # no llega a VTK: la cámara no gira
-        super().mousePressEvent(ev)
+        x, y = self._pixel_vtk(ev)
+        if boton == Qt.MiddleButton:
+            accion = "ROTAR" if con_tecla else "MOVER"
+        elif boton == Qt.LeftButton:
+            accion = {NAV_MOVER: "MOVER", NAV_ROTAR: "ROTAR"}.get(self._navegacion, "CAJA" if self._vista == "MODELO" else "CLIC")
+        elif boton == Qt.RightButton:
+            accion = "DERECHO"
+        else:
+            return
+        self._arrastre = {"accion": accion, "boton": boton, "inicio": (x, y), "ultimo": (x, y), "sumar": con_tecla}
+        if accion == "MOVER":
+            self.setCursor(Qt.ClosedHandCursor)
+        elif accion == "ROTAR":
+            self.setCursor(Qt.SizeAllCursor)
 
     def mouseMoveEvent(self, ev) -> None:
-        if self._caja_inicio is not None:
-            x, y = self._pixel_vtk(ev)
-            self._dibujar_caja(self._caja_inicio, (x, y))
+        a = self._arrastre
+        if a is None:
             return
-        super().mouseMoveEvent(ev)
+        x, y = self._pixel_vtk(ev)
+        dx, dy = x - a["ultimo"][0], y - a["ultimo"][1]
+        a["ultimo"] = (x, y)
+        if a["accion"] == "ROTAR":
+            self._orbitar(dx, dy)
+        elif a["accion"] == "MOVER":
+            self._desplazar(dx, dy)
+        elif a["accion"] == "CAJA":
+            self._dibujar_caja(a["inicio"], (x, y))
 
     def mouseReleaseEvent(self, ev) -> None:
-        if self._caja_inicio is not None and ev.button() == Qt.LeftButton:
-            inicio, self._caja_inicio = self._caja_inicio, None
-            fin = self._pixel_vtk(ev)
-            self._dibujar_caja(None, None)
-            if abs(fin[0] - inicio[0]) <= UMBRAL_ARRASTRE_PX and abs(fin[1] - inicio[1]) <= UMBRAL_ARRASTRE_PX:
-                self._clic_en_modelo(int(fin[0]), int(fin[1]), self._caja_sumar)  # fue un clic
-                return
-            self.seleccionar_zona(inicio, fin, sumar=self._caja_sumar)
+        a = self._arrastre
+        if a is None or ev.button() != a["boton"]:
             return
-        super().mouseReleaseEvent(ev)
+        self._arrastre = None
+        self.set_navegacion(self._navegacion)  # restituye el cursor
+        x, y = self._pixel_vtk(ev)
+        inicio = a["inicio"]
+        fue_clic = abs(x - inicio[0]) <= UMBRAL_ARRASTRE_PX and abs(y - inicio[1]) <= UMBRAL_ARRASTRE_PX
+        accion = a["accion"]
+        if accion == "CAJA":
+            self._dibujar_caja(None, None)
+            if fue_clic:
+                self._clic_en_modelo(int(x), int(y), a["sumar"])
+            else:
+                self.seleccionar_zona(inicio, (x, y), sumar=a["sumar"])
+        elif accion == "CLIC" and fue_clic:
+            self._sondear(int(x), int(y))
+        elif accion == "DERECHO" and fue_clic and self._vista == "MODELO":
+            self.clic_derecho_en(int(x), int(y))
+        elif accion in ("MOVER", "ROTAR") and fue_clic and a["boton"] == Qt.LeftButton:
+            # con la mano o el giro activos, un clic sin arrastrar también selecciona
+            if self._vista == "ESFUERZOS":
+                self._sondear(int(x), int(y))
+            else:
+                self._clic_en_modelo(int(x), int(y), a["sumar"])
+
+    def wheelEvent(self, ev) -> None:
+        pasos = ev.angleDelta().y() / 120.0
+        if pasos:
+            self.renderer.GetActiveCamera().Zoom(1.15 ** pasos)
+            self.renderer.ResetCameraClippingRange()
+            self.render()
+
+    def keyPressEvent(self, ev) -> None:
+        ev.ignore()  # las teclas de VTK (w, s, f...) cambian la representación: las atajos son los de la ventana
+
+    def _desplazar(self, dx: float, dy: float) -> None:
+        """Mueve la vista: el modelo sigue al cursor."""
+
+        cam = self.renderer.GetActiveCamera()
+        alto = max(self.renderer.GetSize()[1], 1)
+        pos, foco = np.array(cam.GetPosition()), np.array(cam.GetFocalPoint())
+        direccion = foco - pos
+        distancia = float(np.linalg.norm(direccion))
+        direccion /= max(distancia, 1e-12)
+        arriba = np.array(cam.GetViewUp())
+        derecha = np.cross(direccion, arriba)
+        derecha /= max(np.linalg.norm(derecha), 1e-12)
+        arriba = np.cross(derecha, direccion)
+        if cam.GetParallelProjection():
+            por_pixel = 2.0 * cam.GetParallelScale() / alto
+        else:
+            por_pixel = 2.0 * distancia * math.tan(math.radians(cam.GetViewAngle()) / 2.0) / alto
+        delta = -(dx * derecha + dy * arriba) * por_pixel
+        cam.SetPosition(*(pos + delta))
+        cam.SetFocalPoint(*(foco + delta))
+        self.renderer.ResetCameraClippingRange()
+        self.render()
+
+    def _orbitar(self, dx: float, dy: float) -> None:
+        """Gira la vista alrededor del punto enfocado manteniendo el eje Z vertical (como SAP2000 o Revit)."""
+
+        cam = self.renderer.GetActiveCamera()
+        pos, foco = np.array(cam.GetPosition()), np.array(cam.GetFocalPoint())
+        angulo = math.radians(-dx * 0.4)
+        c, s_ = math.cos(angulo), math.sin(angulo)
+        giro_z = np.array([[c, -s_, 0.0], [s_, c, 0.0], [0.0, 0.0, 1.0]])
+        pos = foco + giro_z @ (pos - foco)
+        arriba = giro_z @ np.array(cam.GetViewUp())
+        cam.SetPosition(*pos)
+        cam.SetViewUp(*arriba)
+        direccion = foco - pos
+        elevacion = math.degrees(math.asin(np.clip(-direccion[2] / max(np.linalg.norm(direccion), 1e-12), -1.0, 1.0)))
+        delta = float(np.clip(-dy * 0.4, -89.0 - elevacion, 89.0 - elevacion))
+        cam.Elevation(delta)
+        if abs(elevacion + delta) < 89.5:
+            cam.SetViewUp(0.0, 0.0, 1.0)
+        else:
+            cam.OrthogonalizeViewUp()
+        self.renderer.ResetCameraClippingRange()
+        self.render()
 
     def _dibujar_caja(self, a, b) -> None:
         """Rectángulo de selección: continuo y azul si se arrastra de izquierda a derecha (solo lo que queda dentro);
@@ -413,38 +522,6 @@ class Visor3D(QtInteractor):
             return int(visual.cara_de_celda[celda])
         return celda
 
-    def _al_presionar(self, *_args) -> None:
-        # Los observadores de VTK reciben el "estilo" de interacción, no el
-        # interactor: la posición y las teclas se leen del interactor.
-        self._pulsacion = tuple(self.iren.interactor.GetEventPosition())
-
-    def _al_soltar(self, *_args) -> None:
-        interactor = self.iren.interactor
-        inicio, self._pulsacion = self._pulsacion, None
-        if inicio is None:
-            return
-        x, y = interactor.GetEventPosition()
-        if abs(x - inicio[0]) > UMBRAL_ARRASTRE_PX or abs(y - inicio[1]) > UMBRAL_ARRASTRE_PX:
-            return  # fue un arrastre (girar/mover la cámara), no un clic
-        if self._vista == "ESFUERZOS":
-            self._sondear(x, y)
-            return
-        sumar = bool(interactor.GetControlKey() or interactor.GetShiftKey())
-        self._clic_en_modelo(x, y, sumar)
-
-    def _al_presionar_derecho(self, *_args) -> None:
-        self._pulsacion_derecha = tuple(self.iren.interactor.GetEventPosition())
-
-    def _al_soltar_derecho(self, *_args) -> None:
-        interactor = self.iren.interactor
-        inicio, self._pulsacion_derecha = self._pulsacion_derecha, None
-        if inicio is None or self._vista != "MODELO":
-            return
-        x, y = interactor.GetEventPosition()
-        if abs(x - inicio[0]) > UMBRAL_ARRASTRE_PX or abs(y - inicio[1]) > UMBRAL_ARRASTRE_PX:
-            return  # fue un arrastre (zoom con el botón derecho), no un clic
-        self.clic_derecho_en(x, y)
-
     def clic_derecho_en(self, x: int, y: int) -> None:
         """Clic derecho en el píxel (x, y): si el elemento bajo el cursor no
         está en la selección pasa a ser la selección; luego pide el menú."""
@@ -530,9 +607,13 @@ class Visor3D(QtInteractor):
         if proyecto is None:
             return
 
-        largo = float(np.clip(0.06 * self._escala, 0.02, 1.5))
-        largo_apoyo = largo
+        # Tamaño de los símbolos: una fracción del modelo y, si hay barras, nunca mayor que parte de la barra típica
         barras = proyecto.todas_las_barras()
+        largo = float(np.clip(0.04 * self._escala, 0.005, 1.5))
+        longitudes = [proyecto.longitud_barra(i) for i in barras]
+        if longitudes:
+            largo = min(largo, 0.3 * float(np.median(longitudes)))
+        largo_apoyo = largo * self._escala_apoyos
 
         def punto_de(barra_id: str, s: float) -> np.ndarray:
             barra = proyecto.elemento_barra(barra_id)
@@ -550,9 +631,9 @@ class Visor3D(QtInteractor):
                 continue
             grados = (a.ux, a.uy, a.uz, a.rx, a.ry, a.rz)
             centro = np.array(proyecto.nodos[a.nodo_id].coordenadas)
-            for color, mallas in simbolo_apoyo(grados, centro, largo).items():
+            for color, mallas in simbolo_apoyo(grados, centro, largo_apoyo).items():
                 por_color.setdefault(color, []).extend(mallas)
-            etiquetas_apoyo.append(centro - np.array([0.0, 0.0, 1.35 * largo]))
+            etiquetas_apoyo.append(centro - np.array([0.0, 0.0, 1.35 * largo_apoyo]))
             textos_apoyo.append(nombre_apoyo(grados))
         for color, mallas in por_color.items():
             self.add_mesh(pv.merge(mallas), color=color, name=f"ASIG_APOYOS_{color}", pickable=False, show_scalar_bar=False)
@@ -568,15 +649,15 @@ class Visor3D(QtInteractor):
             direccion[eje] = 1.0
             for barra_id in barras_de_apoyo_area(proyecto, apoyo):
                 longitud = proyecto.longitud_barra(barra_id)
-                n = max(3, int(round(longitud * (apoyo.s_fin - apoyo.s_inicio) / (largo * 1.2))) + 1)
+                n = max(3, int(round(longitud * (apoyo.s_fin - apoyo.s_inicio) / (largo_apoyo * 1.2))) + 1)
                 for s in np.linspace(apoyo.s_inicio, apoyo.s_fin, n):
                     conos_area.append(
                         pv.Cone(
-                            center=punto_de(barra_id, s) - direccion * largo * 0.5, direction=direccion,
-                            height=largo * 0.9, radius=largo * 0.4, resolution=12,
+                            center=punto_de(barra_id, s) - direccion * largo_apoyo * 0.5, direction=direccion,
+                            height=largo_apoyo * 0.9, radius=largo_apoyo * 0.4, resolution=12,
                         )
                     )
-                etiquetas_apoyo.append(punto_de(barra_id, 0.5 * (apoyo.s_inicio + apoyo.s_fin)) - direccion * largo * 0.9)
+                etiquetas_apoyo.append(punto_de(barra_id, 0.5 * (apoyo.s_inicio + apoyo.s_fin)) - direccion * largo_apoyo * 0.9)
                 textos_apoyo.append("apoyo " + "".join(
                     n_ for n_, activo in zip(("Ux", "Uy", "Uz", "Rx", "Ry", "Rz"), (apoyo.ux, apoyo.uy, apoyo.uz, apoyo.rx, apoyo.ry, apoyo.rz)) if activo
                 ))
@@ -589,12 +670,12 @@ class Visor3D(QtInteractor):
             if c.nodo_id not in proyecto.nodos:
                 continue
             centro = np.array(proyecto.nodos[c.nodo_id].coordenadas)
-            marcas.append(pv.Sphere(radius=largo * 0.3, center=centro))
+            marcas.append(pv.Sphere(radius=largo_apoyo * 0.3, center=centro))
             if c.nodo_destino is not None and c.nodo_destino in proyecto.nodos:
                 destino = np.array(proyecto.nodos[c.nodo_destino].coordenadas)
-                marcas.append(pv.Sphere(radius=largo * 0.3, center=destino))
+                marcas.append(pv.Sphere(radius=largo_apoyo * 0.3, center=destino))
                 if np.linalg.norm(destino - centro) > 1e-9:
-                    marcas.append(pv.Line(centro, destino).tube(radius=largo * 0.08))
+                    marcas.append(pv.Line(centro, destino).tube(radius=largo_apoyo * 0.08))
         if marcas:
             self.add_mesh(pv.merge(marcas), color=COLOR_CONEXION, name="ASIG_CONEXIONES", pickable=False, show_scalar_bar=False)
 
@@ -846,6 +927,15 @@ class Visor3D(QtInteractor):
             self.add_text(texto, position="upper_left", font_size=11, color="black", name="TEXTO_ESFUERZOS")
         self.render()
 
+    def configurar_apoyos(self, escala: float) -> None:
+        """Cambia el tamaño de los símbolos de apoyo y de las marcas de las conexiones (1 = automático)."""
+
+        self._escala_apoyos = float(escala)
+        if self._argumentos_asignaciones is not None:
+            self.mostrar_asignaciones(*self._argumentos_asignaciones)
+            if self._vista == "ESFUERZOS":
+                self._mostrar_asignaciones(self._desplazamientos is None)
+
     def configurar_flechas(self, visibles: Optional[bool] = None, escala: Optional[float] = None) -> None:
         """Muestra u oculta las flechas de las cargas y cambia su tamaño (1 = automático)."""
 
@@ -878,7 +968,7 @@ class Visor3D(QtInteractor):
         except (KeyError, IndexError):
             return None
         malla = malla.clean()
-        malla.points = malla.points + normal * 0.002 * max(self._escala, 1.0)  # evita el parpadeo con la cara original
+        malla.points = malla.points + normal * 0.002 * self._escala  # evita el parpadeo con la cara original
         # puntos de muestra: muestreo del punto más lejano sobre los centros de los triángulos
         cel = malla.cell_centers().points
         elegidos = [int(np.argmin(np.linalg.norm(cel - centro, axis=1)))]
