@@ -92,7 +92,17 @@ class PerfilSeccion:
     """Sección transversal de un elemento tipo barra (viga o columna).
 
     Todas las propiedades geométricas en unidades consistentes con metros
-    (área en m2, inercias en m4).
+    (área en m2, inercias en m4). ``inercia_z`` es la inercia de la flexión
+    "fuerte" (alrededor del eje perpendicular a la altura) e ``inercia_y`` la
+    "débil".
+
+    ``forma`` indica cómo se modela la sección en el análisis:
+
+    * ``"RECT"``: rectángulo macizo ``altura`` × ``ancho`` (o el rectángulo
+      equivalente si no se conocen).
+    * ``"I"``: perfil doble T (``altura`` = peralte total, ``ancho`` = ancho
+      de las alas) con ``espesor_ala`` y ``espesor_alma``; se analiza con su
+      forma real (ver ``core.geometria.partes_seccion``).
     """
 
     nombre: str
@@ -103,6 +113,9 @@ class PerfilSeccion:
     altura: Optional[float] = None
     ancho: Optional[float] = None
     ifc_guid: Optional[str] = None
+    forma: str = "RECT"
+    espesor_ala: Optional[float] = None
+    espesor_alma: Optional[float] = None
 
 
 @dataclass
@@ -191,6 +204,9 @@ class Proyecto:
     columnas: Dict[str, ElementoBarra] = field(default_factory=dict)
     losas: Dict[str, Losa] = field(default_factory=dict)
     muros: Dict[str, Muro] = field(default_factory=dict)
+
+    #: Avisos que deja la importación del IFC (no se guardan en el proyecto).
+    avisos: List[str] = field(default_factory=list, repr=False, compare=False)
 
     _contador: _ContadorId = field(default_factory=_ContadorId, repr=False)
 

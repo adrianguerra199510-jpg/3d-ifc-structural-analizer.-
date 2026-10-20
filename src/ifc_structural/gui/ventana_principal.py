@@ -452,6 +452,8 @@ class VentanaPrincipal(QMainWindow):
                 f"\n\nNo se detectaron vigas de soporte para las losas: {', '.join(sin_soporte)}. Su peso propio "
                 "y sus cargas de área no se transferirán a las vigas."
             )
+        if proyecto.avisos:
+            texto += "\n\nAvisos:\n- " + "\n- ".join(proyecto.avisos)
         QMessageBox.information(self, "Importación completa", texto)
         self.statusBar().showMessage(
             "Modelo importado. Ahora asigne los apoyos: modo Cara + Ver → Vista inferior, clic en la base de cada columna."

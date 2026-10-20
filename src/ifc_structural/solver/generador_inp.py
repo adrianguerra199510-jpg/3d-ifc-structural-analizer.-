@@ -14,6 +14,20 @@ la documentación:
    (o no se conocen su altura y ancho reales), se aproxima mediante un
    **rectángulo equivalente** que conserva el área y la inercia fuerte
    (eje z) del perfil real — ver ``core.geometria.dimensiones_seccion``.
+   Los perfiles en I (acero) se analizan con su forma real: ccx 2.21 solo
+   expande a hexaedros (necesarios para obtener esfuerzos) las vigas B31
+   rectangulares (``SECTION=I`` no existe y ``CIRC`` exige elementos
+   cuadráticos), así que cada perfil se descompone en tres barras
+   rectangulares —dos alas y el alma— desplazadas respecto del eje y unidas
+   en cada nudo por tramos B31 muy rígidos (ver ``core.geometria.partes_seccion``
+   y ``_agregar_partes``). La acción compuesta, la flexión fuerte y débil y
+   la torsión de sección abierta salen del propio modelo. Comprobado con
+   ccx 2.21: con coeficiente de Poisson no nulo la expansión de esas barras
+   da esfuerzos laterales espurios (σyy, σzz ≈ 0,43·σxx) y un σxx 2 % alto,
+   por lo que las barras compuestas usan un material con ν = 0 y el módulo
+   de corte real (``*ELASTIC, TYPE=ENGINEERING CONSTANTS``), y el cortante
+   se recalcula aparte (``solver.recuperacion_perfiles``), porque ccx lo
+   reparte por igual entre alas y alma.
 
 2. **Cargas lineales**: se comprobó que, para elementos de viga (B31), las
    claves de carga distribuida global ``PX``/``PY``/``PZ`` NO son válidas
@@ -57,7 +71,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from ..core.asignacion import barras_de_apoyo_area
 from ..core.cargas import Apoyo, ApoyoArea, CargaLineal, CargaPuntual, Conexion
-from ..core.geometria import ejes_seccion
+from ..core.geometria import ejes_seccion, es_perfil_compuesto, partes_seccion
 from ..core.modelo import Proyecto
 
 Vector3 = Tuple[float, float, float]
@@ -97,6 +111,8 @@ class ElementoMalla:
     nodo_f: int
     s_inicio: float
     s_fin: float
+    #: Índice de la parte de la sección a la que pertenece (ver ``partes_seccion``).
+    parte: int = 0
 
 
 @dataclass
@@ -119,6 +135,64 @@ class MallaAnalisis:
     elementos_por_barra: Dict[str, List[int]] = field(default_factory=dict)
     orden_nodos_por_barra: Dict[str, List[int]] = field(default_factory=dict)
     posiciones_s_por_barra: Dict[str, List[float]] = field(default_factory=dict)
+    #: Elementos de las partes de una sección compuesta que no van sobre el
+    #: eje: (barra_id, índice de parte) -> ids de elemento.
+    elementos_por_parte: Dict[Tuple[str, int], List[int]] = field(default_factory=dict)
+    #: Tramos rígidos que unen el eje con cada parte: etiqueta -> ids de elemento.
+    elementos_auxiliares: Dict[str, List[int]] = field(default_factory=dict)
+    #: Parte de la sección que lleva la cadena de elementos del eje de cada
+    #: barra (-1: ninguna, el eje lleva solo un elemento casi sin rigidez).
+    parte_en_el_eje: Dict[str, int] = field(default_factory=dict)
+
+
+#: Prefijos de las etiquetas de elementos que no son barras del modelo (tramos
+#: rígidos de enlaces y de secciones compuestas): no se dibujan ni cuentan en
+#: los esfuerzos.
+PREFIJOS_AUXILIARES = ("ENL_", "RIG_")
+
+#: Lado (m) de la sección de la barra casi sin rigidez que lleva las cargas
+#: en el eje de una sección compuesta sin parte central.
+LADO_NUCLEO = 0.002
+
+
+def es_elemento_auxiliar(etiqueta: str) -> bool:
+    return etiqueta.startswith(PREFIJOS_AUXILIARES)
+
+
+def _agregar_partes(proyecto: Proyecto, malla: "MallaAnalisis", barra_id: str, barra, ids_nodo: List[int],
+                    posiciones: List[float], nuevo_id) -> None:
+    """Crea las barras de las partes desplazadas de una sección compuesta y
+    los tramos rígidos que las unen al eje, en cada nudo de la barra."""
+
+    partes = partes_seccion(proyecto, barra)
+    malla.parte_en_el_eje[barra_id] = next((k for k, p in enumerate(partes) if p.en_el_eje), -1)
+    for id_el in malla.elementos_por_barra[barra_id]:
+        malla.elementos[id_el].parte = malla.parte_en_el_eje[barra_id]
+    ejes = ejes_seccion(proyecto, barra)
+    for k, parte in enumerate(partes):
+        if parte.en_el_eje:
+            continue
+        d = parte.desplazamiento1 * ejes.e1 + parte.desplazamiento2 * ejes.e2
+        ids_parte: List[int] = []
+        for nid in ids_nodo:
+            n = malla.nodos[nid]
+            nuevo = nuevo_id("nodo")
+            malla.nodos[nuevo] = NodoMalla(nuevo, n.x + float(d[0]), n.y + float(d[1]), n.z + float(d[2]), None)
+            ids_parte.append(nuevo)
+        elementos_parte: List[int] = []
+        for i in range(len(ids_parte) - 1):
+            id_el = nuevo_id("elemento")
+            malla.elementos[id_el] = ElementoMalla(id_el, barra_id, ids_parte[i], ids_parte[i + 1],
+                                                   posiciones[i], posiciones[i + 1], parte=k)
+            elementos_parte.append(id_el)
+        malla.elementos_por_parte[(barra_id, k)] = elementos_parte
+        etiqueta = f"RIG_{barra_id}_{k}"
+        tramos: List[int] = []
+        for nid, nid_parte in zip(ids_nodo, ids_parte):
+            id_el = nuevo_id("elemento")
+            malla.elementos[id_el] = ElementoMalla(id_el, etiqueta, nid, nid_parte, 0.0, 1.0, parte=k)
+            tramos.append(id_el)
+        malla.elementos_auxiliares[etiqueta] = tramos
 
 
 def construir_malla(
@@ -225,6 +299,10 @@ def construir_malla(
             )
             elementos_barra.append(id_el)
         malla.elementos_por_barra[barra_id] = elementos_barra
+        if len(partes_seccion(proyecto, barra)) > 1:
+            _agregar_partes(proyecto, malla, barra_id, barra, ids_nodo, posiciones, nuevo_id)
+        else:
+            malla.parte_en_el_eje[barra_id] = 0
 
     # Enlaces rígidos: un tramo B31 muy rígido entre los dos nudos (ver tramos_rigidos)
     for c in conexiones:
@@ -261,6 +339,12 @@ def _etiqueta_ccx(nombre: str) -> str:
     .inp (CalculiX no admite espacios ni comas en las etiquetas)."""
 
     return "".join(c if c.isalnum() else "_" for c in nombre).upper()[:80]
+
+
+def _material_sin_poisson(nombre: str) -> str:
+    """Etiqueta del material con ν = 0 y G real que usan las barras compuestas."""
+
+    return _etiqueta_ccx(nombre) + "_SP"
 
 
 def _carga_global_en_elemento(elemento: ElementoMalla, cargas: List[CargaLineal]) -> Vector3:
@@ -419,6 +503,16 @@ def generar_inp_caso(
         for eid in elementos_ids:
             el = malla.elementos[eid]
             lineas.append(f"{eid},{el.nodo_i},{el.nodo_f}")
+    for (barra_id, k), elementos_ids in malla.elementos_por_parte.items():
+        lineas.append(f"*ELEMENT,TYPE=B31,ELSET=E_{barra_id}_P{k}")
+        for eid in elementos_ids:
+            el = malla.elementos[eid]
+            lineas.append(f"{eid},{el.nodo_i},{el.nodo_f}")
+    for etiqueta, elementos_ids in malla.elementos_auxiliares.items():
+        lineas.append(f"*ELEMENT,TYPE=B31,ELSET=E_{etiqueta}")
+        for eid in elementos_ids:
+            el = malla.elementos[eid]
+            lineas.append(f"{eid},{el.nodo_i},{el.nodo_f}")
 
     for nombre, material in proyecto.materiales.items():
         lineas.append(f"*MATERIAL,NAME={_etiqueta_ccx(nombre)}")
@@ -426,15 +520,31 @@ def generar_inp_caso(
         lineas.append(f"{material.modulo_elasticidad:.6g},{material.modulo_poisson:.4f}")
         lineas.append("*DENSITY")
         lineas.append(f"{DENSIDAD_FICTICIA}")
+        if any(es_perfil_compuesto(proyecto.perfiles[b.perfil]) and b.material == nombre
+               for b in proyecto.todas_las_barras().values()):
+            g = material.modulo_corte
+            lineas.append(f"*MATERIAL,NAME={_material_sin_poisson(nombre)}")
+            lineas.append("*ELASTIC,TYPE=ENGINEERING CONSTANTS")
+            e = material.modulo_elasticidad
+            lineas.append(f"{e:.6g},{e:.6g},{e:.6g},0,0,0,{g:.6g},{g:.6g}")
+            lineas.append(f"{g:.6g}")
+            lineas.append("*DENSITY")
+            lineas.append(f"{DENSIDAD_FICTICIA}")
 
     enlaces = tramos_rigidos(proyecto, malla, conexiones)
-    if enlaces:
+    if enlaces or malla.elementos_auxiliares:
         e_max = max((m.modulo_elasticidad for m in proyecto.materiales.values()), default=1e7)
         lineas.append("*MATERIAL,NAME=RIGIDO_ENLACE")
         lineas.append("*ELASTIC")
         lineas.append(f"{e_max * FACTOR_RIGIDEZ_ENLACE:.6g},0.2000")
         lineas.append("*DENSITY")
         lineas.append(f"{DENSIDAD_FICTICIA}")
+        for etiqueta in malla.elementos_auxiliares:
+            barra_id = etiqueta[len("RIG_"):].rsplit("_", 1)[0]
+            t = ejes_seccion(proyecto, proyecto.elemento_barra(barra_id)).t
+            lineas.append(f"*BEAM SECTION,ELSET=E_{etiqueta},MATERIAL=RIGIDO_ENLACE,SECTION=RECT")
+            lineas.append(f"{LADO_ENLACE},{LADO_ENLACE}")
+            lineas.append(f"{t[0]:.9f},{t[1]:.9f},{t[2]:.9f}")
         for etiqueta, origen, destino, n1 in enlaces:
             lineas.append(f"*BEAM SECTION,ELSET=E_{etiqueta},MATERIAL=RIGIDO_ENLACE,SECTION=RECT")
             lineas.append(f"{LADO_ENLACE},{LADO_ENLACE}")
@@ -443,12 +553,21 @@ def generar_inp_caso(
     areas: Dict[str, float] = {etiqueta: LADO_ENLACE**2 for etiqueta, *_ in enlaces}
     for barra_id, barra in proyecto.todas_las_barras().items():
         ejes = ejes_seccion(proyecto, barra)
-        areas[barra_id] = ejes.dim1 * ejes.dim2
-        lineas.append(
-            f"*BEAM SECTION,ELSET=E_{barra_id},MATERIAL={_etiqueta_ccx(barra.material)},SECTION=RECT"
-        )
-        lineas.append(f"{ejes.dim1:.6g},{ejes.dim2:.6g}")
-        lineas.append(f"{ejes.e1[0]:.9f},{ejes.e1[1]:.9f},{ejes.e1[2]:.9f}")
+        partes = partes_seccion(proyecto, barra)
+        en_el_eje = malla.parte_en_el_eje.get(barra_id, 0)
+        if en_el_eje >= 0:
+            dim1, dim2 = partes[en_el_eje].dim1, partes[en_el_eje].dim2
+        else:  # sin parte central: el eje lleva una barra casi sin rigidez que recibe las cargas
+            dim1 = dim2 = LADO_NUCLEO
+        areas[barra_id] = dim1 * dim2
+        secciones = [(f"E_{barra_id}", dim1, dim2)]
+        secciones += [(f"E_{barra_id}_P{k}", p.dim1, p.dim2) for k, p in enumerate(partes) if not p.en_el_eje]
+        material_ccx = (_material_sin_poisson(barra.material) if es_perfil_compuesto(proyecto.perfiles[barra.perfil])
+                        else _etiqueta_ccx(barra.material))
+        for elset, d1, d2 in secciones:
+            lineas.append(f"*BEAM SECTION,ELSET={elset},MATERIAL={material_ccx},SECTION=RECT")
+            lineas.append(f"{d1:.6g},{d2:.6g}")
+            lineas.append(f"{ejes.e1[0]:.9f},{ejes.e1[1]:.9f},{ejes.e1[2]:.9f}")
 
     ecuaciones = ecuaciones_de_conexiones(proyecto, malla, conexiones)
     dependientes: Set[Tuple[int, int]] = {(eq[0][0], eq[0][1]) for eq in ecuaciones}

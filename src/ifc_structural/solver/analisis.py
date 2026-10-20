@@ -28,8 +28,9 @@ from ..core.transferencia import (
     transferir_carga_area,
 )
 from .ejecutor_ccx import ejecutar_ccx_todos_los_casos
-from .generador_inp import MallaAnalisis, construir_malla, generar_inp_todos_los_casos
-from .lector_resultados import MallaTensiones, leer_malla_frd, leer_tensiones_frd
+from .generador_inp import MallaAnalisis, construir_malla, es_elemento_auxiliar, generar_inp_todos_los_casos
+from .recuperacion_perfiles import hay_perfiles_compuestos, recuperar_perfiles
+from .lector_resultados import MallaTensiones, leer_malla_frd, leer_tensiones_frd, recortar_malla
 
 #: Esfuerzo (kPa) a partir del cual se considera que el resultado no es
 #: físicamente razonable (100 GPa): señal típica de una estructura inestable.
@@ -379,6 +380,25 @@ def ejecutar_analisis(
         if not np.array_equal(malla_caso.ids_nodos, malla_tensiones.ids_nodos):
             raise ErrorAnalisis(f"La malla de resultados del caso {caso_id} no coincide con la de los demás casos.")
         tensiones_por_caso[caso_id] = leer_tensiones_frd(ejecucion.ruta_frd, malla_tensiones)
+
+    # Extremos de barra y cortante de perfiles en I: se rehacen (ver recuperacion_perfiles)
+    tensiones_por_caso = {
+        caso: recuperar_perfiles(proyecto, malla, malla_tensiones, t) for caso, t in tensiones_por_caso.items()
+    }
+    if hay_perfiles_compuestos(proyecto):
+        advertencias.append(
+            "Perfiles en I: los esfuerzos no incluyen el cortante por torsión ni los efectos locales de "
+            "placas, soldaduras o pernos (la unión se idealiza por los ejes de las barras)."
+        )
+
+    # Los tramos rígidos (enlaces y uniones de las partes de un perfil) no son
+    # elementos del modelo: se descartan de la malla y de los esfuerzos.
+    mantener = np.array(
+        [not es_elemento_auxiliar(malla.elementos[int(e)].barra_id) for e in malla_tensiones.ids_elementos]
+    )
+    if not mantener.all():
+        malla_tensiones, conservados = recortar_malla(malla_tensiones, mantener)
+        tensiones_por_caso = {caso: t[conservados] for caso, t in tensiones_por_caso.items()}
 
     avanzar("Combinando casos de carga...")
     tensiones_por_combinacion = superponer_todas_las_combinaciones(tensiones_por_caso, list(combinaciones.values()))

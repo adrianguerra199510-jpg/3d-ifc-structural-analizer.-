@@ -53,6 +53,24 @@ class MallaTensiones:
         return len(self.ids_nodos)
 
 
+def recortar_malla(malla: MallaTensiones, mantener: np.ndarray):
+    """Malla con solo los hexaedros marcados en ``mantener`` (máscara por
+    celda) y los nodos que usan. Devuelve (malla recortada, índices de los
+    nodos conservados en la malla original) para recortar igual cualquier
+    campo nodal: ``campo[indices]``."""
+
+    conectividad = malla.conectividad[mantener]
+    usados = np.unique(conectividad)
+    nueva = np.searchsorted(usados, conectividad)
+    recortada = MallaTensiones(
+        ids_nodos=malla.ids_nodos[usados],
+        coordenadas=malla.coordenadas[usados],
+        ids_elementos=malla.ids_elementos[mantener],
+        conectividad=nueva,
+    )
+    return recortada, usados
+
+
 def _parsear_valores(linea: str, n_valores: int) -> List[float]:
     valores = []
     inicio = _INICIO_VALORES

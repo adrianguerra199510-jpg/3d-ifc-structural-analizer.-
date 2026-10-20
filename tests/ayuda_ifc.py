@@ -205,3 +205,107 @@ def crear_ifc_portico(ruta: str) -> None:
     asociar(losa, material)
 
     model.write(ruta)
+
+
+def crear_ifc_conexion_metalica(ruta: str) -> None:
+    """Conexión metálica viga-columna como la exportaría un programa de acero:
+
+    - Columna HEB 200 continua de 4 m (z = 0 a 4), con las alas en x = ±0,1.
+    - Dos vigas IPE 300 (alma vertical) a z = 3, una a cada lado, de 2,5 m,
+      que llegan a las alas por el medio de la altura de la columna (unión en T).
+    - Placas de extremo de 20 mm (IfcPlate) y 6 pernos por viga (IfcMechanicalFastener):
+      no son barras y la aplicación debe ignorarlos.
+    - Acero S275 con propiedades mecánicas (E = 210 GPa).
+    """
+
+    model = ifcopenshell.file(schema="IFC4")
+    longitud = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Name="METRE")
+    unidades = model.create_entity("IfcUnitAssignment", Units=[longitud])
+    origen = model.create_entity("IfcAxis2Placement3D", Location=model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0, 0.0)))
+    contexto = model.create_entity(
+        "IfcGeometricRepresentationContext", ContextType="Model", CoordinateSpaceDimension=3,
+        Precision=1e-5, WorldCoordinateSystem=origen,
+    )
+    proyecto = model.create_entity(
+        "IfcProject", GlobalId=guid.new(), Name="Conexión metálica", UnitsInContext=unidades, RepresentationContexts=[contexto]
+    )
+    sitio = model.create_entity("IfcSite", GlobalId=guid.new(), Name="Sitio", ObjectPlacement=_placement(model))
+    edificio = model.create_entity("IfcBuilding", GlobalId=guid.new(), Name="Edificio", ObjectPlacement=_placement(model))
+    piso = model.create_entity("IfcBuildingStorey", GlobalId=guid.new(), Name="Nivel 1", ObjectPlacement=_placement(model))
+    model.create_entity("IfcRelAggregates", GlobalId=guid.new(), RelatingObject=proyecto, RelatedObjects=[sitio])
+    model.create_entity("IfcRelAggregates", GlobalId=guid.new(), RelatingObject=sitio, RelatedObjects=[edificio])
+    model.create_entity("IfcRelAggregates", GlobalId=guid.new(), RelatingObject=edificio, RelatedObjects=[piso])
+
+    acero = _material_con_propiedades(model, "ACERO_S275", 2.1e11, 0.3, 7850.0)
+
+    def asociar(elemento, relacionado):
+        model.create_entity("IfcRelAssociatesMaterial", GlobalId=guid.new(), RelatingMaterial=relacionado, RelatedObjects=[elemento])
+        model.create_entity("IfcRelContainedInSpatialStructure", GlobalId=guid.new(), RelatingStructure=piso, RelatedElements=[elemento])
+
+    def perfil_i(nombre, ancho, alto, alma, ala):
+        return model.create_entity(
+            "IfcIShapeProfileDef", ProfileType="AREA", ProfileName=nombre,
+            OverallWidth=ancho, OverallDepth=alto, WebThickness=alma, FlangeThickness=ala,
+        )
+
+    def forma_extruida(perfil, profundidad, eje_x_local=None, eje_z_local=None):
+        posicion = model.create_entity(
+            "IfcAxis2Placement3D", Location=model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0, 0.0))
+        )
+        solido = model.create_entity(
+            "IfcExtrudedAreaSolid", SweptArea=perfil, Position=posicion,
+            ExtrudedDirection=model.create_entity("IfcDirection", DirectionRatios=(0.0, 0.0, 1.0)), Depth=profundidad,
+        )
+        representacion = model.create_entity(
+            "IfcShapeRepresentation", ContextOfItems=contexto, RepresentationIdentifier="Body",
+            RepresentationType="SweptSolid", Items=[solido],
+        )
+        return model.create_entity("IfcProductDefinitionShape", Representations=[representacion])
+
+    def con_perfil(perfil):
+        mp = model.create_entity("IfcMaterialProfile", Profile=perfil, Material=acero)
+        conjunto = model.create_entity("IfcMaterialProfileSet", MaterialProfiles=[mp])
+        return model.create_entity("IfcMaterialProfileSetUsage", ForProfileSet=conjunto, CardinalPoint=5)
+
+    # --- Columna HEB 200: profundidad (eje local Y) a lo largo de X global
+    heb = perfil_i("HEB200", 0.200, 0.200, 0.009, 0.015)
+    columna = model.create_entity(
+        "IfcColumn", GlobalId=guid.new(), Name="C1",
+        ObjectPlacement=_placement(model, 0.0, 0.0, 0.0, axis=(0.0, 0.0, 1.0), ref_direction=(0.0, 1.0, 0.0)),
+        Representation=forma_extruida(heb, 4.0),
+    )
+    asociar(columna, con_perfil(heb))
+
+    # --- Vigas IPE 300: alma vertical; ejes locales X -> Y global, Y -> Z global
+    ipe = perfil_i("IPE300", 0.150, 0.300, 0.0071, 0.0107)
+    uso_ipe = con_perfil(ipe)
+    largo_viga, cara_columna, espesor_placa = 2.5, 0.1, 0.02
+    for nombre, signo in (("B1", 1.0), ("B2", -1.0)):
+        x_inicio = signo * (cara_columna + espesor_placa)
+        viga = model.create_entity(
+            "IfcBeam", GlobalId=guid.new(), Name=nombre,
+            ObjectPlacement=_placement(model, x_inicio, 0.0, 3.0, axis=(signo, 0.0, 0.0), ref_direction=(0.0, 1.0, 0.0)),
+            Representation=forma_extruida(ipe, largo_viga - espesor_placa),
+        )
+        asociar(viga, uso_ipe)
+
+        # Placa de extremo 150 x 340 x 20 mm, entre la viga y el ala de la columna
+        placa_perfil = model.create_entity("IfcRectangleProfileDef", ProfileType="AREA", XDim=0.15, YDim=0.34)
+        placa = model.create_entity(
+            "IfcPlate", GlobalId=guid.new(), Name=f"PL_{nombre}",
+            ObjectPlacement=_placement(model, signo * cara_columna, 0.0, 3.0, axis=(signo, 0.0, 0.0), ref_direction=(0.0, 1.0, 0.0)),
+            Representation=forma_extruida(placa_perfil, espesor_placa),
+        )
+        asociar(placa, acero)
+
+        # 6 pernos M20 (2 columnas x 3 filas) que atraviesan placa y ala
+        for k, (dy, dz) in enumerate([(-0.05, -0.1), (0.05, -0.1), (-0.05, 0.0), (0.05, 0.0), (-0.05, 0.1), (0.05, 0.1)]):
+            perno_perfil = model.create_entity("IfcCircleProfileDef", ProfileType="AREA", Radius=0.01)
+            perno = model.create_entity(
+                "IfcMechanicalFastener", GlobalId=guid.new(), Name=f"PERNO_{nombre}_{k + 1}",
+                ObjectPlacement=_placement(model, signo * (cara_columna - 0.03), dy, 3.0 + dz, axis=(signo, 0.0, 0.0), ref_direction=(0.0, 1.0, 0.0)),
+                Representation=forma_extruida(perno_perfil, 0.07),
+            )
+            asociar(perno, acero)
+
+    model.write(ruta)

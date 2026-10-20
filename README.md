@@ -107,6 +107,34 @@ El resultado de la transferencia se muestra en el visor como cargas
 lineales equivalentes sobre cada viga (uniformes o trapezoidales simplificadas
 a un valor promedio en Fase 1).
 
+## Estructuras de acero: perfiles en I y uniones
+
+- **Perfiles reales.** Los perfiles `IfcIShapeProfileDef` (IPE, HEA, HEB…), los
+  rectangulares y los circulares se leen del IFC (del conjunto de perfiles del
+  material o de la extrusión del elemento) con su peralte orientado como está
+  colocado en el modelo. Un perfil en I se analiza con su **forma real**: CalculiX
+  2.21 no tiene sección en I para vigas B31, así que se descompone en alas y alma
+  (tres barras rectangulares unidas en cada nudo por tramos rígidos). La flexión
+  fuerte y débil y la torsión de sección abierta salen del modelo; el cortante
+  (que ccx reparte por igual entre alas y alma) se rehace: `V/(tw·hw)` en el alma.
+  Se comprobó contra `M·c/I` y `V/(tw·hw)` (error < 1 %, ver `tests/test_perfiles_i.py`).
+  Los radios de acuerdo alma–ala no se modelan (~3 % menos de área que la tabla).
+- **Extremos de barra.** ccx entrega en los extremos de cada barra esfuerzos de
+  flexión hasta un 5–20 % bajos (justo donde el momento suele ser máximo): se
+  extrapolan desde el interior de la barra.
+- **Uniones en T.** Una viga que llega a media altura de una columna continua
+  (o una secundaria contra una principal) se conecta: su extremo pasa al eje de la otra
+  barra y esta se parte en el punto de unión. Los `IfcMember` se importan como viga o
+  columna según su inclinación.
+- **No se modelan** placas de extremo, soldaduras, pernos ni rigidizadores (se
+  avisa al importar): las barras se unen por sus ejes. Tampoco se incluye el cortante
+  por torsión de los perfiles en I. Los perfiles huecos, en L o en U no están
+  soportados (se aproximan con un rectángulo macizo y se avisa); el círculo se
+  analiza como un cuadrado de igual inercia.
+- **Cargas en los extremos.** En modo **Cara** se pueden cargar las caras extremas
+  de cada barra: una presión (× el área real del perfil) o una fuerza puntual en la
+  dirección elegida, aplicada en el nodo del extremo.
+
 ## Peso propio
 
 Se calcula a partir de la densidad del material y el área de la sección (o el
@@ -180,7 +208,8 @@ src/ifc_structural/
 ├── ifc/
 │   └── importador.py              # lectura de IFC con ifcopenshell
 ├── solver/
-│   ├── generador_inp.py           # escritura del .inp de CalculiX
+│   ├── generador_inp.py           # escritura del .inp de CalculiX (perfiles en I como alas + alma)
+│   ├── recuperacion_perfiles.py   # cortante de perfiles en I y esfuerzos en los extremos de barra
 │   ├── ejecutor_ccx.py            # ejecución de ccx vía subprocess
 │XX
 ├── combinaciones/

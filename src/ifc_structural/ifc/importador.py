@@ -53,9 +53,10 @@ import numpy as np
 import ifcopenshell
 import ifcopenshell.geom
 import ifcopenshell.util.element as util_element
+import ifcopenshell.util.placement as util_placement
 import ifcopenshell.util.unit as util_unit
 
-from ..core.conectividad import conectar_nodos
+from ..core.conectividad import conectar_nodos, conectar_uniones_en_t
 from ..core.modelo import DireccionLosa, Material, ModoAnalisisLosa, PerfilSeccion, Proyecto
 from ..core.vigas_soporte import asignar_vigas_soporte
 
@@ -194,37 +195,98 @@ def _obtener_o_crear_material(proyecto: Proyecto, elemento) -> str:
     return nombre
 
 
-def _perfil_real_desde_material(elemento) -> Optional[Tuple[str, float, float, float, float, Optional[float], Optional[float]]]:
-    """Intenta leer un perfil real (rectángulo o círculo) desde
-    IfcMaterialProfileSetUsage. Devuelve
-    (nombre, area, inercia_y, inercia_z, inercia_torsional, altura, ancho)
-    o None si no hay perfil utilizable."""
+def _perfil_ifc_del_elemento(elemento):
+    """Perfil IFC del elemento: el del conjunto de perfiles del material o, si
+    no lo hay, el de su primera extrusión (``IfcExtrudedAreaSolid``)."""
 
     material_ifc = util_element.get_material(elemento)
-    if material_ifc is None or not material_ifc.is_a("IfcMaterialProfileSetUsage"):
+    if material_ifc is not None and material_ifc.is_a("IfcMaterialProfileSetUsage"):
+        perfiles = material_ifc.ForProfileSet.MaterialProfiles
+        if perfiles and perfiles[0].Profile is not None:
+            return perfiles[0].Profile
+    extrusion = _extrusion_del_elemento(elemento)
+    return extrusion.SweptArea if extrusion is not None else None
+
+
+def _extrusion_del_elemento(elemento):
+    representacion = getattr(elemento, "Representation", None)
+    if representacion is None:
         return None
-    perfiles = material_ifc.ForProfileSet.MaterialProfiles
-    if not perfiles:
+    for rep in representacion.Representations:
+        for item in rep.Items:
+            if item.is_a("IfcExtrudedAreaSolid"):
+                return item
+    return None
+
+
+def _perfil_real(perfil_ifc, factor_longitud: float) -> Optional[PerfilSeccion]:
+    """Propiedades de un perfil IFC conocido (rectángulo, círculo o doble T),
+    en metros; None si la forma no está soportada."""
+
+    if perfil_ifc is None:
         return None
-    perfil_ifc = perfiles[0].Profile
     nombre = perfil_ifc.ProfileName or perfil_ifc.is_a()
+    f = factor_longitud
 
-    if perfil_ifc.is_a("IfcRectangleProfileDef"):
-        ancho, altura = float(perfil_ifc.XDim), float(perfil_ifc.YDim)
-        area = ancho * altura
-        inercia_y = ancho * altura**3 / 12.0
-        inercia_z = altura * ancho**3 / 12.0
-        inercia_torsional = _torsion_rectangular(ancho, altura)
-        return nombre, area, inercia_y, inercia_z, inercia_torsional, altura, ancho
+    if perfil_ifc.is_a("IfcRectangleProfileDef") and not perfil_ifc.is_a("IfcRectangleHollowProfileDef"):
+        ancho, altura = float(perfil_ifc.XDim) * f, float(perfil_ifc.YDim) * f
+        return PerfilSeccion(
+            nombre=nombre, area=ancho * altura, inercia_y=altura * ancho**3 / 12.0,
+            inercia_z=ancho * altura**3 / 12.0, inercia_torsional=_torsion_rectangular(ancho, altura),
+            altura=altura, ancho=ancho,
+        )
 
-    if perfil_ifc.is_a("IfcCircleProfileDef"):
-        radio = float(perfil_ifc.Radius)
-        area = 3.141592653589793 * radio**2
-        inercia = 3.141592653589793 * radio**4 / 4.0
-        inercia_torsional = 3.141592653589793 * radio**4 / 2.0
-        return nombre, area, inercia, inercia, inercia_torsional, 2 * radio, 2 * radio
+    if perfil_ifc.is_a("IfcCircleProfileDef") and not perfil_ifc.is_a("IfcCircleHollowProfileDef"):
+        # ccx 2.21 no expande vigas B31 circulares: se analiza con el cuadrado
+        # de igual inercia (área real aparte, para el peso propio).
+        radio = float(perfil_ifc.Radius) * f
+        inercia = np.pi * radio**4 / 4.0
+        lado = (12.0 * inercia) ** 0.25
+        return PerfilSeccion(
+            nombre=nombre, area=np.pi * radio**2, inercia_y=inercia, inercia_z=inercia,
+            inercia_torsional=np.pi * radio**4 / 2.0, altura=lado, ancho=lado,
+        )
 
-    return None  # otras formas (I, L, etc.): fuera de alcance de la Fase 1
+    if perfil_ifc.is_a("IfcIShapeProfileDef") and not perfil_ifc.is_a("IfcAsymmetricIShapeProfileDef"):
+        ancho, altura = float(perfil_ifc.OverallWidth) * f, float(perfil_ifc.OverallDepth) * f
+        alma, ala = float(perfil_ifc.WebThickness) * f, float(perfil_ifc.FlangeThickness) * f
+        if min(ancho, altura, alma, ala) <= 0 or 2 * ala >= altura or alma >= ancho:
+            return None
+        interior = altura - 2 * ala
+        return PerfilSeccion(
+            nombre=nombre,
+            area=2 * ancho * ala + interior * alma,
+            inercia_y=2 * ala * ancho**3 / 12.0 + interior * alma**3 / 12.0,
+            inercia_z=ancho * altura**3 / 12.0 - (ancho - alma) * interior**3 / 12.0,
+            inercia_torsional=(2 * ancho * ala**3 + interior * alma**3) / 3.0,
+            altura=altura, ancho=ancho, forma="I", espesor_ala=ala, espesor_alma=alma,
+        )
+    return None
+
+
+def _direccion_peralte(elemento) -> Optional[np.ndarray]:
+    """Dirección global (unitaria) del eje Y del perfil de la extrusión, que
+    para un perfil en I o rectangular es el sentido del peralte."""
+
+    extrusion = _extrusion_del_elemento(elemento)
+    if extrusion is None or getattr(elemento, "ObjectPlacement", None) is None:
+        return None
+    try:
+        matriz = util_placement.get_local_placement(elemento.ObjectPlacement)
+        if extrusion.Position is not None:
+            matriz = matriz @ util_placement.get_axis2placement(extrusion.Position)
+        y_local = np.array([0.0, 1.0, 0.0])
+        posicion2d = getattr(extrusion.SweptArea, "Position", None)
+        if posicion2d is not None and posicion2d.RefDirection is not None:
+            x2d = np.array(posicion2d.RefDirection.DirectionRatios[:2], dtype=float)
+            x2d /= np.linalg.norm(x2d)
+            y_local = np.array([-x2d[1], x2d[0], 0.0])
+        direccion = matriz[:3, :3] @ y_local
+    except Exception as exc:  # geometría de ubicación atípica: se usa la heurística de la OBB
+        logger.debug("No se pudo leer la ubicación del perfil: %s", exc)
+        return None
+    norma = np.linalg.norm(direccion)
+    return direccion / norma if norma > 1e-9 else None
 
 
 def _torsion_rectangular(ancho: float, altura: float) -> float:
@@ -261,24 +323,32 @@ def _elegir_orientacion(ejes: np.ndarray, minimos: np.ndarray, maximos: np.ndarr
     return tuple(float(c) for c in n1), extensiones[k], extensiones[1 - k]
 
 
-def _obtener_o_crear_perfil(proyecto: Proyecto, elemento, vertices: np.ndarray):
+def _obtener_o_crear_perfil(proyecto: Proyecto, elemento, vertices: np.ndarray, factor_longitud: float, eje: np.ndarray):
     """Devuelve (nombre del perfil, vector_n1 de la barra)."""
 
     _, ejes, minimos, maximos = _pca(vertices)
-    real = _perfil_real_desde_material(elemento)
+    real = _perfil_real(_perfil_ifc_del_elemento(elemento), factor_longitud)
     if real is not None:
-        nombre, area, iy, iz, it, altura, ancho = real
-        n1, _, _ = _elegir_orientacion(ejes, minimos, maximos, altura)
-        if nombre not in proyecto.perfiles:
-            proyecto.agregar_perfil(
-                PerfilSeccion(
-                    nombre=nombre, area=area, inercia_y=iy, inercia_z=iz,
-                    inercia_torsional=it, altura=altura, ancho=ancho,
-                )
-            )
-        return nombre, n1
+        n1, _, _ = _elegir_orientacion(ejes, minimos, maximos, real.altura)
+        # El peralte del perfil, tal como está colocado en el IFC, es más fiable que la caja
+        # orientada (imprescindible en perfiles casi cuadrados como un HEB).
+        peralte = _direccion_peralte(elemento)
+        if peralte is not None:
+            peralte = peralte - np.dot(peralte, eje) * eje
+            if np.linalg.norm(peralte) > 0.5:
+                peralte = peralte / np.linalg.norm(peralte)
+                n1 = tuple(float(c) for c in (peralte if peralte[2] >= 0 else -peralte))
+        if real.nombre not in proyecto.perfiles:
+            proyecto.agregar_perfil(real)
+        return real.nombre, n1
 
     # Sin perfil real: aproximar con la caja orientada de la geometría.
+    perfil_ifc = _perfil_ifc_del_elemento(elemento)
+    if perfil_ifc is not None:
+        proyecto.avisos.append(
+            f"{elemento.Name or elemento.GlobalId}: el perfil {perfil_ifc.is_a()} no está soportado; "
+            "se aproxima con un rectángulo macizo (rigidez y esfuerzos poco fiables)."
+        )
     n1, altura, ancho = _elegir_orientacion(ejes, minimos, maximos, None)
     nombre = f"APROX_{elemento.GlobalId}"
     proyecto.agregar_perfil(
@@ -311,6 +381,8 @@ def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: floa
     eje_principal = ejes[:, 0]
     punto_inicio = centro + eje_principal * minimos[0]
     punto_fin = centro + eje_principal * maximos[0]
+    if tipo == "MIEMBRO":  # IfcMember: columna si es casi vertical, si no viga
+        tipo = "COLUMNA" if abs(eje_principal[2]) > 0.7 else "VIGA"
     # El sentido del eje principal de la PCA es arbitrario: las columnas se
     # orientan siempre de la base (inicio) al tope (fin).
     if tipo != "VIGA" and punto_fin[2] < punto_inicio[2]:
@@ -320,7 +392,7 @@ def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: floa
     nodo_fin = proyecto.nodo_o_existente(*_limpiar(punto_fin))
 
     material = _obtener_o_crear_material(proyecto, elemento)
-    perfil, n1 = _obtener_o_crear_perfil(proyecto, elemento, vertices)
+    perfil, n1 = _obtener_o_crear_perfil(proyecto, elemento, vertices, factor_longitud, eje_principal)
 
     nombre = elemento.Name or elemento.GlobalId
     if tipo == "VIGA":
@@ -416,6 +488,29 @@ def _procesar_elemento_planar(proyecto: Proyecto, elemento, vertices: np.ndarray
     return nombre, espesor, material, nodos_contorno_ids
 
 
+#: Elementos de una conexión metálica que no son barras y no se modelan.
+_TIPOS_DE_CONEXION = {
+    "IfcPlate": "placas", "IfcMechanicalFastener": "pernos/anclajes", "IfcFastener": "elementos de fijación",
+    "IfcDiscreteAccessory": "accesorios", "IfcReinforcingBar": "barras de refuerzo",
+}
+
+
+def _avisar_elementos_ignorados(modelo_ifc, proyecto: Proyecto) -> None:
+    cantidades = {}
+    for tipo, descripcion in _TIPOS_DE_CONEXION.items():
+        try:
+            n = len(modelo_ifc.by_type(tipo))
+        except RuntimeError:  # tipo inexistente en este esquema IFC
+            n = 0
+        if n:
+            cantidades[descripcion] = cantidades.get(descripcion, 0) + n
+    if cantidades:
+        detalle = ", ".join(f"{n} {d}" for d, n in cantidades.items())
+        proyecto.avisos.append(
+            f"No se modelan {detalle} (placas, soldaduras y pernos): las barras se unen por sus ejes."
+        )
+
+
 def importar_ifc(ruta_ifc: str) -> Proyecto:
     """Punto de entrada principal: importa un archivo IFC y devuelve un Proyecto."""
 
@@ -433,9 +528,15 @@ def importar_ifc(ruta_ifc: str) -> Proyecto:
         _importar_barra(proyecto, elemento, ajustes, factor_longitud, "VIGA")
     for elemento in modelo_ifc.by_type("IfcColumn"):
         _importar_barra(proyecto, elemento, ajustes, factor_longitud, "COLUMNA")
+    for elemento in modelo_ifc.by_type("IfcMember"):
+        _importar_barra(proyecto, elemento, ajustes, factor_longitud, "MIEMBRO")
     unidos = conectar_nodos(proyecto)
     if unidos:
         logger.info("Se unieron %d extremos de barras que casi coincidían (idealización por ejes).", unidos)
+    partidas = conectar_uniones_en_t(proyecto)
+    if partidas:
+        logger.info("Se partieron %d barras donde otras llegan a su eje (uniones en T).", partidas)
+    _avisar_elementos_ignorados(modelo_ifc, proyecto)
     for elemento in modelo_ifc.by_type("IfcSlab"):
         _importar_losa(proyecto, elemento, ajustes, factor_longitud)
     for elemento in modelo_ifc.by_type("IfcWall"):

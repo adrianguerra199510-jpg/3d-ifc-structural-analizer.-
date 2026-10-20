@@ -53,6 +53,9 @@ class EjesSeccion:
     e2: np.ndarray
     dim1: float
     dim2: float
+    #: True si la altura (peralte) de la sección se mide a lo largo de ``e1``;
+    #: False cuando se intercambiaron ``e1``/``e2`` (ver ``ejes_seccion``).
+    profundidad_en_e1: bool = True
 
 
 def _unitario(v: np.ndarray) -> np.ndarray:
@@ -96,8 +99,83 @@ def ejes_seccion(proyecto: Proyecto, barra: ElementoBarra) -> EjesSeccion:
     if _es_diagonal_exacta(t) and np.max(np.abs(e2)) > 1.0 - 1e-6:
         e1, e2 = e2, np.cross(t, e2)
         altura, ancho = ancho, altura
+        profundidad_en_e1 = False
+    else:
+        profundidad_en_e1 = True
 
-    return EjesSeccion(t=t, e1=e1, e2=e2, dim1=altura, dim2=ancho)
+    return EjesSeccion(t=t, e1=e1, e2=e2, dim1=altura, dim2=ancho, profundidad_en_e1=profundidad_en_e1)
+
+
+# ---------------------------------------------------------------------------
+# Secciones compuestas (perfil en I)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ParteSeccion:
+    """Rectángulo en que se descompone una sección para el análisis.
+
+    CalculiX 2.21 solo expande a hexaedros las vigas B31 de sección
+    rectangular o circular, así que un perfil en I se analiza como tres
+    barras rectangulares (dos alas y el alma) unidas en cada nudo por
+    tramos rígidos (ver ``solver.generador_inp``). ``desplazamiento1`` y
+    ``desplazamiento2`` son la posición del centro de la parte respecto del
+    eje de la barra, medida en ``e1`` y ``e2``; ``dim1`` y ``dim2`` son sus
+    dimensiones en esas mismas direcciones (el orden que pide ccx).
+    """
+
+    desplazamiento1: float
+    desplazamiento2: float
+    dim1: float
+    dim2: float
+
+    @property
+    def en_el_eje(self) -> bool:
+        return abs(self.desplazamiento1) < 1e-9 and abs(self.desplazamiento2) < 1e-9
+
+
+def es_perfil_compuesto(perfil: PerfilSeccion) -> bool:
+    return perfil.forma == "I" and bool(perfil.altura and perfil.ancho and perfil.espesor_ala and perfil.espesor_alma)
+
+
+def partes_seccion(proyecto: Proyecto, barra: ElementoBarra) -> List[ParteSeccion]:
+    """Partes rectangulares (o la única parte) con que se analiza la sección."""
+
+    perfil = proyecto.perfiles[barra.perfil]
+    ejes = ejes_seccion(proyecto, barra)
+    if not es_perfil_compuesto(perfil):
+        return [ParteSeccion(0.0, 0.0, ejes.dim1, ejes.dim2)]
+
+    h, b, tf, tw = perfil.altura, perfil.ancho, perfil.espesor_ala, perfil.espesor_alma
+    brazo = (h - tf) / 2.0
+    partes = []
+    for signo in (1.0, -1.0):
+        if ejes.profundidad_en_e1:
+            partes.append(ParteSeccion(signo * brazo, 0.0, tf, b))
+        else:
+            partes.append(ParteSeccion(0.0, signo * brazo, b, tf))
+    if ejes.profundidad_en_e1:
+        partes.append(ParteSeccion(0.0, 0.0, h - 2 * tf, tw))
+    else:
+        partes.append(ParteSeccion(0.0, 0.0, tw, h - 2 * tf))
+    return partes
+
+
+def contorno_perfil_i(perfil: PerfilSeccion) -> List[Tuple[float, float]]:
+    """Contorno de la doble T en coordenadas (profundidad, ancho) centradas,
+    12 vértices recorridos en sentido horario visto con la profundidad hacia
+    arriba y el ancho hacia la izquierda (lo que importa es que el recorrido
+    sea cerrado y consistente)."""
+
+    H, B = perfil.altura / 2.0, perfil.ancho / 2.0
+    w = perfil.espesor_alma / 2.0
+    y = H - perfil.espesor_ala
+    return [(H, B), (H, -B), (y, -B), (y, -w), (-y, -w), (-y, -B),
+            (-H, -B), (-H, B), (-y, B), (-y, w), (y, w), (y, B)]
+
+
+_DESCRIPCION_LADOS_I = ["ala exterior", "canto de ala", "ala interior", "alma", "ala interior", "canto de ala",
+                        "ala exterior", "canto de ala", "ala interior", "alma", "ala interior", "canto de ala"]
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +273,9 @@ def solido_barra(proyecto: Proyecto, barra: ElementoBarra) -> Solido:
     ejes = ejes_seccion(proyecto, barra)
     a = np.array(proyecto.nodos[barra.nodo_inicio].coordenadas, dtype=float)
     b = np.array(proyecto.nodos[barra.nodo_fin].coordenadas, dtype=float)
+    perfil = proyecto.perfiles[barra.perfil]
+    if es_perfil_compuesto(perfil):
+        return _solido_perfil_i(barra, perfil, ejes, a, b)
     h1, h2 = ejes.dim1 / 2.0, ejes.dim2 / 2.0
 
     desplazamientos = [
@@ -240,6 +321,60 @@ def solido_barra(proyecto: Proyecto, barra: ElementoBarra) -> Solido:
                 nodo_id=nodo_id,
             )
         )
+    for cara in caras[:2]:  # el área de un extremo es la de la sección real
+        cara.area = perfil.area if perfil.area > 0 else cara.area
+    return Solido(puntos=puntos, caras=caras)
+
+
+def _solido_perfil_i(barra: ElementoBarra, perfil: PerfilSeccion, ejes: EjesSeccion, a: np.ndarray, b: np.ndarray) -> Solido:
+    """Sólido de una viga/columna con perfil en I: contorno de 12 vértices
+    extruido. Caras: 0 extremo inicial, 1 extremo final y 2..13 los doce
+    lados del contorno (alas y alma)."""
+
+    contorno = contorno_perfil_i(perfil)
+    # (profundidad, ancho) -> (e1, e2)
+    if ejes.profundidad_en_e1:
+        locales = [(p, q) for p, q in contorno]
+    else:
+        locales = [(q, p) for p, q in contorno]
+    desplazamientos = [u * ejes.e1 + v * ejes.e2 for u, v in locales]
+    n = len(desplazamientos)
+    puntos = np.array([a + d for d in desplazamientos] + [b + d for d in desplazamientos])
+
+    # Normal exterior de cada lado: perpendicular al lado, hacia fuera del contorno.
+    area_firmada = 0.0
+    for i in range(n):
+        (u0, v0), (u1, v1) = locales[i], locales[(i + 1) % n]
+        area_firmada += u0 * v1 - u1 * v0
+    sentido = 1.0 if area_firmada > 0 else -1.0
+
+    def ordenar(indices: List[int], deseada: np.ndarray):
+        normal = normal_poligono(puntos[indices])
+        if np.dot(normal, deseada) < 0:
+            indices = indices[::-1]
+            normal = -normal
+        return indices, normal
+
+    caras: List[Cara] = []
+    tipo_elemento = barra.tipo.value
+    for indice, (tipo, base) in enumerate([("EXTREMO_INICIO", list(range(n))), ("EXTREMO_FIN", list(range(n, 2 * n)))]):
+        idx, normal = ordenar(base, -ejes.t if tipo == "EXTREMO_INICIO" else ejes.t)
+        nodo = barra.nodo_inicio if tipo == "EXTREMO_INICIO" else barra.nodo_fin
+        nombre = ("extremo inicial" if tipo == "EXTREMO_INICIO" else "extremo final") + f" (nodo {nodo})"
+        caras.append(Cara(tipo_elemento, barra.id, indice, tipo, nombre, idx, puntos[idx], normal,
+                          perfil.area if perfil.area > 0 else area_poligono(puntos[idx]), 0.0, nodo))
+
+    for i in range(n):
+        j = (i + 1) % n
+        (u0, v0), (u1, v1) = locales[i], locales[j]
+        du, dv = u1 - u0, v1 - v0
+        largo = math.hypot(du, dv)
+        # rotar la tangente 90°: con área firmada positiva (antihorario) la exterior es (dv, -du)
+        exterior = sentido * (dv * ejes.e1 - du * ejes.e2) / largo
+        idx, normal = ordenar([i, j, n + j, n + i], exterior)
+        caras.append(Cara(tipo_elemento, barra.id, 2 + i, "LATERAL",
+                          f"{_nombre_por_normal(normal)} ({_DESCRIPCION_LADOS_I[i]})", idx, puntos[idx], normal,
+                          area_poligono(puntos[idx]), largo, None))
     return Solido(puntos=puntos, caras=caras)
 
 
