@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
+from .solidos import SolidoGeneral
+
 Vector3 = Tuple[float, float, float]
 
 
@@ -204,6 +206,10 @@ class Proyecto:
     columnas: Dict[str, ElementoBarra] = field(default_factory=dict)
     losas: Dict[str, Losa] = field(default_factory=dict)
     muros: Dict[str, Muro] = field(default_factory=dict)
+    #: Geometría real de cualquier otro elemento del IFC (placas, pernos, zapatas...), con superficies.
+    solidos: Dict[str, SolidoGeneral] = field(default_factory=dict)
+    #: Archivo IFC del que viene el modelo (para volver a leer la geometría real de un elemento).
+    ruta_ifc: Optional[str] = None
 
     #: Avisos que deja la importación del IFC (no se guardan en el proyecto).
     avisos: List[str] = field(default_factory=list, repr=False, compare=False)
@@ -314,6 +320,15 @@ class Proyecto:
         muro = Muro(id=id_, nodos_contorno=nodos_contorno, espesor=espesor, material=material, **kwargs)
         self.muros[id_] = muro
         return muro
+
+    def siguiente_id(self, prefijo: str) -> str:
+        """Siguiente id libre con ese prefijo (S1, S2...)."""
+
+        usados = set(self.vigas) | set(self.columnas) | set(self.losas) | set(self.muros) | set(self.solidos)
+        id_ = self._contador.siguiente(prefijo)
+        while id_ in usados:
+            id_ = self._contador.siguiente(prefijo)
+        return id_
 
     # -- Utilidades ---------------------------------------------------------
     def elemento_barra(self, id_: str) -> ElementoBarra:

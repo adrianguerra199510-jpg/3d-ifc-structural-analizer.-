@@ -232,7 +232,7 @@ def test_importa_la_conexion_metalica_con_perfiles_reales_y_union_en_t(tmp_path:
     assert abs(p.columnas["C1"].vector_n1[0]) == pytest.approx(1.0)
 
     # placas y pernos no son barras y se avisa de que no se modelan
-    assert any("placas" in aviso and "pernos" in aviso for aviso in p.avisos)
+    assert any("sólidos" in aviso and "Plate" in aviso for aviso in p.avisos)
 
 
 def test_union_en_t_parte_la_barra_atravesada_y_traslada_el_extremo_al_eje():

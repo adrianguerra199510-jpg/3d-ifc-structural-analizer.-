@@ -309,3 +309,61 @@ def crear_ifc_conexion_metalica(ruta: str) -> None:
             asociar(perno, acero)
 
     model.write(ruta)
+
+
+def crear_ifc_geometria_libre(ruta: str) -> None:
+    """Pieza de acero de formas libres (ninguna es una barra, losa ni muro):
+
+    - Placa base 400 x 300 x 20 mm (IfcPlate), con z = 0 a 0,02.
+    - Poste cilíndrico de radio 50 mm y 0,5 m de alto (IfcBuildingElementProxy) en el centro de la placa.
+    - Cartela triangular de 20 mm de espesor soldada a la placa y al poste (IfcPlate, plano XZ).
+    - Placa superior en L de 30 mm sobre el poste (perfil poligonal cualquiera, IfcPlate).
+    """
+
+    model = ifcopenshell.file(schema="IFC4")
+    longitud = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Name="METRE")
+    unidades = model.create_entity("IfcUnitAssignment", Units=[longitud])
+    origen = model.create_entity("IfcAxis2Placement3D", Location=model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0, 0.0)))
+    contexto = model.create_entity("IfcGeometricRepresentationContext", ContextType="Model", CoordinateSpaceDimension=3,
+                                   Precision=1e-5, WorldCoordinateSystem=origen)
+    proyecto = model.create_entity("IfcProject", GlobalId=guid.new(), Name="Geometría libre", UnitsInContext=unidades,
+                                   RepresentationContexts=[contexto])
+    sitio = model.create_entity("IfcSite", GlobalId=guid.new(), Name="Sitio", ObjectPlacement=_placement(model))
+    edificio = model.create_entity("IfcBuilding", GlobalId=guid.new(), Name="Edificio", ObjectPlacement=_placement(model))
+    piso = model.create_entity("IfcBuildingStorey", GlobalId=guid.new(), Name="Nivel 1", ObjectPlacement=_placement(model))
+    model.create_entity("IfcRelAggregates", GlobalId=guid.new(), RelatingObject=proyecto, RelatedObjects=[sitio])
+    model.create_entity("IfcRelAggregates", GlobalId=guid.new(), RelatingObject=sitio, RelatedObjects=[edificio])
+    model.create_entity("IfcRelAggregates", GlobalId=guid.new(), RelatingObject=edificio, RelatedObjects=[piso])
+    acero = _material_con_propiedades(model, "ACERO_S275", 2.1e11, 0.3, 7850.0)
+
+    def asociar(elemento):
+        model.create_entity("IfcRelAssociatesMaterial", GlobalId=guid.new(), RelatingMaterial=acero, RelatedObjects=[elemento])
+        model.create_entity("IfcRelContainedInSpatialStructure", GlobalId=guid.new(), RelatingStructure=piso, RelatedElements=[elemento])
+
+    def forma(perfil, profundidad):
+        posicion = model.create_entity("IfcAxis2Placement3D", Location=model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0, 0.0)))
+        solido = model.create_entity("IfcExtrudedAreaSolid", SweptArea=perfil, Position=posicion,
+                                     ExtrudedDirection=model.create_entity("IfcDirection", DirectionRatios=(0.0, 0.0, 1.0)), Depth=profundidad)
+        representacion = model.create_entity("IfcShapeRepresentation", ContextOfItems=contexto, RepresentationIdentifier="Body",
+                                             RepresentationType="SweptSolid", Items=[solido])
+        return model.create_entity("IfcProductDefinitionShape", Representations=[representacion])
+
+    def poligono(puntos):
+        curva = model.create_entity("IfcPolyline", Points=[model.create_entity("IfcCartesianPoint", Coordinates=p) for p in puntos + [puntos[0]]])
+        return model.create_entity("IfcArbitraryClosedProfileDef", ProfileType="AREA", OuterCurve=curva)
+
+    base = model.create_entity("IfcPlate", GlobalId=guid.new(), Name="PLACA_BASE", ObjectPlacement=_placement(model, 0.2, 0.15, 0.0),
+                               Representation=forma(model.create_entity("IfcRectangleProfileDef", ProfileType="AREA", XDim=0.4, YDim=0.3), 0.02))
+    poste = model.create_entity("IfcBuildingElementProxy", GlobalId=guid.new(), Name="POSTE", ObjectPlacement=_placement(model, 0.2, 0.15, 0.02),
+                                Representation=forma(model.create_entity("IfcCircleProfileDef", ProfileType="AREA", Radius=0.05), 0.5))
+    # cartela en el plano XZ: eje local Z = -Y, eje local Y = +Z global
+    cartela = model.create_entity(
+        "IfcPlate", GlobalId=guid.new(), Name="CARTELA",
+        ObjectPlacement=_placement(model, 0.2, 0.16, 0.02, axis=(0.0, -1.0, 0.0), ref_direction=(1.0, 0.0, 0.0)),
+        Representation=forma(poligono([(0.0, 0.0), (0.2, 0.0), (0.0, 0.3)]), 0.02))
+    en_l = model.create_entity(
+        "IfcPlate", GlobalId=guid.new(), Name="PLACA_L", ObjectPlacement=_placement(model, 0.0, 0.0, 0.52),
+        Representation=forma(poligono([(0.05, 0.0), (0.35, 0.0), (0.35, 0.1), (0.15, 0.1), (0.15, 0.3), (0.05, 0.3)]), 0.03))
+    for elemento in (base, poste, cartela, en_l):
+        asociar(elemento)
+    model.write(ruta)

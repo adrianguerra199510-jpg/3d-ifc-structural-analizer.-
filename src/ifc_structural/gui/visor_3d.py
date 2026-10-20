@@ -32,7 +32,7 @@ from pyvistaqt import QtInteractor
 from vtkmodules.vtkRenderingCore import vtkCellPicker
 
 from ..core.asignacion import Objetivo, barras_de_apoyo_area
-from ..core.cargas import Apoyo, ApoyoArea, CargaArea, CargaLineal, CargaPuntual, Conexion
+from ..core.cargas import Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion
 from ..core.geometria import Solido, normal_losa, solido_elemento
 from ..core.modelo import Proyecto
 from ..solver.lector_resultados import MallaTensiones
@@ -45,6 +45,7 @@ COLORES_BASE = {
     "COLUMNA": (212, 104, 90),
     "LOSA": (170, 182, 196),
     "MURO": (217, 198, 143),
+    "SOLIDO": (150, 163, 178),
 }
 COLOR_ELEMENTO_SELECCIONADO = (255, 200, 0)
 COLOR_CARA_SELECCIONADA = (255, 120, 0)
@@ -66,9 +67,12 @@ MODO_CARA = "CARA"
 class _Visual:
     tipo: str
     id: str
-    solido: Solido
+    solido: Optional[Solido]  # barras, losas y muros (una celda por cara); None en los sólidos de forma libre
     malla: pv.PolyData
     actor: object
+    #: Sólidos de forma libre: superficie (cara) a la que pertenece cada triángulo de la malla.
+    cara_de_celda: Optional[np.ndarray] = None
+    actor_bordes: object = None  # líneas de contorno de las superficies (solo sólidos de forma libre)
 
 
 class Visor3D(QtInteractor):
@@ -86,8 +90,11 @@ class Visor3D(QtInteractor):
         self._seleccion: List[Objetivo] = []
         self._modo = MODO_ELEMENTO
         self._vista = "MODELO"
-        self._visibles = {"VIGA": True, "COLUMNA": True, "LOSA": True, "MURO": True}
+        self._visibles = {"VIGA": True, "COLUMNA": True, "LOSA": True, "MURO": True, "SOLIDO": True}
         self._escala = 1.0
+        self._flechas_visibles = True
+        self._escala_flechas = 1.0
+        self._argumentos_asignaciones = None
 
         self._grid_esfuerzos: Optional[pv.UnstructuredGrid] = None
         self._valores_esfuerzos: Optional[np.ndarray] = None
@@ -137,6 +144,7 @@ class Visor3D(QtInteractor):
             + [("MURO", i) for i in proyecto.muros]
         )
         todos = [proyecto.nodos[n].coordenadas for n in proyecto.nodos]
+        todos += [s.minimo for s in proyecto.solidos.values()] + [s.maximo for s in proyecto.solidos.values()]
         if todos:
             extension = np.ptp(np.array(todos, dtype=float), axis=0)
             self._escala = max(float(np.linalg.norm(extension)), 1.0)
@@ -160,6 +168,27 @@ class Visor3D(QtInteractor):
             )
             self._visuales[(tipo, id_)] = _Visual(tipo, id_, solido, malla, actor)
             self._clave_por_actor[hash(actor)] = (tipo, id_)
+
+        for id_, solido_libre in proyecto.solidos.items():
+            self._agregar_solido_libre(id_, solido_libre)
+
+    def _agregar_solido_libre(self, id_: str, s) -> None:
+        """Geometría real de un elemento cualquiera: malla de triángulos con una celda por triángulo
+        y el color de la superficie a la que pertenece."""
+
+        faces = np.hstack([np.full((len(s.triangulos), 1), 3, dtype=np.int64), s.triangulos]).ravel()
+        malla = pv.PolyData(np.asarray(s.vertices, dtype=float), faces=faces)
+        malla.cell_data["colores"] = np.tile(COLORES_BASE["SOLIDO"], (len(s.triangulos), 1)).astype(np.uint8)
+        actor = self.add_mesh(malla, scalars="colores", rgb=True, show_edges=False, pickable=True,
+                              name=f"SOLIDO_{id_}", show_scalar_bar=False)
+        bordes = malla.extract_feature_edges(feature_angle=35, boundary_edges=True, manifold_edges=False)
+        actor_bordes = None
+        if bordes.n_points:
+            actor_bordes = self.add_mesh(bordes, color=(52, 68, 88), line_width=1.2, pickable=False, name=f"BORDES_{id_}",
+                                         show_scalar_bar=False)
+        self._visuales[("SOLIDO", id_)] = _Visual("SOLIDO", id_, None, malla, actor, cara_de_celda=s.cara_de_triangulo,
+                                                  actor_bordes=actor_bordes)
+        self._clave_por_actor[hash(actor)] = ("SOLIDO", id_)
 
     # ------------------------------------------------------------------
     # Selección
@@ -190,12 +219,15 @@ class Visor3D(QtInteractor):
 
     def _pintar_seleccion(self) -> None:
         for clave, visual in self._visuales.items():
-            colores = np.tile(COLORES_BASE[visual.tipo], (len(visual.solido.caras), 1)).astype(np.uint8)
+            n_celdas = visual.malla.n_cells
+            colores = np.tile(COLORES_BASE[visual.tipo], (n_celdas, 1)).astype(np.uint8)
             for objetivo in self._seleccion:
                 if (objetivo.tipo, objetivo.id) != clave:
                     continue
                 if objetivo.cara is None:
                     colores[:] = COLOR_ELEMENTO_SELECCIONADO
+                elif visual.cara_de_celda is not None:  # sólido de forma libre: todos los triángulos de la superficie
+                    colores[visual.cara_de_celda == objetivo.cara] = COLOR_CARA_SELECCIONADA
                 else:
                     colores[objetivo.cara] = COLOR_CARA_SELECCIONADA
             visual.malla.cell_data["colores"][:] = colores
@@ -211,6 +243,15 @@ class Visor3D(QtInteractor):
         if actor is None:
             return None, -1
         return self._clave_por_actor.get(hash(actor)), self._picker.GetCellId()
+
+    def _cara_en_celda(self, clave, celda: int) -> int:
+        """Cara (superficie) a la que pertenece la celda picada: una celda por cara en barras, losas y
+        muros; en los sólidos de forma libre, la superficie del triángulo."""
+
+        visual = self._visuales.get(clave)
+        if visual is not None and visual.cara_de_celda is not None:
+            return int(visual.cara_de_celda[celda])
+        return celda
 
     def _al_presionar(self, *_args) -> None:
         # Los observadores de VTK reciben el "estilo" de interacción, no el
@@ -253,7 +294,7 @@ class Visor3D(QtInteractor):
             tipo, id_ = clave
             ya_elegido = any((o.tipo, o.id) == (tipo, id_) for o in self._seleccion)
             if not ya_elegido:
-                self.seleccionar([Objetivo(tipo, id_, celda if self._modo == MODO_CARA else None)])
+                self.seleccionar([Objetivo(tipo, id_, self._cara_en_celda(clave, celda) if self._modo == MODO_CARA else None)])
         if self._seleccion:
             self.menu_contextual.emit()
 
@@ -265,7 +306,7 @@ class Visor3D(QtInteractor):
             return
 
         tipo, id_ = clave
-        objetivo = Objetivo(tipo, id_, celda if self._modo == MODO_CARA else None)
+        objetivo = Objetivo(tipo, id_, self._cara_en_celda(clave, celda) if self._modo == MODO_CARA else None)
         if sumar:
             seleccion = list(self._seleccion)
             if objetivo in seleccion:
@@ -289,6 +330,8 @@ class Visor3D(QtInteractor):
         for visual in self._visuales.values():
             visual.actor.SetVisibility(self._visibles[visual.tipo])
             visual.actor.SetPickable(self._visibles[visual.tipo])
+            if visual.actor_bordes is not None:
+                visual.actor_bordes.SetVisibility(self._visibles[visual.tipo])
 
     def vista_isometrica(self) -> None:
         self.view_isometric()
@@ -312,18 +355,22 @@ class Visor3D(QtInteractor):
         cargas_lineales: Sequence[CargaLineal],
         cargas_puntuales: Sequence[CargaPuntual],
         conexiones: Sequence[Conexion] = (),
+        cargas_superficie: Sequence[CargaSuperficie] = (),
     ) -> None:
         """Dibuja los apoyos, las conexiones y las cargas del caso activo
         (las que se pasan). Las flechas de una carga variable tienen longitud
         proporcional a su valor, de modo que se ve su forma."""
 
-        for nombre in tuple(f"ASIG_APOYOS_{c}" for c in COLORES_SIMBOLO) + ("ASIG_APOYOS_AREA", "ASIG_CONEXIONES", "ASIG_CARGAS", "ASIG_MOMENTOS", "ASIG_ETIQUETAS"):
+        for nombre in tuple(f"ASIG_APOYOS_{c}" for c in COLORES_SIMBOLO) + ("ASIG_APOYOS_AREA", "ASIG_CONEXIONES", "ASIG_CARGAS", "ASIG_MOMENTOS", "ASIG_ETIQUETAS",
+                                                                                "ASIG_SUPERFICIE_APOYO", "ASIG_SUPERFICIE_CARGA"):
             self.remove_actor(nombre, render=False)
+        self._argumentos_asignaciones = (apoyos, cargas_area, cargas_lineales, cargas_puntuales, conexiones, cargas_superficie)
         proyecto = self._proyecto
         if proyecto is None:
             return
 
-        largo = float(np.clip(0.06 * self._escala, 0.3, 1.5))
+        largo = float(np.clip(0.06 * self._escala, 0.02, 1.5))
+        largo_apoyo = largo
         barras = proyecto.todas_las_barras()
 
         def punto_de(barra_id: str, s: float) -> np.ndarray:
@@ -334,10 +381,11 @@ class Visor3D(QtInteractor):
 
         # -- apoyos puntuales: símbolo según los grados de libertad restringidos ------------
         por_color: Dict[str, List[pv.PolyData]] = {}
+        por_color_sup: Dict[str, List[pv.PolyData]] = {}
         etiquetas_apoyo: List[np.ndarray] = []
         textos_apoyo: List[str] = []
         for a in apoyos:
-            if isinstance(a, ApoyoArea) or a.nodo_id not in proyecto.nodos:
+            if isinstance(a, (ApoyoArea, ApoyoSuperficie)) or a.nodo_id not in proyecto.nodos:
                 continue
             grados = (a.ux, a.uy, a.uz, a.rx, a.ry, a.rz)
             centro = np.array(proyecto.nodos[a.nodo_id].coordenadas)
@@ -390,6 +438,7 @@ class Visor3D(QtInteractor):
             self.add_mesh(pv.merge(marcas), color=COLOR_CONEXION, name="ASIG_CONEXIONES", pickable=False, show_scalar_bar=False)
 
         # -- cargas ------------------------------------------------------------------------------
+        largo = largo * self._escala_flechas  # las flechas se pueden agrandar o achicar desde la barra de vista
         flechas: List[pv.PolyData] = []
         momentos: List[pv.PolyData] = []
         puntos_etiqueta: List[np.ndarray] = []
@@ -466,6 +515,63 @@ class Visor3D(QtInteractor):
                 puntos_etiqueta.append(punto + d * largo * 0.9)
                 textos.append(f"M = {np.linalg.norm(m):g} kN·m")
 
+        # -- apoyos y cargas sobre superficies (análisis 3D) -----------------------------------
+        caras_apoyo: List[pv.PolyData] = []
+        for apoyo in apoyos:
+            if not isinstance(apoyo, ApoyoSuperficie):
+                continue
+            geo = self._geometria_de_cara(apoyo.elemento_tipo, apoyo.elemento_id, apoyo.cara)
+            if geo is None:
+                continue
+            malla, centro, normal, muestras = geo
+            caras_apoyo.append(malla)
+            grados = (apoyo.ux, apoyo.uy, apoyo.uz, apoyo.rx, apoyo.ry, apoyo.rz)
+            for punto in muestras[:4]:
+                for color, mallas in simbolo_apoyo(grados, punto, largo_apoyo * 0.7).items():
+                    por_color_sup.setdefault(color, []).extend(mallas)
+            etiquetas_apoyo.append(centro + normal * largo_apoyo * 0.4)
+            textos_apoyo.append("empotrada" if all(grados[:3]) else nombre_apoyo(grados))
+        if caras_apoyo:
+            self.add_mesh(pv.merge(caras_apoyo), color=COLOR_APOYO_AREA, opacity=0.65, name="ASIG_SUPERFICIE_APOYO",
+                          pickable=False, show_scalar_bar=False)
+        for color, mallas in por_color_sup.items():
+            self.add_mesh(pv.merge(mallas), color=color, name=f"ASIG_APOYOS_{color}", pickable=False, show_scalar_bar=False)
+
+        caras_carga: List[pv.PolyData] = []
+        maxima_presion = max((abs(c.valor) for c in cargas_superficie if c.tipo != "MOMENTO"), default=1.0) or 1.0
+        for carga in cargas_superficie:
+            geo = self._geometria_de_cara(carga.elemento_tipo, carga.elemento_id, carga.cara)
+            if geo is None:
+                continue
+            malla, centro, normal, muestras = geo
+            caras_carga.append(malla)
+            # la flecha nunca es mayor que la superficie que carga: así no tapa el modelo en piezas pequeñas
+            tamano_cara = float(np.sqrt(max(malla.area, 1e-12)))
+            l_flecha = min(largo, 0.6 * tamano_cara * self._escala_flechas)
+            if carga.tipo == "MOMENTO":
+                d = np.asarray(carga.direccion, dtype=float) * (1.0 if carga.valor > 0 else -1.0)
+                momentos.append(flecha(centro + d * l_flecha * 0.2, d, l_flecha))
+                momentos.append(flecha(centro + d * l_flecha * 0.55, d, l_flecha))
+                puntos_etiqueta.append(centro + d * l_flecha * 0.9)
+                textos.append(f"M = {abs(carga.valor):g} kN·m")
+                continue
+            if carga.direccion is not None:
+                d = np.asarray(carga.direccion, dtype=float) * (1.0 if carga.valor > 0 else -1.0)
+            else:
+                d = -normal * (1.0 if carga.valor > 0 else -1.0)
+            d = d / np.linalg.norm(d)
+            # en una presión, la flecha es proporcional al valor respecto de la mayor presión dibujada
+            longitud = l_flecha * (0.5 + 0.7 * abs(carga.valor) / maxima_presion) if carga.tipo == "PRESION" else l_flecha * 1.1
+            for punto in muestras:
+                flechas.append(flecha(punto, d, longitud))
+            puntos_etiqueta.append(centro - d * longitud * 1.15)
+            textos.append(f"{abs(carga.valor):g} " + ("kPa" if carga.tipo == "PRESION" else "kN"))
+        if not self._flechas_visibles:  # las cargas se ocultan (los apoyos siguen a la vista)
+            flechas, momentos, caras_carga, puntos_etiqueta, textos = [], [], [], [], []
+        if caras_carga:
+            self.add_mesh(pv.merge(caras_carga), color=COLOR_CARGA, opacity=0.45, name="ASIG_SUPERFICIE_CARGA",
+                          pickable=False, show_scalar_bar=False)
+
         if flechas:
             self.add_mesh(pv.merge(flechas), color=COLOR_CARGA, name="ASIG_CARGAS", pickable=False, show_scalar_bar=False)
         if momentos:
@@ -512,6 +618,8 @@ class Visor3D(QtInteractor):
             else:
                 visual.actor.SetVisibility(self._visibles[visual.tipo] and not ocultar_planos)
                 visual.actor.SetPickable(False)
+                if visual.actor_bordes is not None:
+                    visual.actor_bordes.SetVisibility(self._visibles[visual.tipo] and not ocultar_planos)
                 visual.actor.GetProperty().SetOpacity(OPACIDAD_PLANOS_EN_ESFUERZOS)
 
         n_celdas = len(malla.ids_elementos)
@@ -556,6 +664,49 @@ class Visor3D(QtInteractor):
         if texto:
             self.add_text(texto, position="upper_left", font_size=11, color="black", name="TEXTO_ESFUERZOS")
         self.render()
+
+    def configurar_flechas(self, visibles: Optional[bool] = None, escala: Optional[float] = None) -> None:
+        """Muestra u oculta las flechas de las cargas y cambia su tamaño (1 = automático)."""
+
+        if visibles is not None:
+            self._flechas_visibles = bool(visibles)
+        if escala is not None:
+            self._escala_flechas = float(escala)
+        if self._argumentos_asignaciones is not None:
+            self.mostrar_asignaciones(*self._argumentos_asignaciones)
+            if self._vista == "ESFUERZOS":
+                self._mostrar_asignaciones(self._desplazamientos is None)
+
+    def _geometria_de_cara(self, tipo: str, id_: str, cara: int):
+        """(malla de la cara, centro, normal hacia fuera, puntos de muestra) o None si ya no existe."""
+
+        proyecto = self._proyecto
+        try:
+            if tipo == "SOLIDO":
+                s = proyecto.solidos[id_]
+                c = s.caras[cara]
+                tri = s.triangulos[c.triangulos]
+                malla = pv.PolyData(np.asarray(s.vertices, dtype=float),
+                                    np.hstack([np.full((len(tri), 1), 3), tri]).ravel().astype(np.int64))
+                centro, normal = np.asarray(c.centro, dtype=float), np.asarray(c.normal, dtype=float)
+            else:
+                c = solido_elemento(proyecto, tipo, id_).caras[cara]
+                pts = np.asarray(c.puntos, dtype=float)
+                malla = pv.PolyData(pts, np.hstack([[len(pts)], np.arange(len(pts))]).astype(np.int64)).triangulate()
+                centro, normal = np.asarray(c.centro, dtype=float), np.asarray(c.normal, dtype=float)
+        except (KeyError, IndexError):
+            return None
+        malla = malla.clean()
+        malla.points = malla.points + normal * 0.002 * max(self._escala, 1.0)  # evita el parpadeo con la cara original
+        # puntos de muestra: muestreo del punto más lejano sobre los centros de los triángulos
+        cel = malla.cell_centers().points
+        elegidos = [int(np.argmin(np.linalg.norm(cel - centro, axis=1)))]
+        distancia = np.linalg.norm(cel - cel[elegidos[0]], axis=1)
+        while len(elegidos) < min(7, len(cel)):
+            k = int(np.argmax(distancia))
+            elegidos.append(k)
+            distancia = np.minimum(distancia, np.linalg.norm(cel - cel[k], axis=1))
+        return malla, centro, normal / max(np.linalg.norm(normal), 1e-12), cel[elegidos]
 
     def _mostrar_asignaciones(self, visibles: bool) -> None:
         """Apoyos y cargas no acompañan a la deformada: se ocultan mientras se ve."""

@@ -52,7 +52,7 @@ def main(salida: Path) -> None:
     ventana.show()
     bombear()
     verificar(ventana.importar_archivo(str(ruta_ifc)), "importar el IFC de la conexión metálica")
-    verificar(any("pernos" in str(m) for m in mensajes), f"aviso de pernos/placas no modelados: {mensajes}")
+    verificar(any("sólidos" in str(m) and "Plate" in str(m) for m in mensajes), f"aviso de elementos importados como sólidos: {mensajes}")
     proyecto = ventana.proyecto
     verificar(len(proyecto.vigas) == 2 and len(proyecto.columnas) == 2, "columna partida en la unión")
     visor = ventana.visor

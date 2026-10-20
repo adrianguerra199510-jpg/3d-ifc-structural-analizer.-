@@ -16,7 +16,7 @@ import numpy as np
 
 from ..combinaciones import esfuerzos
 from ..combinaciones.motor_superposicion import superponer_todas_las_combinaciones
-from ..core.cargas import Apoyo, ApoyoArea, CargaArea, CargaLineal, CargaPuntual
+from ..core.cargas import Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie
 from ..core.casos_carga import CasoCarga, Combinacion, TipoCaso
 from ..core.modelo import Proyecto
 from ..solver.analisis import (
@@ -29,6 +29,7 @@ from .contactos import detectar_uniones, partes_sin_conexion
 from .generador import Apoyo3D, CargasCaso, ModeloSolido, escribir, escribir_caso, escribir_comun, etiqueta
 from .malla import ErrorMalla, MallaSolida, ParteMalla, construir_malla_solida, estimar_hexaedros
 from .miembros import MiembroBarra, construir_miembros, recortar_uniones
+from .superficies import fuerzas_nodales, superficie_en_malla
 
 #: Tamaño de elemento por defecto (m) y máximo de hexaedros que se aceptan sin avisar.
 TAMANO_POR_DEFECTO = 0.05
@@ -137,10 +138,19 @@ def puntos_especiales(proyecto: Proyecto, miembros: Sequence[MiembroBarra], apoy
 
 
 def _apoyos_3d(proyecto: Proyecto, miembros: Sequence[MiembroBarra], malla: MallaSolida, apoyos: Sequence,
-               avisos: List[str]) -> Tuple[List[Apoyo3D], Set[int]]:
+               avisos: List[str], tamano: float = TAMANO_POR_DEFECTO) -> Tuple[List[Apoyo3D], Set[int]]:
     resultado: List[Apoyo3D] = []
     partes_apoyadas: Set[int] = set()
     for a in apoyos:
+        if isinstance(a, ApoyoSuperficie):
+            sup = superficie_en_malla(proyecto, malla, a.elemento_tipo, a.elemento_id, a.cara, tamano)
+            if sup is None:
+                avisos.append(f"El apoyo {a.nombre} no encontró su superficie en la malla y se ignora.")
+                continue
+            grados = set(a.grados_restringidos())
+            resultado.append(Apoyo3D(sup.nodos_unicos, grados, rigido=any(g > 3 for g in grados), nombre=a.nombre))
+            partes_apoyadas.add(sup.parte)
+            continue
         if isinstance(a, ApoyoArea):
             elementos = {a.elemento_id}
             if a.elemento_tipo == "LOSA" and a.elemento_id in proyecto.losas:
@@ -182,8 +192,16 @@ def _apoyos_3d(proyecto: Proyecto, miembros: Sequence[MiembroBarra], malla: Mall
 
 def _cargas_del_caso(proyecto: Proyecto, miembros: Sequence[MiembroBarra], malla: MallaSolida, caso_id: str,
                      puntuales: Sequence[CargaPuntual], lineales: Sequence[CargaLineal], area: Sequence[CargaArea],
-                     peso_propio: bool, avisos: List[str]) -> CargasCaso:
+                     peso_propio: bool, avisos: List[str], superficiales: Sequence[CargaSuperficie] = (),
+                     tamano: float = TAMANO_POR_DEFECTO) -> CargasCaso:
     cargas = CargasCaso(peso_propio=peso_propio)
+    for c in superficiales:
+        sup = superficie_en_malla(proyecto, malla, c.elemento_tipo, c.elemento_id, c.cara, tamano)
+        if sup is None:
+            avisos.append(f"La carga {c.nombre} no encontró su superficie en la malla y se ignora.")
+            continue
+        nodos, fuerzas = fuerzas_nodales(malla, sup, c)
+        cargas.sumar(nodos, fuerzas)
     por_barra = {b: m for m in miembros for b in m.barras}
 
     for c in puntuales:
@@ -272,12 +290,14 @@ def ejecutar_analisis_solido(
     al_avanzar: Optional[Callable[[str], None]] = None,
     tamano: float = TAMANO_POR_DEFECTO,
     conexiones: Sequence = (),
+    cargas_superficie_por_caso: Optional[Dict[str, List[CargaSuperficie]]] = None,
 ) -> ResultadoAnalisis:
     def avanzar(mensaje: str) -> None:
         if al_avanzar is not None:
             al_avanzar(mensaje)
 
     advertencias: List[str] = []
+    cargas_superficie_por_caso = cargas_superficie_por_caso or {}
     if not casos:
         raise ErrorAnalisis("No hay casos de carga definidos.")
     if not apoyos:
@@ -306,9 +326,10 @@ def ejecutar_analisis_solido(
     espesores = {**{i: l.espesor for i, l in proyecto.losas.items()}, **{i: m.espesor for i, m in proyecto.muros.items()}}
     uniones, avisos_uniones = detectar_uniones(malla, tamano, espesores)
     advertencias.extend(avisos_uniones)
-    apoyos_3d, partes_apoyadas = _apoyos_3d(proyecto, miembros, malla, apoyos, advertencias)
+    advertencias.extend(malla.avisos)
+    apoyos_3d, partes_apoyadas = _apoyos_3d(proyecto, miembros, malla, apoyos, advertencias, tamano)
     if not apoyos_3d:
-        raise ErrorAnalisis("Ningún apoyo quedó sobre un elemento del modelo: asigne apoyos a una columna, viga o losa.")
+        raise ErrorAnalisis("Ningún apoyo quedó sobre un elemento del modelo: asigne apoyos a una cara de un sólido, una columna, una viga o una losa.")
     flotantes = partes_sin_conexion(malla, uniones, partes_apoyadas)
     if flotantes:
         nombres = ", ".join(malla.partes[i].id for i in flotantes)
@@ -329,7 +350,7 @@ def ejecutar_analisis_solido(
         cargas = _cargas_del_caso(
             proyecto, miembros, malla, caso_id, cargas_puntuales_por_caso.get(caso_id, []),
             cargas_lineales_por_caso.get(caso_id, []), cargas_area_por_caso.get(caso_id, []),
-            caso_id == caso_muerta, avisos_cargas)
+            caso_id == caso_muerta, avisos_cargas, cargas_superficie_por_caso.get(caso_id, []), tamano)
         ruta = escribir(directorio_trabajo / f"solido_{caso_id}.inp", escribir_caso(comun, cargas, caso_id))
         for sufijo in (".frd", ".dat"):
             ruta.with_suffix(sufijo).unlink(missing_ok=True)

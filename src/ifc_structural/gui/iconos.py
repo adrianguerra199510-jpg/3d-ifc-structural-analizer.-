@@ -162,7 +162,8 @@ CUERPOS: Dict[str, str] = {
 
 #: Para qué tipo de elemento/asignación se usa cada icono (paneles y tablas).
 ICONO_DE_TIPO = {
-    "VIGA": "viga", "COLUMNA": "columna", "LOSA": "losa", "MURO": "muro",
+    "VIGA": "viga", "COLUMNA": "columna", "LOSA": "losa", "MURO": "muro", "SOLIDO": "solido",
+    "Apoyo en superficie": "apoyo", "Carga en superficie": "carga_dist",
     "Apoyo": "apoyo", "Apoyo de área": "apoyo_area", "Conexión": "conectar",
     "Carga de área": "carga", "Carga lineal": "carga_dist", "Carga puntual": "carga",
 }

@@ -89,6 +89,68 @@ class ApoyoArea:
 
 
 @dataclass
+class ApoyoSuperficie:
+    """Apoyo sobre una superficie cualquiera (una cara de un sólido o de una barra, losa o muro).
+
+    Restringe los grados de libertad elegidos en todos los nodos de la superficie. Con las tres
+    traslaciones restringidas la superficie queda empotrada; con solo una (p. ej. Uz) es un apoyo
+    deslizante sobre el terreno o sobre otra pieza. Los giros (Rx, Ry, Rz) hacen que la superficie
+    se mueva como cuerpo rígido con esos giros impedidos. Solo se usa en el análisis 3D.
+    """
+
+    id: str
+    elemento_tipo: str  # "SOLIDO", "VIGA", "COLUMNA", "LOSA" o "MURO"
+    elemento_id: str
+    cara: int
+    ux: bool = True
+    uy: bool = True
+    uz: bool = True
+    rx: bool = False
+    ry: bool = False
+    rz: bool = False
+    nombre: str = ""
+    nodo_id: Optional[str] = None  # sin uso: lo leen por compatibilidad los apoyos nodales del análisis de barras
+
+    def __post_init__(self) -> None:
+        if not self.nombre:
+            self.nombre = self.id
+
+    def grados_restringidos(self) -> List[int]:
+        banderas = [self.ux, self.uy, self.uz, self.rx, self.ry, self.rz]
+        return [i + 1 for i, restringido in enumerate(banderas) if restringido]
+
+
+@dataclass
+class CargaSuperficie:
+    """Carga sobre una superficie cualquiera, repartida por toda su área. Solo se usa en el análisis 3D.
+
+    * ``PRESION`` (kPa): ``valor`` × área. Sin ``direccion`` actúa normal a la superficie, hacia dentro
+      (compresión si es positiva); con ``direccion`` es una tracción con ese sentido.
+    * ``FUERZA`` (kN): fuerza total ``valor`` en ``direccion`` repartida uniformemente.
+    * ``MOMENTO`` (kN·m): momento total ``valor`` alrededor del eje ``direccion`` (regla de la mano
+      derecha) respecto del centro de la superficie, repartido como fuerzas proporcionales a la distancia.
+    """
+
+    id: str
+    caso_id: str
+    elemento_tipo: str
+    elemento_id: str
+    cara: int
+    tipo: str  # "PRESION", "FUERZA" o "MOMENTO"
+    valor: float
+    direccion: Optional[Vector3] = None
+    nombre: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.nombre:
+            self.nombre = self.id
+        if self.tipo not in ("PRESION", "FUERZA", "MOMENTO"):
+            raise ValueError(f"Tipo de carga de superficie desconocido: {self.tipo}")
+        if self.tipo in ("FUERZA", "MOMENTO") and self.direccion is None:
+            raise ValueError("Una fuerza o un momento sobre una superficie necesita una dirección")
+
+
+@dataclass
 class Conexion:
     """Restricción (constraint) entre dos elementos sólidos.
 

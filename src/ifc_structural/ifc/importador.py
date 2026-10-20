@@ -58,6 +58,7 @@ import ifcopenshell.util.unit as util_unit
 
 from ..core.conectividad import conectar_nodos, conectar_uniones_en_t
 from ..core.modelo import DireccionLosa, Material, ModoAnalisisLosa, PerfilSeccion, Proyecto
+from ..core.solidos import SolidoGeneral, soldar_vertices
 from ..core.vigas_soporte import asignar_vigas_soporte
 
 logger = logging.getLogger(__name__)
@@ -488,27 +489,70 @@ def _procesar_elemento_planar(proyecto: Proyecto, elemento, vertices: np.ndarray
     return nombre, espesor, material, nodos_contorno_ids
 
 
-#: Elementos de una conexión metálica que no son barras y no se modelan.
-_TIPOS_DE_CONEXION = {
-    "IfcPlate": "placas", "IfcMechanicalFastener": "pernos/anclajes", "IfcFastener": "elementos de fijación",
-    "IfcDiscreteAccessory": "accesorios", "IfcReinforcingBar": "barras de refuerzo",
-}
+#: Tipos de IFC que no son piezas físicas (huecos y elementos virtuales).
+_TIPOS_SIN_SOLIDO = ("IfcOpeningElement", "IfcVirtualElement")
+#: Máximo de sólidos genéricos que se importan de un archivo.
+MAXIMO_DE_SOLIDOS = 400
 
 
-def _avisar_elementos_ignorados(modelo_ifc, proyecto: Proyecto) -> None:
-    cantidades = {}
-    for tipo, descripcion in _TIPOS_DE_CONEXION.items():
-        try:
-            n = len(modelo_ifc.by_type(tipo))
-        except RuntimeError:  # tipo inexistente en este esquema IFC
-            n = 0
-        if n:
-            cantidades[descripcion] = cantidades.get(descripcion, 0) + n
-    if cantidades:
-        detalle = ", ".join(f"{n} {d}" for d, n in cantidades.items())
+def importar_solido_de_elemento(proyecto: Proyecto, elemento, ajustes, factor_longitud: float,
+                                id_: Optional[str] = None) -> Optional[SolidoGeneral]:
+    """Lee la geometría real de un elemento IFC (cualquiera) y la agrega como sólido con sus superficies."""
+
+    try:
+        forma = ifcopenshell.geom.create_shape(ajustes, elemento)
+    except Exception as exc:  # ifcopenshell lanza distintas excepciones según el caso
+        logger.debug("Sin geometría en %s %s: %s", elemento.is_a(), elemento.GlobalId, exc)
+        return None
+    vertices = np.array(forma.geometry.verts, dtype=float).reshape(-1, 3) * factor_longitud
+    triangulos = np.array(forma.geometry.faces, dtype=np.int64).reshape(-1, 3)
+    if len(vertices) < 4 or len(triangulos) < 4:
+        return None
+    vertices, triangulos = soldar_vertices(vertices, triangulos)
+    if len(triangulos) < 4:
+        return None
+    material = _obtener_o_crear_material(proyecto, elemento)
+    solido = SolidoGeneral(
+        id=id_ or proyecto.siguiente_id("S"), nombre=elemento.Name or elemento.GlobalId, tipo_ifc=elemento.is_a(),
+        material=material, vertices=vertices, triangulos=triangulos, ifc_guid=elemento.GlobalId,
+    )
+    if solido.volumen < 1e-12:
+        return None
+    proyecto.solidos[solido.id] = solido
+    return solido
+
+
+def _importar_solidos(modelo_ifc, proyecto: Proyecto, ajustes, factor_longitud: float) -> None:
+    """Todo elemento que no sea viga, columna, losa o muro entra como sólido de forma libre:
+    placas, pernos, zapatas, escaleras, piezas especiales..."""
+
+    ya_importados = {e.ifc_guid for e in proyecto.todas_las_barras().values()}
+    ya_importados |= {e.ifc_guid for e in list(proyecto.losas.values()) + list(proyecto.muros.values())}
+    candidatos = [e for e in modelo_ifc.by_type("IfcElement")
+                  if e.GlobalId not in ya_importados and not any(e.is_a(t) for t in _TIPOS_SIN_SOLIDO)]
+    if len(candidatos) > MAXIMO_DE_SOLIDOS:
         proyecto.avisos.append(
-            f"No se modelan {detalle} (placas, soldaduras y pernos): las barras se unen por sus ejes."
-        )
+            f"El archivo tiene {len(candidatos)} elementos que no son vigas, columnas, losas ni muros: se importan "
+            f"solo los primeros {MAXIMO_DE_SOLIDOS} como sólidos.")
+        candidatos = candidatos[:MAXIMO_DE_SOLIDOS]
+    por_tipo: Dict[str, int] = {}
+    abiertos = 0
+    for elemento in candidatos:
+        solido = importar_solido_de_elemento(proyecto, elemento, ajustes, factor_longitud)
+        if solido is None:
+            continue
+        por_tipo[elemento.is_a()] = por_tipo.get(elemento.is_a(), 0) + 1
+        if not solido.cerrado:
+            abiertos += 1
+    if por_tipo:
+        detalle = ", ".join(f"{n} {t.replace('Ifc', '')}" for t, n in sorted(por_tipo.items()))
+        proyecto.avisos.append(
+            f"Se importaron como sólidos (geometría real, con superficies para asignar apoyos y cargas): {detalle}. "
+            "Solo se analizan con ANALIZAR 3D.")
+    if abiertos:
+        proyecto.avisos.append(
+            f"{abiertos} sólido(s) tienen la malla abierta o con errores: se pueden ver y seleccionar, pero no se podrán "
+            "mallar en el análisis 3D.")
 
 
 def importar_ifc(ruta_ifc: str) -> Proyecto:
@@ -536,15 +580,16 @@ def importar_ifc(ruta_ifc: str) -> Proyecto:
     partidas = conectar_uniones_en_t(proyecto)
     if partidas:
         logger.info("Se partieron %d barras donde otras llegan a su eje (uniones en T).", partidas)
-    _avisar_elementos_ignorados(modelo_ifc, proyecto)
     for elemento in modelo_ifc.by_type("IfcSlab"):
         _importar_losa(proyecto, elemento, ajustes, factor_longitud)
     for elemento in modelo_ifc.by_type("IfcWall"):
         _importar_muro(proyecto, elemento, ajustes, factor_longitud)
     asignar_vigas_soporte(proyecto)
+    _importar_solidos(modelo_ifc, proyecto, ajustes, factor_longitud)
+    proyecto.ruta_ifc = str(ruta_ifc)
 
     logger.info(
-        "Importación completa: %d vigas, %d columnas, %d losas, %d muros.",
-        len(proyecto.vigas), len(proyecto.columnas), len(proyecto.losas), len(proyecto.muros),
+        "Importación completa: %d vigas, %d columnas, %d losas, %d muros, %d sólidos.",
+        len(proyecto.vigas), len(proyecto.columnas), len(proyecto.losas), len(proyecto.muros), len(proyecto.solidos),
     )
     return proyecto

@@ -97,7 +97,7 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         lineas.append(f"*RIGID BODY,NSET=APOYO{k},REF NODE={ref},ROT NODE={rot}")
         condiciones += [f"{ref},{g},{g}" for g in traslaciones] + [f"{rot},{g},{g}" for g in giros]
     if condiciones:
-        lineas += ["*BOUNDARY"] + condiciones
+        lineas += ["*BOUNDARY"] + list(dict.fromkeys(condiciones))
     return lineas
 
 

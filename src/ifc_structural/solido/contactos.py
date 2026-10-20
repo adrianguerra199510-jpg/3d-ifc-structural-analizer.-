@@ -54,7 +54,7 @@ def detectar_uniones(malla: MallaSolida, tamano: float, espesores: Optional[Dict
     for i in range(len(malla.partes)):
         for j in range(i + 1, len(malla.partes)):
             pi, pj = malla.partes[i], malla.partes[j]
-            planos = [p for p in (pi, pj) if p.tipo != "BARRA"]
+            planos = [p for p in (pi, pj) if p.tipo in ("LOSA", "MURO")]
             # Con losas o muros, el IFC las coloca a veces solapadas con las vigas o con holgura:
             # si no se tocan exactamente se buscan caras que las miran a corta distancia.
             holgura = max([tol] + [max(0.6 * tamano, 0.5 * espesores.get(p.id, 0.0)) for p in planos])

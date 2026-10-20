@@ -1,6 +1,7 @@
 """Análisis como modelo sólido (3D): mallado, uniones y esfuerzos con CalculiX
 real comparados con la teoría de vigas y con el equilibrio."""
 
+import copy
 import shutil
 from pathlib import Path
 
@@ -45,6 +46,15 @@ def conexion(tmp_path_factory):
     return importar_ifc(str(ruta))
 
 
+@pytest.fixture
+def conexion_de_barras(conexion):
+    """La conexión sin las placas y los pernos (que se importan como sólidos libres)."""
+
+    copia = copy.copy(conexion)
+    copia.solidos = {}
+    return copia
+
+
 # ---------------------------------------------------------------------------
 # Mallado
 # ---------------------------------------------------------------------------
@@ -59,13 +69,13 @@ def test_malla_de_la_seccion_en_i_cubre_exactamente_el_perfil():
     assert len({(round(u, 8), round(v, 8)) for u, v in puntos}) == len(puntos)
 
 
-def test_malla_de_barras_tiene_volumen_positivo_y_el_del_perfil(conexion):
-    miembros = construir_miembros(conexion)
-    recortar_uniones(conexion, miembros)
-    malla = construir_malla_solida(conexion, miembros, 0.03)
+def test_malla_de_barras_tiene_volumen_positivo_y_el_del_perfil(conexion_de_barras):
+    miembros = construir_miembros(conexion_de_barras)
+    recortar_uniones(conexion_de_barras, miembros)
+    malla = construir_malla_solida(conexion_de_barras, miembros, 0.03)
     volumenes = _volumenes(malla)
     assert volumenes.min() > 0
-    esperado = sum(conexion.perfiles[m.perfil].area * (m.longitud - m.recorte0 - m.recorte1) for m in miembros)
+    esperado = sum(conexion_de_barras.perfiles[m.perfil].area * (m.longitud - m.recorte0 - m.recorte1) for m in miembros)
     assert volumenes.sum() == pytest.approx(esperado, rel=1e-6)
 
 
@@ -81,14 +91,25 @@ def test_miembros_de_la_conexion_columna_fundida_y_vigas_recortadas_hasta_el_ala
     assert miembros["C1+C2"].recorte0 == miembros["C1+C2"].recorte1 == 0.0
 
 
-def test_las_vigas_se_unen_a_la_columna_por_la_cara_extrema(conexion):
-    miembros = construir_miembros(conexion)
-    recortar_uniones(conexion, miembros)
-    malla = construir_malla_solida(conexion, miembros, 0.03)
+def test_las_vigas_se_unen_a_la_columna_por_la_cara_extrema(conexion_de_barras):
+    miembros = construir_miembros(conexion_de_barras)
+    recortar_uniones(conexion_de_barras, miembros)
+    malla = construir_malla_solida(conexion_de_barras, miembros, 0.03)
     uniones, avisos = detectar_uniones(malla, 0.03)
     assert avisos == []
     pares = {frozenset((malla.partes[u.parte_esclava].id, malla.partes[u.parte_maestra].id)) for u in uniones}
     assert pares == {frozenset(("B1", "C1+C2")), frozenset(("B2", "C1+C2"))}
+
+
+def test_las_placas_y_los_pernos_de_la_conexion_se_mallan_y_se_unen_a_alguna_pieza(conexion):
+    miembros = construir_miembros(conexion)
+    recortar_uniones(conexion, miembros)
+    malla = construir_malla_solida(conexion, miembros, 0.03)
+    assert {p.id for p in malla.partes if p.tipo == "SOLIDO"} == set(conexion.solidos)
+    assert _volumenes(malla).min() > 0
+    uniones, _ = detectar_uniones(malla, 0.03)
+    unidas = {malla.partes[i].id for u in uniones for i in (u.parte_esclava, u.parte_maestra)}
+    assert {"S1", "S2"} <= unidas  # las placas de extremo se unen a la columna o a la viga
 
 
 def test_la_losa_solapada_con_las_vigas_se_recorta_y_se_une(tmp_path: Path):
@@ -110,7 +131,7 @@ def test_estimacion_de_hexaedros_coincide_con_la_malla(conexion):
     miembros = construir_miembros(conexion)
     recortar_uniones(conexion, miembros)
     real = len(construir_malla_solida(conexion, miembros, 0.02).hexaedros)
-    assert estimar(conexion, 0.02) == pytest.approx(real, rel=0.05)
+    assert estimar(conexion, 0.02) == pytest.approx(real, rel=0.10)  # los sólidos solapados pierden celdas
     assert 0.01 <= tamano_sugerido(conexion) <= 0.25
 
 

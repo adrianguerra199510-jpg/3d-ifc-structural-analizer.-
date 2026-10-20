@@ -13,7 +13,11 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Dict
 
-from .cargas import Apoyo, ApoyoArea, CargaArea, CargaLineal, CargaPuntual, Conexion, PerfilPresion, SistemaReferencia
+from .cargas import (
+    Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion, PerfilPresion,
+    SistemaReferencia,
+)
+from .solidos import a_diccionario, desde_diccionario
 from .casos_carga import Combinacion, CasoCarga, TipoCaso
 from .modelo import (
     DireccionLosa,
@@ -51,9 +55,13 @@ def guardar_proyecto(
     cargas_lineales_por_caso: Dict[str, list],
     cargas_puntuales_por_caso: Dict[str, list],
     conexiones: list = (),
+    cargas_superficie_por_caso: Dict[str, list] = None,
 ) -> None:
     datos = {
         "nombre": proyecto.nombre,
+        "ruta_ifc": proyecto.ruta_ifc,
+        "solidos": [a_diccionario(s) for s in proyecto.solidos.values()],
+        "cargas_superficie": {caso: [_a_dict(c) for c in lista] for caso, lista in (cargas_superficie_por_caso or {}).items()},
         "nodos": [_a_dict(n) for n in proyecto.nodos.values()],
         "materiales": [_a_dict(m) for m in proyecto.materiales.values()],
         "perfiles": [_a_dict(p) for p in proyecto.perfiles.values()],
@@ -61,7 +69,8 @@ def guardar_proyecto(
         "columnas": [_a_dict(c) for c in proyecto.columnas.values()],
         "losas": [_a_dict(l) for l in proyecto.losas.values()],
         "muros": [_a_dict(m) for m in proyecto.muros.values()],
-        "apoyos": [{**_a_dict(a), "clase": "area" if isinstance(a, ApoyoArea) else "nodal"} for a in apoyos],
+        "apoyos": [{**_a_dict(a), "clase": "area" if isinstance(a, ApoyoArea)
+                    else "superficie" if isinstance(a, ApoyoSuperficie) else "nodal"} for a in apoyos],
         "conexiones": [_a_dict(c) for c in conexiones],
         "casos": [_a_dict(c) for c in casos.values()],
         "combinaciones": [_a_dict(c) for c in combinaciones.values()],
@@ -70,6 +79,19 @@ def guardar_proyecto(
         "cargas_puntuales": {caso: [_a_dict(c) for c in lista] for caso, lista in cargas_puntuales_por_caso.items()},
     }
     ruta.write_text(json.dumps(datos, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def cargar_cargas_superficie(ruta: Path) -> Dict[str, list]:
+    """Cargas sobre superficies del proyecto guardado (caso -> lista), aparte para no cambiar
+    lo que devuelve ``cargar_proyecto``."""
+
+    datos = json.loads(ruta.read_text(encoding="utf-8"))
+    resultado: Dict[str, list] = {}
+    for caso, lista in datos.get("cargas_superficie", {}).items():
+        resultado[caso] = [
+            CargaSuperficie(**{**c, "direccion": tuple(c["direccion"]) if c.get("direccion") else None}) for c in lista
+        ]
+    return resultado
 
 
 def cargar_proyecto(ruta: Path):
@@ -103,11 +125,15 @@ def cargar_proyecto(ruta: Path):
     for m in datos.get("muros", []):
         proyecto.muros[m["id"]] = Muro(**m)
 
+    proyecto.ruta_ifc = datos.get("ruta_ifc")
+    for s in datos.get("solidos", []):
+        proyecto.solidos[s["id"]] = desde_diccionario(s)
+
     apoyos = []
     for a in datos.get("apoyos", []):
         a = dict(a)
         clase = a.pop("clase", "nodal")  # los archivos antiguos solo tienen apoyos nodales
-        apoyos.append(ApoyoArea(**a) if clase == "area" else Apoyo(**a))
+        apoyos.append(ApoyoArea(**a) if clase == "area" else ApoyoSuperficie(**a) if clase == "superficie" else Apoyo(**a))
     conexiones = [Conexion(**c) for c in datos.get("conexiones", [])]
     casos = {c["id"]: CasoCarga(**{**c, "tipo": TipoCaso(c["tipo"])}) for c in datos.get("casos", [])}
     combinaciones = {c["id"]: Combinacion(**c) for c in datos.get("combinaciones", [])}

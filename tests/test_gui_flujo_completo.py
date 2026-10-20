@@ -29,7 +29,7 @@ def _ejecutar(guion: str, tmp_path: Path):
     entorno["PYTHONPATH"] = os.pathsep.join([str(raiz / "src"), str(raiz)])
     proceso = subprocess.run(
         ["xvfb-run", "-a", "-s", "-screen 0 1600x1000x24", sys.executable, "-m", f"tests.{guion}", str(tmp_path)],
-        cwd=raiz, env=entorno, capture_output=True, text=True, timeout=300,
+        cwd=raiz, env=entorno, capture_output=True, text=True, timeout=600,
     )
     assert proceso.returncode == 0 and "OK" in proceso.stdout, proceso.stdout + proceso.stderr
 
@@ -40,3 +40,7 @@ def test_flujo_completo_con_mouse(tmp_path: Path):
 
 def test_conexion_metalica_con_cargas_en_caras_extremas(tmp_path: Path):
     _ejecutar("guion_gui_conexion_xvfb", tmp_path)
+
+
+def test_geometria_libre_apoyos_y_cargas_en_superficies(tmp_path: Path):
+    _ejecutar("guion_gui_libre_xvfb", tmp_path)

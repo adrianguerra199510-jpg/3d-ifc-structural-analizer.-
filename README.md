@@ -160,6 +160,38 @@ barra, sin Gmsh ni otras dependencias), así que no hay nada que instalar.
   envolvente), pero sobre el sólido: se ven las alas, el alma y las uniones. Comprobado
   contra `M·c/I`, `wL²/8` y el equilibrio (`tests/test_solido.py`): error < 3 %.
 
+## Geometría de cualquier elemento y apoyos/cargas en cualquier superficie
+
+Además de vigas, columnas, losas y muros, el importador lee la **geometría real de cualquier
+otro elemento del IFC** (placas, pernos, cartelas, piezas a medida, `IfcBuildingElementProxy`…)
+y la conserva como **sólido de forma libre**:
+
+- **Superficies.** La malla de triángulos de cada elemento se agrupa en superficies: las
+  caras planas (triángulos coplanares, tolerancia 4°) y las superficies curvas (un cilindro
+  son 3: dos tapas y la lateral; una esfera es 1). Se numeran de arriba abajo y se eligen con un
+  clic en modo **Cara**, igual que las caras de una viga. Los sólidos aparecen en el árbol, con
+  su propio interruptor de visibilidad.
+- **Apoyos.** *Asignar → Apoyo* sobre una superficie de un sólido (o, con clic derecho, «Asignar
+  apoyo en la superficie…» sobre la cara de una viga, losa o muro): empotrada, deslizante en X, Y o Z,
+  cuerpo rígido o cualquier combinación de Ux, Uy, Uz, Rx, Ry, Rz.
+- **Cargas.** *Asignar → Carga* sobre una superficie: **presión** (kPa, por defecto normal a la
+  superficie y hacia dentro), **fuerza total** (kN repartida por área) o **momento total** (kN·m,
+  repartido con fuerzas proporcionales a la distancia al centro), en la dirección elegida (normal,
+  ejes globales o un vector).
+- **Análisis.** Solo con **ANALIZAR 3D**: cada sólido se malla en hexaedros rellenando su caja
+  envolvente con una cuadrícula y conservando las celdas cuyo centro está dentro (las celdas se
+  ajustan a la caja, de modo que una placa o un bloque con caras paralelas a los ejes queda mallado
+  exactamente; las caras inclinadas o curvas quedan escalonadas y mejoran con elementos más finos).
+  Cada cara de hexaedro de borde se asocia a la superficie más cercana, y de ahí salen los nodos
+  donde se aplican apoyos y cargas. Donde dos sólidos (o un sólido y una viga o columna) se
+  solapan, la pieza menor cede el volumen común, para no contarlo dos veces; las piezas se unen
+  por las superficies que se tocan (`*TIE`) y las que no tocan a ninguna otra con apoyo se
+  detectan antes de resolver. Los sólidos deben ser superficies cerradas (se avisa si no lo son).
+- **Qué no hace.** Los sólidos no participan en el análisis de barras (se avisa) y no se modelan
+  pernos con pretensión, contacto con separación ni fricción. Comprobado con CalculiX contra la
+  teoría (voladizo `PL³/3EI`, compresión `σ = p`, perno en tracción `FL/EA`) en
+  `tests/test_solidos_libres.py` y con clics reales en `tests/guion_gui_libre_xvfb.py`.
+
 ## Estructuras de acero: perfiles en I y uniones
 
 - **Perfiles reales.** Los perfiles `IfcIShapeProfileDef` (IPE, HEA, HEB…), los
@@ -179,8 +211,9 @@ barra, sin Gmsh ni otras dependencias), así que no hay nada que instalar.
   (o una secundaria contra una principal) se conecta: su extremo pasa al eje de la otra
   barra y esta se parte en el punto de unión. Los `IfcMember` se importan como viga o
   columna según su inclinación.
-- **No se modelan** placas de extremo, soldaduras, pernos ni rigidizadores (se
-  avisa al importar): las barras se unen por sus ejes. Tampoco se incluye el cortante
+- **Placas, pernos y rigidizadores** no son barras: en el análisis de barras no participan
+  (se importan como sólidos de forma libre y solo se analizan con ANALIZAR 3D; las barras se
+  unen por sus ejes). Tampoco se incluye el cortante
   por torsión de los perfiles en I. Los perfiles huecos, en L o en U no están
   soportados (se aproximan con un rectángulo macizo y se avisa); el círculo se
   analiza como un cuadrado de igual inercia.
@@ -256,6 +289,8 @@ src/ifc_structural/
 │   ├── transferencia.py           # áreas tributarias (1 y 2 direcciones) + peso propio
 │   ├── geometria.py               # sólidos y caras de cada elemento
 │   ├── asignacion.py              # selección → apoyos y cargas
+│   ├── asignacion_superficie.py   # apoyos y cargas en una superficie cualquiera
+│   ├── solidos.py                 # sólidos de forma libre: triángulos, superficies y persistencia
 │   ├── vigas_soporte.py           # detección de vigas bajo cada losa
 │   └── conectividad.py            # unión de nodos cercanos
 ├── ifc/
@@ -270,7 +305,9 @@ src/ifc_structural/
 ├── solido/                        # análisis 3D como modelo sólido
 │   ├── seccion2d.py               # malla de cuadriláteros de la sección (rectángulo, doble T)
 │   ├── miembros.py                # barras fundidas y recortadas en las uniones
-│   ├── malla.py                   # hexaedros de barras, losas y muros; caras frontera
+│   ├── malla.py                   # hexaedros de barras, losas, muros y sólidos libres; caras frontera
+│   ├── libres.py                  # voxelización de un sólido de forma libre (celdas dentro + superficies)
+│   ├── superficies.py             # caras de hexaedro de una superficie; reparto de presión, fuerza y momento
 │   ├── contactos.py               # *TIE entre caras coplanares enfrentadas
 │   ├── generador.py               # .inp (C3D8I, TIE, apoyos, cargas)
 │   └── analisis_solido.py         # orquestación y resultados
@@ -282,6 +319,7 @@ src/ifc_structural/
     ├── visor_3d.py                 # widget PyVista + selección
     ├── dialogo_cargas.py
     ├── dialogo_apoyos.py
+    ├── dialogo_superficie.py       # apoyos y cargas en una superficie
     ├── dialogo_casos.py
     ├── dialogo_analisis_3d.py      # tamaño de elemento del análisis 3D
     ├── panel_resultados.py         # panel de esfuerzos

@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.cargas import ApoyoArea, CargaArea, CargaLineal, CargaPuntual, Conexion
+from ..core.cargas import ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion
 from ..core.casos_carga import CasoCarga, Combinacion
 from ..core.materiales import modulo_en_mpa, usos_de_material
 from ..core.modelo import Proyecto
@@ -44,10 +44,15 @@ NOMBRES_GDL = {1: "Ux", 2: "Uy", 3: "Uz", 4: "Rx", 5: "Ry", 6: "Rz"}
 ABIERTOS_POR_DEFECTO = {
     ("PROYECTO",), ("GRUPO", "Elementos"), ("GRUPO", "Apoyos"), ("GRUPO", "Cargas"), ("GRUPO", "Resultados"),
 }
-TIPOS_ELEMENTO = (("VIGA", "Vigas", "viga"), ("COLUMNA", "Columnas", "columna"), ("LOSA", "Losas", "losa"), ("MURO", "Muros", "muro"))
+TIPOS_ELEMENTO = (("VIGA", "Vigas", "viga"), ("COLUMNA", "Columnas", "columna"), ("LOSA", "Losas", "losa"),
+                  ("MURO", "Muros", "muro"), ("SOLIDO", "Sólidos", "solido"))
 
 
 def tipo_de_asignacion(obj) -> str:
+    if isinstance(obj, ApoyoSuperficie):
+        return "Apoyo en superficie"
+    if isinstance(obj, CargaSuperficie):
+        return "Carga en superficie"
     if isinstance(obj, ApoyoArea):
         return "Apoyo de área"
     if isinstance(obj, Conexion):
@@ -182,12 +187,14 @@ class PanelArbol(QWidget):
         cargas_puntuales: Dict[str, List[CargaPuntual]],
         resultado=None,
         desactualizado: bool = False,
+        cargas_superficie: Optional[Dict[str, List[CargaSuperficie]]] = None,
     ) -> None:
         """Reconstruye el árbol conservando lo expandido y lo seleccionado
         (y aplicando el filtro de búsqueda, si lo hay)."""
 
+        cargas_superficie = cargas_superficie or {}
         self._ultimo = (proyecto, apoyos, conexiones, casos, combinaciones, cargas_area, cargas_lineales,
-                        cargas_puntuales, resultado, desactualizado)
+                        cargas_puntuales, resultado, desactualizado, cargas_superficie)
         seleccionadas = {self._clave(i) for i in self.arbol.selectedItems()}
         self._silencio = True
         self.arbol.clear()
@@ -202,12 +209,14 @@ class PanelArbol(QWidget):
         barras = proyecto.todas_las_barras()
         tipo_de_barra = {i: ("VIGA" if i in proyecto.vigas else "COLUMNA") for i in barras}
         for obj in apoyos:
-            if isinstance(obj, ApoyoArea):
+            if isinstance(obj, (ApoyoArea, ApoyoSuperficie)):
                 adjuntar(obj.elemento_tipo, obj.elemento_id, obj)
         for c in conexiones:
             if c.barra_id in tipo_de_barra:
                 adjuntar(tipo_de_barra[c.barra_id], c.barra_id, c)
         for caso_id in casos:
+            for c in cargas_superficie.get(caso_id, []):
+                adjuntar(c.elemento_tipo, c.elemento_id, c, caso_id)
             for c in cargas_lineales.get(caso_id, []):
                 if c.elemento_id in tipo_de_barra:
                     adjuntar(tipo_de_barra[c.elemento_id], c.elemento_id, c, caso_id)
@@ -219,7 +228,7 @@ class PanelArbol(QWidget):
                     adjuntar("LOSA", c.losa_id, c, caso_id)
 
         def destino_de(obj) -> List[Tuple[str, str]]:
-            if isinstance(obj, ApoyoArea):
+            if isinstance(obj, (ApoyoArea, ApoyoSuperficie, CargaSuperficie)):
                 return [(obj.elemento_tipo, obj.elemento_id)]
             if isinstance(obj, Conexion):
                 return [(tipo_de_barra[obj.barra_id], obj.barra_id)] if obj.barra_id in tipo_de_barra else []
@@ -231,6 +240,12 @@ class PanelArbol(QWidget):
             return [(tipo_de_barra[i], i) for i, b in barras.items() if nodo in (b.nodo_inicio, b.nodo_fin)]
 
         def fila_de(obj, caso: str = "", bajo_elemento: bool = False) -> Tuple[str, str]:
+            if isinstance(obj, ApoyoSuperficie):
+                cabeza = obj.nombre.split(": ")[0]
+                return ("Apoyo en superficie" if bajo_elemento else cabeza), _gdl(obj.grados_restringidos())
+            if isinstance(obj, CargaSuperficie):
+                cabeza, cola = _partir_nombre(obj.nombre)
+                return ((cola or cabeza), caso) if bajo_elemento else (cabeza, f"{caso} · {cola}")
             if isinstance(obj, ApoyoArea):
                 return (("Apoyo de área" if bajo_elemento else obj.nombre.split(": ")[0]),
                         f"{_gdl(obj.grados_restringidos())}")
@@ -256,17 +271,23 @@ class PanelArbol(QWidget):
         # -- raíz --------------------------------------------------------------
         raiz = self._nuevo(
             self.arbol, proyecto.nombre or "Proyecto",
-            f"{len(barras)} barras · {len(proyecto.losas)} losas · {len(proyecto.muros)} muros",
+            f"{len(barras)} barras · {len(proyecto.losas)} losas · {len(proyecto.muros)} muros"
+            + (f" · {len(proyecto.solidos)} sólidos" if proyecto.solidos else ""),
             "modelo", ("PROYECTO",), negrita=True,
         )
 
         # -- elementos ------------------------------------------------------------
         grupo = self._nuevo(raiz, "Elementos", "", "modelo", ("GRUPO", "Elementos"), negrita=True)
         for tipo, titulo, nombre_icono in TIPOS_ELEMENTO:
-            coleccion = {"VIGA": proyecto.vigas, "COLUMNA": proyecto.columnas, "LOSA": proyecto.losas, "MURO": proyecto.muros}[tipo]
+            coleccion = {"VIGA": proyecto.vigas, "COLUMNA": proyecto.columnas, "LOSA": proyecto.losas, "MURO": proyecto.muros,
+                         "SOLIDO": proyecto.solidos}[tipo]
+            if tipo == "SOLIDO" and not coleccion:
+                continue
             sub = self._nuevo(grupo, f"{titulo} ({len(coleccion)})", "", nombre_icono, ("GRUPO", titulo))
             for id_, elemento in coleccion.items():
-                if tipo in ("VIGA", "COLUMNA"):
+                if tipo == "SOLIDO":
+                    detalle = f"{elemento.tipo_ifc.replace('Ifc', '')} · {elemento.material} · {len(elemento.caras)} superficies"
+                elif tipo in ("VIGA", "COLUMNA"):
                     perfil = proyecto.perfiles.get(elemento.perfil)
                     seccion = (
                         f"{perfil.ancho * 100:.0f}×{perfil.altura * 100:.0f} cm"
@@ -292,11 +313,12 @@ class PanelArbol(QWidget):
             crear_asignacion(grupo, obj)
 
         # -- cargas, por caso -------------------------------------------------------------
-        total = sum(len(v) for d in (cargas_area, cargas_lineales, cargas_puntuales) for v in d.values())
+        total = sum(len(v) for d in (cargas_area, cargas_lineales, cargas_puntuales, cargas_superficie) for v in d.values())
         grupo = self._nuevo(raiz, f"Cargas ({total})", "", "carga_dist", ("GRUPO", "Cargas"), negrita=True)
         for caso_id, caso in casos.items():
             lista = (
                 list(cargas_area.get(caso_id, [])) + list(cargas_lineales.get(caso_id, [])) + list(cargas_puntuales.get(caso_id, []))
+                + list(cargas_superficie.get(caso_id, []))
             )
             sub = self._nuevo(grupo, f"Caso {caso_id} — {caso.nombre} ({len(lista)})", "", "casos", ("GRUPO", "Caso", caso_id))
             for obj in lista:

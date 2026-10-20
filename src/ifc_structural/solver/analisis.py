@@ -18,7 +18,7 @@ import numpy as np
 from ..combinaciones import esfuerzos
 from ..combinaciones.motor_superposicion import superponer_todas_las_combinaciones
 from ..core.asignacion import barras_de_apoyo_area
-from ..core.cargas import Apoyo, ApoyoArea, CargaArea, CargaLineal, CargaPuntual, Conexion
+from ..core.cargas import Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, Conexion
 from ..core.casos_carga import CasoCarga, Combinacion, TipoCaso
 from ..core.modelo import Proyecto
 from ..core.transferencia import (
@@ -205,7 +205,14 @@ def validar_modelo(
 
     barras = proyecto.todas_las_barras()
     if not barras:
-        errores.append("El modelo no tiene vigas ni columnas que analizar.")
+        errores.append("El modelo no tiene vigas ni columnas que analizar."
+                       + (" Los sólidos de forma libre solo se analizan con ANALIZAR 3D." if proyecto.solidos else ""))
+    if proyecto.solidos and barras:
+        advertencias.append(f"{len(proyecto.solidos)} sólido(s) de forma libre no participan en este análisis de barras "
+                            "(solo en ANALIZAR 3D).")
+    if any(isinstance(a, ApoyoSuperficie) for a in apoyos):
+        advertencias.append("Los apoyos sobre superficies solo se aplican en ANALIZAR 3D y se ignoran aquí.")
+        apoyos = [a for a in apoyos if not isinstance(a, ApoyoSuperficie)]
     if not casos:
         errores.append("No hay casos de carga definidos.")
 
@@ -343,6 +350,7 @@ def ejecutar_analisis(
 
     avanzar("Validando el modelo...")
     errores, advertencias = validar_modelo(proyecto, casos, combinaciones, apoyos, conexiones)
+    apoyos = [a for a in apoyos if not isinstance(a, ApoyoSuperficie)]
     if errores:
         raise ErrorAnalisis("\n".join(errores))
 

@@ -17,6 +17,7 @@ import numpy as np
 from ..core.geometria import normal_losa
 from ..core.modelo import Proyecto
 from .miembros import MiembroBarra
+from .libres import estimar_hexaedros_solido, mallar_solido
 from .seccion2d import malla_seccion, pesos_nodales
 
 #: Caras de un hexaedro (índices 0-based de sus 8 nodos), en el orden S1..S6 de CalculiX.
@@ -42,7 +43,7 @@ class ParteMalla:
     """Un miembro (barra, losa o muro) ya mallado."""
 
     id: str
-    tipo: str  # "BARRA", "LOSA" o "MURO"
+    tipo: str  # "BARRA", "LOSA", "MURO" o "SOLIDO" (sólido de forma libre)
     material: str
     primer_hexaedro: int
     ultimo_hexaedro: int  # exclusivo
@@ -50,6 +51,7 @@ class ParteMalla:
     estaciones: np.ndarray = field(default_factory=lambda: np.zeros(0))
     anillos: List[np.ndarray] = field(default_factory=list)
     pesos: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    superficies: Dict[int, np.ndarray] = field(default_factory=dict)  # solo sólidos libres: superficie -> (k, 2) (hexaedro local, cara 1..6)
     _fronteras: Optional[CarasFrontera] = None
 
     @property
@@ -64,6 +66,7 @@ class MallaSolida:
     parte_de_hexaedro: np.ndarray  # (M,) índice en ``partes``
     elemento_de_hexaedro: List[str]  # id de la barra, losa o muro del modelo al que pertenece cada hexaedro
     partes: List[ParteMalla]
+    avisos: List[str] = field(default_factory=list)
 
     def fronteras(self, parte: ParteMalla) -> CarasFrontera:
         if parte._fronteras is None:
@@ -199,8 +202,8 @@ def _malla_plano(proyecto: Proyecto, elemento, tamano: float, nodos: List[np.nda
 
 def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra], tamano: float,
                            especiales: Optional[Dict[str, Sequence[float]]] = None) -> MallaSolida:
-    """Malla de hexaedros de todos los miembros; ``especiales`` da, por miembro, coordenadas
-    axiales donde debe haber una estación (cargas y apoyos)."""
+    """Malla de hexaedros de todos los miembros y sólidos libres; ``especiales`` da, por miembro,
+    coordenadas axiales donde debe haber una estación (cargas y apoyos)."""
 
     especiales = especiales or {}
     bloques_nodos: List[np.ndarray] = []
@@ -230,16 +233,57 @@ def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra],
             n_nodos += n_nuevos
             n_hex += len(hexa)
 
+    avisos: List[str] = []
+    # Sólidos de forma libre: el de mayor volumen conserva el volumen común con los menores y las barras
+    # (pernos, placas y soldaduras suelen solapar con los perfiles que unen).
+    ordenados = sorted(proyecto.solidos.values(), key=lambda x: -x.volumen)
+    recortados = 0
+    for k, solido in enumerate(ordenados):
+        if not solido.cerrado:
+            raise ErrorMalla(f"El sólido {solido.id} ({solido.nombre}) no es una superficie cerrada y no se puede mallar en 3D.")
+        libre = mallar_solido(solido, tamano, ordenados[:k], lambda p: _dentro_de_barras(proyecto, miembros, p))
+        if libre is None:
+            avisos.append(f"El sólido {solido.id} ({solido.nombre}) queda dentro de otras piezas y no se analiza.")
+            continue
+        recortados += bool(libre.descartados)
+        bloques_nodos.append(libre.coordenadas)
+        lista_hex.append(libre.hexaedros + n_nodos)
+        partes.append(ParteMalla(id=solido.id, tipo="SOLIDO", material=solido.material, primer_hexaedro=n_hex,
+                                 ultimo_hexaedro=n_hex + len(libre.hexaedros), superficies=libre.superficies))
+        elementos.extend([solido.id] * len(libre.hexaedros))
+        n_nodos += len(libre.coordenadas)
+        n_hex += len(libre.hexaedros)
+
+    if recortados:
+        avisos.append(f"{recortados} sólido(s) se recortaron donde solapan con otras piezas (se conserva el volumen de la pieza "
+                      "mayor o de la viga o columna, para no contarlo dos veces).")
     if not partes:
         raise ErrorMalla("No hay elementos que mallar.")
     parte_de_hex = np.concatenate([np.full(p.ultimo_hexaedro - p.primer_hexaedro, i) for i, p in enumerate(partes)])
     n_nodos_barras = sum(len(b) for b in bloques_nodos[: len(miembros)])
     malla = MallaSolida(
         coordenadas=np.vstack(bloques_nodos), hexaedros=np.vstack(lista_hex).astype(np.int64),
-        parte_de_hexaedro=parte_de_hex, elemento_de_hexaedro=elementos, partes=partes,
+        parte_de_hexaedro=parte_de_hex, elemento_de_hexaedro=elementos, partes=partes, avisos=avisos,
     )
     _recortar_planos(proyecto, malla, miembros, n_nodos_barras)
     return malla
+
+
+def _dentro_de_barras(proyecto: Proyecto, miembros: Sequence[MiembroBarra], puntos: np.ndarray) -> np.ndarray:
+    """Máscara de los ``puntos`` que caen dentro del volumen de alguna viga o columna."""
+
+    from shapely import contains_xy
+    from shapely.geometry import Polygon
+
+    from .seccion2d import contorno_local
+
+    dentro = np.zeros(len(puntos), dtype=bool)
+    for m in miembros:
+        rel = puntos - m.p0
+        s, u, v = rel @ m.t, rel @ m.e1, rel @ m.e2
+        poligono = Polygon(contorno_local(proyecto.perfiles[m.perfil], m.ejes_ref))
+        dentro |= (s > m.recorte0 + 1e-9) & (s < m.longitud - m.recorte1 - 1e-9) & contains_xy(poligono, u, v)
+    return dentro
 
 
 def _recortar_planos(proyecto: Proyecto, malla: MallaSolida, miembros: Sequence[MiembroBarra], n_nodos_barras: int) -> None:
@@ -247,24 +291,15 @@ def _recortar_planos(proyecto: Proyecto, malla: MallaSolida, miembros: Sequence[
     (el IFC suele colocar la losa solapada con las vigas): así no se cuenta dos veces el volumen
     y la losa queda apoyada contra los lados de las vigas."""
 
-    from shapely import contains_xy
-    from shapely.geometry import Polygon
-
-    from .seccion2d import contorno_local
-
-    indices_planos = [i for i, p in enumerate(malla.partes) if p.tipo != "BARRA"]
+    indices_planos = [i for i, p in enumerate(malla.partes) if p.tipo in ("LOSA", "MURO")]
     if not indices_planos:
         return
     centros = malla.coordenadas[malla.hexaedros].mean(axis=1)
     mantener = np.ones(len(malla.hexaedros), dtype=bool)
     primero = malla.partes[indices_planos[0]].primer_hexaedro
-    candidatos = np.arange(primero, len(malla.hexaedros))
-    for m in miembros:
-        rel = centros[candidatos] - m.p0
-        s, u, v = rel @ m.t, rel @ m.e1, rel @ m.e2
-        poligono = Polygon(contorno_local(proyecto.perfiles[m.perfil], m.ejes_ref))
-        dentro = (s > m.recorte0 + 1e-9) & (s < m.longitud - m.recorte1 - 1e-9) & contains_xy(poligono, u, v)
-        mantener[candidatos[dentro]] = False
+    ultimo = malla.partes[indices_planos[-1]].ultimo_hexaedro
+    candidatos = np.arange(primero, ultimo)
+    mantener[candidatos[_dentro_de_barras(proyecto, miembros, centros[candidatos])]] = False
     if mantener.all():
         return
     usados = np.zeros(len(malla.coordenadas), dtype=bool)
@@ -300,6 +335,7 @@ def estimar_hexaedros(proyecto: Proyecto, miembros: Sequence[MiembroBarra], tama
             area = 0.5 * np.linalg.norm(sum(np.cross(c[i], c[(i + 1) % len(c)]) for i in range(len(c))))
             capas = max(2, math.ceil(e.espesor / tamano)) if e.espesor > 0.08 else 1
             total += area / tamano**2 * capas
+    total += sum(estimar_hexaedros_solido(x, tamano) for x in proyecto.solidos.values())
     return int(total)
 
 

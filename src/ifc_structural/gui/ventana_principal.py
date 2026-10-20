@@ -50,11 +50,13 @@ from ..core.asignacion import (
     cargas_desde_parametros,
     descripcion,
 )
-from ..core.cargas import Apoyo, ApoyoArea, CargaArea, CargaLineal, CargaPuntual, Conexion
+from ..core.cargas import (
+    Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion,
+)
 from ..core.casos_carga import CasoCarga, Combinacion, casos_y_combinaciones_por_defecto
 from ..core.materiales import descripcion_material
 from ..core.modelo import Proyecto
-from ..core.persistencia import cargar_proyecto, guardar_proyecto
+from ..core.persistencia import cargar_cargas_superficie, cargar_proyecto, guardar_proyecto
 from ..ifc.importador import importar_ifc
 from ..solido.analisis_solido import ejecutar_analisis_solido
 from ..solver.analisis import ResultadoAnalisis, ejecutar_analisis, validar_modelo
@@ -63,6 +65,7 @@ from .dialogo_analisis_3d import DialogoAnalisis3D
 from .dialogo_acerca import DialogoAcerca
 from .dialogo_apoyos import DialogoApoyo
 from .dialogo_cargas import DialogoCargas
+from .dialogo_superficie import DialogoApoyoSuperficie, DialogoCargaSuperficie
 from .dialogo_casos import DialogoCasos
 from .dialogo_conexion import DialogoConexion
 from .dialogo_materiales import DialogoAsignarMaterial, DialogoMateriales
@@ -114,6 +117,7 @@ class VentanaPrincipal(QMainWindow):
         self.cargas_area_por_caso: Dict[str, List[CargaArea]] = {}
         self.cargas_lineales_por_caso: Dict[str, List[CargaLineal]] = {}
         self.cargas_puntuales_por_caso: Dict[str, List[CargaPuntual]] = {}
+        self.cargas_superficie_por_caso: Dict[str, List[CargaSuperficie]] = {}
 
         self.resultado: Optional[ResultadoAnalisis] = None
         self._resultado_desactualizado = False
@@ -259,6 +263,7 @@ class VentanaPrincipal(QMainWindow):
         self._acciones_visibilidad = {}
         for tipo, texto, nombre_icono in (
             ("LOSA", "losas", "losa"), ("MURO", "muros", "muro"), ("VIGA", "vigas", "viga"), ("COLUMNA", "columnas", "columna"),
+            ("SOLIDO", "sólidos", "solido"),
         ):
             accion = QAction(icono(nombre_icono), f"Mostrar {texto}", self, checkable=True, checked=True)
             accion.toggled.connect(lambda visible, t=tipo: self._cambiar_visibilidad(t, visible, desde_menu=True))
@@ -353,6 +358,8 @@ class VentanaPrincipal(QMainWindow):
         self.pagina_bienvenida.importar_solicitado.connect(self._importar_ifc)
         self.pagina_bienvenida.abrir_solicitado.connect(self._abrir_proyecto)
         self.barra_vista.vista_solicitada.connect(self._cambiar_vista)
+        self.barra_vista.flechas_visibles.connect(lambda v: self.visor.configurar_flechas(visibles=v))
+        self.barra_vista.escala_flechas.connect(lambda e: self.visor.configurar_flechas(escala=e))
         self.barra_vista.visibilidad_cambiada.connect(lambda t, v: self._cambiar_visibilidad(t, v, desde_menu=False))
         self.visor.seleccion_cambiada.connect(self._al_cambiar_seleccion)
         self.visor.menu_contextual.connect(self._mostrar_menu_contextual)
@@ -390,14 +397,15 @@ class VentanaPrincipal(QMainWindow):
 
     def _actualizar_estado_de_acciones(self) -> None:
         hay_modelo = bool(self.proyecto.todas_las_barras())
+        hay_solidos = bool(self.proyecto.solidos)
         ocupado = self._worker is not None and self._worker.isRunning()
         self.accion_analizar.setEnabled(hay_modelo and not ocupado)
-        self.accion_analizar_3d.setEnabled(hay_modelo and not ocupado)
-        self.accion_apoyo.setEnabled(hay_modelo)
-        self.accion_material.setEnabled(hay_modelo or bool(self.proyecto.losas))
+        self.accion_analizar_3d.setEnabled((hay_modelo or hay_solidos) and not ocupado)
+        self.accion_apoyo.setEnabled(hay_modelo or hay_solidos)
+        self.accion_material.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
         self.accion_conexion.setEnabled(len(self.proyecto.todas_las_barras()) >= 2)
         self.accion_materiales.setEnabled(True)
-        self.accion_carga.setEnabled(hay_modelo or bool(self.proyecto.losas))
+        self.accion_carga.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
         self.accion_ver_esfuerzos.setEnabled(self.resultado is not None)
 
     def _al_cambiar_seleccion(self, objetivos: List[Objetivo]) -> None:
@@ -487,11 +495,13 @@ class VentanaPrincipal(QMainWindow):
         return True
 
     def _establecer_proyecto(
-        self, proyecto, apoyos, casos, combinaciones, cargas_area, cargas_lineales, cargas_puntuales, conexiones=None
+        self, proyecto, apoyos, casos, combinaciones, cargas_area, cargas_lineales, cargas_puntuales, conexiones=None,
+        cargas_superficie=None,
     ) -> None:
         self.proyecto = proyecto
         self.apoyos = apoyos
         self.conexiones = list(conexiones or [])
+        self.cargas_superficie_por_caso = dict(cargas_superficie or {})
         self.casos = casos or casos_y_combinaciones_por_defecto()[0]
         self.combinaciones = combinaciones
         self.cargas_area_por_caso = cargas_area
@@ -520,7 +530,7 @@ class VentanaPrincipal(QMainWindow):
         guardar_proyecto(
             Path(ruta), self.proyecto, self.apoyos, self.casos, self.combinaciones,
             self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso,
-            self.conexiones,
+            self.conexiones, self.cargas_superficie_por_caso,
         )
         self.statusBar().showMessage(f"Proyecto guardado en {ruta}")
 
@@ -530,11 +540,12 @@ class VentanaPrincipal(QMainWindow):
             return
         try:
             datos = cargar_proyecto(Path(ruta))
+            cargas_superficie = cargar_cargas_superficie(Path(ruta))
         except Exception as exc:
             logger.exception("Error al abrir el proyecto")
             QMessageBox.critical(self, "Error al abrir", str(exc))
             return
-        self._establecer_proyecto(*datos)
+        self._establecer_proyecto(*datos, cargas_superficie=cargas_superficie)
         self.statusBar().showMessage(f"Proyecto cargado desde {ruta}")
 
     # ------------------------------------------------------------------
@@ -542,7 +553,8 @@ class VentanaPrincipal(QMainWindow):
     # ------------------------------------------------------------------
     def _ids_en_uso(self) -> set:
         usados = {a.id for a in self.apoyos} | {c.id for c in self.conexiones}
-        for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso):
+        for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso,
+                         self.cargas_superficie_por_caso):
             usados.update(c.id for lista in por_caso.values() for c in lista)
         return usados
 
@@ -561,7 +573,50 @@ class VentanaPrincipal(QMainWindow):
                 "Los esfuerzos mostrados son anteriores a los últimos cambios: vuelva a pulsar ANALIZAR."
             )
 
+    def _hay_solidos_libres(self) -> bool:
+        return any(o.tipo == "SOLIDO" for o in self.visor.seleccion)
+
+    def asignar_apoyo_superficie(self) -> None:
+        """Apoyo sobre las superficies seleccionadas (modo «Cara»): cualquier cara de cualquier elemento."""
+
+        dialogo = DialogoApoyoSuperficie(self.proyecto, self.visor.seleccion, self)
+        if not dialogo.exec():
+            return
+        creados, errores = dialogo.apoyos(lambda: self._siguiente_id("AP"))
+        for apoyo in creados:
+            apoyo.id = self._siguiente_id("AP")
+            self.apoyos.append(apoyo)
+        if errores:
+            QMessageBox.warning(self, "Algunos apoyos no se asignaron", "\n\n".join(errores))
+        if creados:
+            self._marcar_resultados_desactualizados()
+            self._refrescar_asignaciones()
+            self.statusBar().showMessage(f"{len(creados)} apoyo(s) en superficie asignado(s). Se usan en ANALIZAR 3D.")
+
+    def asignar_carga_superficie(self) -> None:
+        """Carga (presión, fuerza o momento) sobre las superficies seleccionadas (modo «Cara»)."""
+
+        dialogo = DialogoCargaSuperficie(self.proyecto, self.visor.seleccion, self.casos, self.caso_activo(), self)
+        if not dialogo.exec():
+            return
+        creadas, errores = dialogo.cargas(lambda: "")
+        for carga in creadas:
+            carga.id = self._siguiente_id("CS")
+            self.cargas_superficie_por_caso.setdefault(carga.caso_id, []).append(carga)
+        if errores:
+            QMessageBox.warning(self, "Algunas cargas no se asignaron", "\n\n".join(errores))
+        if creadas:
+            indice = self.combo_caso.findData(dialogo.caso_id())
+            if indice >= 0:
+                self.combo_caso.setCurrentIndex(indice)
+            self._marcar_resultados_desactualizados()
+            self._refrescar_asignaciones()
+            self.statusBar().showMessage(f"{len(creadas)} carga(s) en superficie asignada(s). Se usan en ANALIZAR 3D.")
+
     def asignar_apoyo(self) -> None:
+        if self._hay_solidos_libres():  # un sólido de forma libre solo tiene superficies
+            self.asignar_apoyo_superficie()
+            return
         dialogo = DialogoApoyo(self.proyecto, self.visor.seleccion, self)
         if not dialogo.exec():
             return
@@ -593,6 +648,9 @@ class VentanaPrincipal(QMainWindow):
             self.statusBar().showMessage(f"{len(creados)} apoyo(s) asignado(s).")
 
     def asignar_carga(self) -> None:
+        if self._hay_solidos_libres():
+            self.asignar_carga_superficie()
+            return
         dialogo = DialogoCargas(self.proyecto, self.visor.seleccion, self.casos, self.caso_activo(), self)
         if not dialogo.exec():
             return
@@ -682,6 +740,14 @@ class VentanaPrincipal(QMainWindow):
         menu.addAction("Asignar carga…", self.asignar_carga)
         menu.addAction("Asignar apoyo…", self.asignar_apoyo)
         menu.addAction("Asignar material…", self.asignar_material)
+        hay_caras = all(o.cara is not None for o in seleccion)
+        if not self._hay_solidos_libres():  # en un sólido libre las dos primeras ya son de superficie
+            for texto, funcion in (("Asignar apoyo en la superficie… (análisis 3D)", self.asignar_apoyo_superficie),
+                                   ("Asignar carga en la superficie… (análisis 3D)", self.asignar_carga_superficie)):
+                accion_sup = menu.addAction(texto, funcion)
+                accion_sup.setEnabled(hay_caras)
+                if not hay_caras:
+                    accion_sup.setToolTip("Seleccione una cara (modo «Cara»)")
         barras = {o.id for o in seleccion if o.tipo in ("VIGA", "COLUMNA")}
         accion = menu.addAction("Conectar elementos (constraint)…", self.asignar_conexion)
         accion.setEnabled(len(barras) == 2)
@@ -708,6 +774,16 @@ class VentanaPrincipal(QMainWindow):
                 f"Perfil: {perfil.nombre}  (área {perfil.area:.4g} m², {perfil.ancho or 0:.3g} × {perfil.altura or 0:.3g} m)",
             ]
             material = barra.material
+        elif objetivo.tipo == "SOLIDO":
+            solido = p.solidos[objetivo.id]
+            e = solido.extension
+            lineas += [
+                f"Elemento IFC: {solido.tipo_ifc}  ({solido.nombre})",
+                f"Dimensiones: {e[0]:.3f} × {e[1]:.3f} × {e[2]:.3f} m   ·   volumen {solido.volumen:.5g} m³",
+                f"{len(solido.caras)} superficies, {len(solido.triangulos)} triángulos"
+                + ("" if solido.cerrado else " — <b>malla abierta: no se puede mallar en 3D</b>"),
+            ]
+            material = solido.material
         else:
             elemento = (p.losas if objetivo.tipo == "LOSA" else p.muros)[objetivo.id]
             lineas.append(f"Espesor: {elemento.espesor:.3f} m  —  {len(elemento.nodos_contorno)} nodos de contorno")
@@ -725,6 +801,8 @@ class VentanaPrincipal(QMainWindow):
     def _guardar_carga(self, carga) -> None:
         if isinstance(carga, CargaArea):
             destino = self.cargas_area_por_caso
+        elif isinstance(carga, CargaSuperficie):
+            destino = self.cargas_superficie_por_caso
         elif isinstance(carga, CargaLineal):
             destino = self.cargas_lineales_por_caso
         else:
@@ -735,10 +813,12 @@ class VentanaPrincipal(QMainWindow):
         claves = set(claves)
         self.apoyos = [
             a for a in self.apoyos
-            if (("Apoyo de área" if isinstance(a, ApoyoArea) else "Apoyo"), a.id) not in claves
+            if (("Apoyo de área" if isinstance(a, ApoyoArea)
+                 else "Apoyo en superficie" if isinstance(a, ApoyoSuperficie) else "Apoyo"), a.id) not in claves
         ]
         self.conexiones = [c for c in self.conexiones if ("Conexión", c.id) not in claves]
         for tipo, por_caso in (
+            ("Carga en superficie", self.cargas_superficie_por_caso),
             ("Carga de área", self.cargas_area_por_caso),
             ("Carga lineal", self.cargas_lineales_por_caso),
             ("Carga puntual", self.cargas_puntuales_por_caso),
@@ -756,6 +836,7 @@ class VentanaPrincipal(QMainWindow):
             self.cargas_lineales_por_caso.get(caso, []),
             self.cargas_puntuales_por_caso.get(caso, []),
             self.conexiones,
+            self.cargas_superficie_por_caso.get(caso, []),
         )
         self._refrescar_arbol()
 
@@ -766,7 +847,7 @@ class VentanaPrincipal(QMainWindow):
         self.panel_arbol.actualizar(
             self.proyecto, self.apoyos, self.conexiones, self.casos, self.combinaciones,
             self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso,
-            self.resultado, self._resultado_desactualizado,
+            self.resultado, self._resultado_desactualizado, self.cargas_superficie_por_caso,
         )
 
     def _seleccion_desde_arbol(self, elementos) -> None:
@@ -841,7 +922,8 @@ class VentanaPrincipal(QMainWindow):
     def _gestionar_casos(self) -> None:
         con_cargas = {
             caso_id
-            for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso)
+            for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso,
+                             self.cargas_superficie_por_caso)
             for caso_id, lista in por_caso.items() if lista
         }
         dialogo = DialogoCasos(self.casos, self.combinaciones, con_cargas, self)
@@ -849,7 +931,8 @@ class VentanaPrincipal(QMainWindow):
             return
         self.casos, self.combinaciones = dialogo.resultado()
         for caso_id in dialogo.casos_eliminados():
-            for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso):
+            for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso,
+                             self.cargas_superficie_por_caso):
                 por_caso.pop(caso_id, None)
         self._actualizar_combo_caso()
         self._refrescar_asignaciones()
@@ -880,12 +963,12 @@ class VentanaPrincipal(QMainWindow):
     def analizar_3d(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             return
-        if not self.proyecto.todas_las_barras() and not self.proyecto.losas and not self.proyecto.muros:
+        if not self.proyecto.todas_las_barras() and not self.proyecto.losas and not self.proyecto.muros and not self.proyecto.solidos:
             QMessageBox.information(self, "Analizar 3D", "El modelo no tiene elementos que analizar.")
             return
         if not self.apoyos:
             QMessageBox.warning(self, "Todavía no se puede analizar",
-                                "• No hay apoyos asignados: seleccione la cara extrema de una columna o viga y asigne un apoyo.")
+                                "• No hay apoyos asignados: seleccione una superficie (modo «Cara») o la cara extrema de una columna o viga y asigne un apoyo.")
             return
         dialogo = DialogoAnalisis3D(self.proyecto, self)
         if not dialogo.exec():
@@ -898,6 +981,7 @@ class VentanaPrincipal(QMainWindow):
         area = {k: list(v) for k, v in self.cargas_area_por_caso.items()}
         lineales = {k: list(v) for k, v in self.cargas_lineales_por_caso.items()}
         puntuales = {k: list(v) for k, v in self.cargas_puntuales_por_caso.items()}
+        superficiales = {k: list(v) for k, v in self.cargas_superficie_por_caso.items()}
         configuracion = self.configuracion
 
         def trabajo(avanzar):
@@ -905,7 +989,7 @@ class VentanaPrincipal(QMainWindow):
                 return ejecutar_analisis_solido(
                     proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,
                     configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx_efectiva, avanzar,
-                    tamano=tamano, conexiones=conexiones,
+                    tamano=tamano, conexiones=conexiones, cargas_superficie_por_caso=superficiales,
                 )
             return ejecutar_analisis(
                 proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,

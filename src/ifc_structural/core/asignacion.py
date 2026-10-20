@@ -59,12 +59,16 @@ class Objetivo:
     cara: Optional[int] = None  # índice de cara; None = el elemento completo
 
 
-_ETIQUETA_TIPO = {"VIGA": "Viga", "COLUMNA": "Columna", "LOSA": "Losa", "MURO": "Muro"}
+_ETIQUETA_TIPO = {"VIGA": "Viga", "COLUMNA": "Columna", "LOSA": "Losa", "MURO": "Muro", "SOLIDO": "Sólido"}
 
 
-def cara_de(proyecto: Proyecto, objetivo: Objetivo) -> Optional[Cara]:
+def cara_de(proyecto: Proyecto, objetivo: Objetivo):
+    """Cara seleccionada: ``Cara`` en barras, losas y muros; ``CaraSolido`` en un sólido de forma libre."""
+
     if objetivo.cara is None:
         return None
+    if objetivo.tipo == "SOLIDO":
+        return proyecto.solidos[objetivo.id].caras[objetivo.cara]
     return solido_elemento(proyecto, objetivo.tipo, objetivo.id).caras[objetivo.cara]
 
 
@@ -73,7 +77,9 @@ def descripcion(proyecto: Proyecto, objetivo: Objetivo) -> str:
 
     base = f"{_ETIQUETA_TIPO[objetivo.tipo]} {objetivo.id}"
     cara = cara_de(proyecto, objetivo)
-    return base if cara is None else f"{base} — cara {cara.nombre}"
+    if cara is None:
+        return base
+    return f"{base} — {cara.nombre}" if objetivo.tipo == "SOLIDO" else f"{base} — cara {cara.nombre}"
 
 
 def _formato(valor: float) -> str:
