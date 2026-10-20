@@ -242,7 +242,8 @@ class PanelArbol(QWidget):
         def fila_de(obj, caso: str = "", bajo_elemento: bool = False) -> Tuple[str, str]:
             if isinstance(obj, ApoyoSuperficie):
                 cabeza = obj.nombre.split(": ")[0]
-                return ("Apoyo en superficie" if bajo_elemento else cabeza), _gdl(obj.grados_restringidos())
+                detalle = "empotrada" if obj.ux and obj.uy and obj.uz else _gdl(obj.grados_restringidos())  # una cara fija es un empotramiento
+                return ("Apoyo en superficie" if bajo_elemento else cabeza), detalle
             if isinstance(obj, CargaSuperficie):
                 cabeza, cola = _partir_nombre(obj.nombre)
                 return ((cola or cabeza), caso) if bajo_elemento else (cabeza, f"{caso} · {cola}")

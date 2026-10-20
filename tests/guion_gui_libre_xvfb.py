@@ -104,7 +104,7 @@ def main(salida: Path) -> None:
         def __init__(self, *a, **k):
             super().__init__(*a, **k)
             self.combo_tipo.setCurrentIndex(self.combo_tipo.findText("Presión (kPa) sobre toda la superficie"))
-            self.spin_valor.setValue(2000.0)
+            self.spin_valor.setValue(200.0)
 
     vp.DialogoCargaSuperficie = DialogoPresion
     ventana.asignar_carga()
