@@ -152,7 +152,10 @@ por cortante), ver `tests/test_solido.py`.
 
 ## Análisis 3D (modelo sólido)
 
-El botón **ANALIZAR 3D** (F6) malla cada viga, columna, losa y muro con su geometría real
+Un solo botón **ANALIZAR** (F5): el programa decide qué análisis corresponde. Si el modelo tiene sólidos de
+forma libre, apoyos o cargas sobre superficies, constraints o ninguna barra, lo resuelve como **sólido 3D**
+(el diálogo pregunta el tamaño de elemento y dice por qué); si son solo barras (con o sin losas), como barras.
+*Analizar → Modo de análisis* permite forzar uno de los dos. El análisis 3D malla cada viga, columna, losa y muro con su geometría real
 en **hexaedros** (CalculiX `C3D8I`) y resuelve el modelo completo como un sólido. Es la
 misma idea que la versión portable: el mallador es propio (barrido de la sección de cada
 barra, sin Gmsh ni otras dependencias), así que no hay nada que instalar.
@@ -207,23 +210,28 @@ y la conserva como **sólido de forma libre**:
   solapan, la pieza menor cede el volumen común, para no contarlo dos veces; las piezas se unen
   por las superficies que se tocan (`*TIE`) y las que no tocan a ninguna otra con apoyo se
   detectan antes de resolver. Los sólidos deben ser superficies cerradas (se avisa si no lo son).
-- **Constraints entre superficies.** *Asignar → Constraint 3D entre superficies…* (o clic derecho)
-  con dos superficies (modo **Cara**) o dos elementos (modo **Elemento**: se toman sus caras más
-  cercanas, y a igual distancia las que se miran), como los *joint constraints* de SAP:
+- **Conectar** (botón de la barra, menú *Asignar → Conectar elementos* o clic derecho) ofrece dos formas:
+  **manualmente** (los dos elementos o superficies seleccionados) y **automáticamente** (detecta los
+  elementos que se tocan o están a menos de una separación elegida, los lista para marcar y crea un
+  constraint por pareja; no repite las que ya tienen uno).
+- **Constraints entre superficies o elementos 3D completos.** Con dos superficies (modo **Cara**) o dos
+  elementos (modo **Elemento**) se elige a qué se aplica: *las superficies más cercanas* (a igual distancia, las
+  que se miran) o *los elementos completos* (soldadura por donde se tocan o a menos de la separación máxima;
+  cuerpo rígido o articulación de los dos cuerpos enteros). Tipos, como los *joint constraints* de SAP:
   **soldadura** (`*TIE`, une punto a punto y cierra la holgura; sustituye a la unión automática entre
   esas dos piezas), **cuerpo rígido** (las dos superficies se mueven juntas, `*RIGID BODY`),
   **igualar movimientos** (cada nodo sigue al más cercano de la otra superficie en Ux, Uy, Uz
   marcados, `*EQUATION`) y **articulación** (superficies rígidas con los centros igualados en las tres
   traslaciones y en los giros marcados). Aparecen en el árbol (*Constraints*), se dibujan en el visor
-  y se guardan en el proyecto. Solo se aplican en ANALIZAR 3D; el botón *Conectar* sigue siendo la
-  articulación o el enlace rígido entre barras del análisis de barras (con un sólido, losa o muro
-  abre este diálogo). Un nodo no puede ser a la vez esclavo de dos constraints.
+  y se guardan en el proyecto. Solo se aplican en el análisis 3D. Entre dos barras, *Conectar manualmente*
+  pregunta si se quiere la conexión del modelo de barras (articulación o enlace rígido) o el constraint 3D.
+  Un nodo con un apoyo propio queda fuera de los cuerpos rígidos, y no puede ser esclavo de dos soldaduras.
 - **Selección por zona.** Arrastre un rectángulo con el botón izquierdo (Ctrl o Mayús suma a la selección): de izquierda a derecha (azul, continuo)
   se eligen solo los elementos —o superficies, en modo Cara— que quedan por completo dentro; de derecha
   a izquierda (verde, discontinuo), todo lo que toca. En modo Cara solo cuentan las caras que miran a
   la cámara. Con Ctrl/Mayús se suma a la selección actual.
-- **Flechas de las cargas.** El botón **Cargas** de la barra de vista las oculta o las muestra y el
-  deslizador cambia su tamaño; en las cargas sobre una superficie la flecha nunca es mayor que ella.
+- **Apoyos y cargas.** Los botones **Apoyos** y **Cargas** de la barra de vista (y *Ver → Mostrar apoyos / cargas*)
+  los ocultan o muestran y los deslizadores cambian su tamaño; en las cargas sobre una superficie la flecha nunca es mayor que ella.
 - **Qué no hace.** Los sólidos no participan en el análisis de barras (se avisa) y no se modelan
   pernos con pretensión, contacto con separación ni fricción. Comprobado con CalculiX contra la
   teoría (voladizo `PL³/3EI`, compresión `σ = p`, perno en tracción `FL/EA`) en

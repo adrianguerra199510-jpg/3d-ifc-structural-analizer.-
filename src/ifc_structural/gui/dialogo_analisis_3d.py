@@ -10,7 +10,7 @@ from .estilo import EncabezadoDialogo
 
 
 class DialogoAnalisis3D(QDialog):
-    def __init__(self, proyecto: Proyecto, parent=None):
+    def __init__(self, proyecto: Proyecto, parent=None, motivo: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Analizar como modelo sólido (3D)")
         self.resize(560, 420)
@@ -20,12 +20,17 @@ class DialogoAnalisis3D(QDialog):
         layout.addWidget(EncabezadoDialogo(
             "solido", "Análisis sólido (3D)",
             "Cada pieza se malla con su geometría real en hexaedros y se resuelve con CalculiX."))
+        if motivo:
+            aviso = QLabel(f"Se analiza como <b>sólido 3D</b> porque {motivo}.")
+            aviso.setWordWrap(True)
+            layout.addWidget(aviso)
         explicacion = QLabel(
             "• Las vigas, columnas, losas y muros se mallan como <b>sólidos</b> con su forma real (un perfil en I "
             "tiene alas y alma), y se unen por las superficies que se tocan, como una soldadura continua.<br>"
             "• Los apoyos y las cargas asignados se aplican sobre la <b>cara o la sección</b> elegida.<br>"
+            "• Las placas, pernos y demás piezas del IFC se mallan como sólidos con su geometría real.<br>"
             "• Se ven esfuerzos locales (aletas, alma, uniones) que el modelo de barras no muestra. "
-            "No incluye pernos, placas del IFC ni contacto con separación."
+            "No incluye pretensión de pernos ni contacto con separación o fricción."
         )
         explicacion.setWordWrap(True)
         layout.addWidget(explicacion)

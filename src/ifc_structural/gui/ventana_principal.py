@@ -70,6 +70,7 @@ from .dialogo_cargas import DialogoCargas
 from .dialogo_superficie import DialogoApoyoSuperficie, DialogoCargaSuperficie, DialogoUnionSuperficie
 from .dialogo_casos import DialogoCasos
 from .dialogo_conexion import DialogoConexion
+from .dialogo_conexion_automatica import DialogoConexionAutomatica
 from .dialogo_materiales import DialogoAsignarMaterial, DialogoMateriales
 from .estilo import etiqueta_logo
 from .iconos import icono, icono_aplicacion, icono_blanco
@@ -123,6 +124,8 @@ class VentanaPrincipal(QMainWindow):
 
         self.resultado: Optional[ResultadoAnalisis] = None
         self._resultado_desactualizado = False
+        self._barra_principal = None
+        self.modo_analisis = "AUTO"  # AUTO, BARRAS o SOLIDO (Analizar → Modo de análisis)
         self._deshacer: list = []  # estados anteriores del modelo editable (el último es el más reciente)
         self._rehacer: list = []
         self._estado_actual = None
@@ -233,14 +236,12 @@ class VentanaPrincipal(QMainWindow):
         self.accion_apoyo = accion("Apoyo", self.asignar_apoyo, "apoyo", ayuda="Asignar un apoyo (puntual o de área) a la selección")
         self.accion_carga = accion("Carga", self.asignar_carga, "carga_dist", ayuda="Asignar cargas (presión, distribuida, puntual) a la selección")
         self.accion_material = accion("Material", self.asignar_material, "material", ayuda="Asignar un material a los elementos seleccionados")
-        self.accion_conexion = accion("Conectar", self.asignar_conexion, "conectar",
-                                      ayuda="Articular o unir dos elementos seleccionados (constraint)")
+        self.accion_conexion = accion("Conectar", self._mostrar_menu_conectar, "conectar",
+                                      ayuda="Conectar elementos: manualmente (los que seleccione) o automáticamente (los que están unidos)")
         self.accion_materiales = accion("Materiales", self.gestionar_materiales, "materiales", ayuda="Crear y editar materiales")
         self.accion_casos = accion("Casos", self._gestionar_casos, "casos", ayuda="Casos de carga y combinaciones")
-        self.accion_analizar = accion("ANALIZAR", self.analizar, None, "F5", "Resolver todos los casos con CalculiX y mostrar los esfuerzos (F5)")
+        self.accion_analizar = accion("ANALIZAR", self.analizar, None, "F5", "Analizar el modelo: el programa decide si lo resuelve como barras o como sólido 3D (F5)")
         self.accion_analizar.setIcon(icono_blanco("analizar"))
-        self.accion_analizar_3d = accion("ANALIZAR 3D", self.analizar_3d, "solido", "F6",
-                                         "Analizar todo como modelo sólido: malla de hexaedros con la geometría real (F6)")
 
         self.accion_ver_modelo = accion("Modelo", lambda: self.volver_al_modelo(), "modelo",
                                         ayuda="Volver a la vista del modelo", checkable=True, checked=True)
@@ -267,13 +268,22 @@ class VentanaPrincipal(QMainWindow):
 
         menu = self.menuBar().addMenu("A&signar")
         menu.addActions([self.accion_apoyo, self.accion_carga, self.accion_material, self.accion_conexion])
-        menu.addAction(icono("conectar"), "Constraint 3D entre superficies…", self.asignar_union_superficie)
+        submenu = menu.addMenu(icono("conectar"), "Conectar elementos")
+        submenu.addAction("Conectar manualmente…", self.asignar_conexion)
+        submenu.addAction("Conectar automáticamente…", self.conectar_automaticamente)
         menu.addSeparator()
         menu.addActions([self.accion_materiales, self.accion_casos])
 
         menu = self.menuBar().addMenu("A&nalizar")
         menu.addAction(self.accion_analizar)
-        menu.addAction(self.accion_analizar_3d)
+        menu.addSeparator()
+        submenu = menu.addMenu("Modo de análisis")
+        grupo_modo_analisis = QActionGroup(self)
+        for texto, modo in (("Automático (según el modelo)", "AUTO"), ("Siempre como barras", "BARRAS"), ("Siempre como sólido 3D", "SOLIDO")):
+            accion_modo = QAction(texto, self, checkable=True, checked=modo == "AUTO")
+            accion_modo.triggered.connect(lambda _=False, m=modo: setattr(self, "modo_analisis", m))
+            grupo_modo_analisis.addAction(accion_modo)
+            submenu.addAction(accion_modo)
 
         self.menu_ver = QMenu("&Ver", self)
         self.menuBar().addMenu(self.menu_ver)
@@ -281,6 +291,12 @@ class VentanaPrincipal(QMainWindow):
         self.menu_ver.addSeparator()
         for dock in self._docks:  # reabrir los paneles si se cerraron
             self.menu_ver.addAction(dock.toggleViewAction())
+        self.menu_ver.addSeparator()
+        for texto, boton in (("Mostrar apoyos", self.barra_vista.boton_apoyos), ("Mostrar cargas", self.barra_vista.boton_flechas)):
+            accion_vista = QAction(texto, self, checkable=True, checked=True)
+            accion_vista.toggled.connect(boton.setChecked)
+            boton.toggled.connect(accion_vista.setChecked)
+            self.menu_ver.addAction(accion_vista)
         self.menu_ver.addSeparator()
         self._acciones_visibilidad = {}
         for tipo, texto, nombre_icono in (
@@ -304,6 +320,7 @@ class VentanaPrincipal(QMainWindow):
 
     def _crear_barra_de_herramientas(self) -> None:
         barra = QToolBar("Principal", self)
+        self._barra_principal = barra
         self.addToolBar(barra)
         barra.setMovable(False)
         barra.setIconSize(QSize(26, 26))
@@ -361,14 +378,6 @@ class VentanaPrincipal(QMainWindow):
         espacio.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         barra.addWidget(espacio)
 
-        self.boton_analizar_3d = QToolButton()
-        self.boton_analizar_3d.setObjectName("botonAnalizar3D")
-        self.boton_analizar_3d.setDefaultAction(self.accion_analizar_3d)
-        self.boton_analizar_3d.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.boton_analizar_3d.setIconSize(QSize(18, 18))
-        self.boton_analizar_3d.setCursor(Qt.PointingHandCursor)
-        barra.addWidget(self.boton_analizar_3d)
-
         self.boton_analizar = QToolButton()
         self.boton_analizar.setObjectName("botonAnalizar")
         self.boton_analizar.setDefaultAction(self.accion_analizar)
@@ -387,7 +396,8 @@ class VentanaPrincipal(QMainWindow):
         self.barra_vista.navegacion_cambiada.connect(self.visor.set_navegacion)
         self.barra_vista.flechas_visibles.connect(lambda v: self.visor.configurar_flechas(visibles=v))
         self.barra_vista.escala_flechas.connect(lambda e: self.visor.configurar_flechas(escala=e))
-        self.barra_vista.escala_apoyos.connect(self.visor.configurar_apoyos)
+        self.barra_vista.escala_apoyos.connect(lambda e: self.visor.configurar_apoyos(escala=e))
+        self.barra_vista.apoyos_visibles.connect(lambda v: self.visor.configurar_apoyos(visibles=v))
         self.barra_vista.visibilidad_cambiada.connect(lambda t, v: self._cambiar_visibilidad(t, v, desde_menu=False))
         self.visor.seleccion_cambiada.connect(self._al_cambiar_seleccion)
         self.visor.menu_contextual.connect(self._mostrar_menu_contextual)
@@ -427,8 +437,7 @@ class VentanaPrincipal(QMainWindow):
         hay_modelo = bool(self.proyecto.todas_las_barras())
         hay_solidos = bool(self.proyecto.solidos)
         ocupado = self._worker is not None and self._worker.isRunning()
-        self.accion_analizar.setEnabled(hay_modelo and not ocupado)
-        self.accion_analizar_3d.setEnabled((hay_modelo or hay_solidos) and not ocupado)
+        self.accion_analizar.setEnabled((hay_modelo or hay_solidos or bool(self.proyecto.losas or self.proyecto.muros)) and not ocupado)
         self.accion_apoyo.setEnabled(hay_modelo or hay_solidos)
         self.accion_material.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
         self.accion_conexion.setEnabled(len(self.proyecto.todas_las_barras()) >= 2 or len(self.proyecto.solidos) + len(self.proyecto.losas) + len(self.proyecto.muros) >= 2)
@@ -823,6 +832,49 @@ class VentanaPrincipal(QMainWindow):
             self._marcar_resultados_desactualizados()
             self.statusBar().showMessage(f"{len(self.proyecto.materiales)} material(es) definidos.")
 
+    def _mostrar_menu_conectar(self) -> None:
+        """El botón Conectar ofrece las dos formas: manual (lo seleccionado) y automática (lo que está unido)."""
+
+        menu = QMenu(self)
+        menu.addAction(icono("conectar"), "Conectar manualmente…", self.asignar_conexion)
+        menu.addAction(icono("conectar"), "Conectar automáticamente…", self.conectar_automaticamente)
+        posicion = QCursor.pos()
+        if self._barra_principal is not None:
+            widget = self._barra_principal.widgetForAction(self.accion_conexion)
+            if widget is not None:
+                posicion = widget.mapToGlobal(widget.rect().bottomLeft())
+        menu.exec(posicion)
+
+    def conectar_automaticamente(self) -> None:
+        """Detecta los elementos que están unidos (se tocan o casi) y crea un constraint para cada pareja."""
+
+        elementos = (len(self.proyecto.todas_las_barras()) + len(self.proyecto.losas) + len(self.proyecto.muros)
+                     + len(self.proyecto.solidos))
+        if elementos < 2:
+            QMessageBox.information(self, "Conectar automáticamente", "El modelo necesita al menos dos elementos.")
+            return
+        dialogo = DialogoConexionAutomatica(self.proyecto, self)
+        if not dialogo.exec():
+            return
+        usados = self._ids_en_uso()
+        contador = [0]
+
+        def siguiente() -> str:
+            while True:
+                contador[0] += 1
+                if f"CT{contador[0]}" not in usados:
+                    usados.add(f"CT{contador[0]}")
+                    return f"CT{contador[0]}"
+
+        nuevas = dialogo.uniones(siguiente)
+        if not nuevas:
+            self.statusBar().showMessage("No se creó ningún constraint.")
+            return
+        self.proyecto.uniones.extend(nuevas)
+        self._marcar_resultados_desactualizados()
+        self._refrescar_asignaciones()
+        self.statusBar().showMessage(f"{len(nuevas)} constraint(s) creados automáticamente. Se aplican en el análisis 3D.")
+
     def asignar_union_superficie(self) -> None:
         """Constraint 3D entre dos superficies (o dos elementos: se toman las caras más cercanas)."""
 
@@ -849,8 +901,29 @@ class VentanaPrincipal(QMainWindow):
         self.statusBar().showMessage(f"Constraint creado: {union.nombre}. Se aplica en ANALIZAR 3D.")
 
     def asignar_conexion(self) -> None:
-        if any(o.tipo in ("SOLIDO", "LOSA", "MURO") for o in self.visor.seleccion):
-            self.asignar_union_superficie()  # entre sólidos libres, losas o muros solo hay constraints de superficie
+        """Conectar manualmente los dos elementos o superficies seleccionados."""
+
+        seleccion = self.visor.seleccion
+        solo_barras = bool(seleccion) and all(o.tipo in ("VIGA", "COLUMNA") and o.cara is None for o in seleccion)
+        if solo_barras and len({o.id for o in seleccion}) == 2:
+            # entre dos barras hay dos clases de conexión: la del modelo de barras y el constraint 3D
+            caja = QMessageBox(self)
+            caja.setWindowTitle("Conectar manualmente")
+            caja.setText("¿Qué conexión quiere entre estas dos barras?")
+            caja.setInformativeText("La conexión de barras (articulación o enlace rígido) se aplica en el análisis de barras; "
+                                    "el constraint 3D, en el análisis como sólido (soldadura, cuerpo rígido, articulación).")
+            barras = caja.addButton("Conexión de barras", QMessageBox.AcceptRole)
+            caja.addButton("Constraint 3D", QMessageBox.AcceptRole).setDefault(False)
+            caja.addButton(QMessageBox.Cancel)
+            caja.exec()
+            elegido = caja.clickedButton()
+            if elegido is not None and elegido.text() == "Constraint 3D":
+                self.asignar_union_superficie()
+                return
+            if elegido is not None and elegido is not barras:
+                return
+        elif any(o.tipo in ("SOLIDO", "LOSA", "MURO") or o.cara is not None for o in seleccion):
+            self.asignar_union_superficie()  # entre sólidos libres, losas, muros o superficies solo hay constraints 3D
             return
         barras = list(dict.fromkeys(o for o in self.visor.seleccion if o.tipo in ("VIGA", "COLUMNA")))
         distintas = {o.id for o in barras}
@@ -903,15 +976,12 @@ class VentanaPrincipal(QMainWindow):
                 accion_sup.setEnabled(hay_caras)
                 if not hay_caras:
                     accion_sup.setToolTip("Seleccione una cara (modo «Cara»)")
-        barras = {o.id for o in seleccion if o.tipo in ("VIGA", "COLUMNA")}
-        accion = menu.addAction("Conectar elementos (constraint)…", self.asignar_conexion)
-        accion.setEnabled(len(barras) == 2)
-        if len(barras) != 2:
-            accion.setToolTip("Seleccione dos vigas/columnas (Ctrl + clic)")
-        union = menu.addAction("Constraint 3D entre superficies… (análisis 3D)", self.asignar_union_superficie)
-        union.setEnabled(len(set((o.tipo, o.id, o.cara) for o in seleccion)) == 2)
-        if not union.isEnabled():
-            union.setToolTip("Seleccione dos superficies o dos elementos (Ctrl + clic)")
+        conectar = menu.addMenu(icono("conectar"), "Conectar")
+        manual = conectar.addAction("Conectar manualmente…", self.asignar_conexion)
+        manual.setEnabled(len(set((o.tipo, o.id, o.cara) for o in seleccion)) == 2)
+        if not manual.isEnabled():
+            manual.setToolTip("Seleccione dos superficies o dos elementos (Ctrl + clic)")
+        conectar.addAction("Conectar automáticamente…", self.conectar_automaticamente)
         menu.addSeparator()
         menu.addAction("Propiedades…", self.mostrar_propiedades)
         menu.addAction("Quitar la selección", lambda: self.visor.seleccionar([]))
@@ -1105,9 +1175,37 @@ class VentanaPrincipal(QMainWindow):
     # ------------------------------------------------------------------
     # Análisis
     # ------------------------------------------------------------------
-    def analizar(self) -> None:
+    def _detectar_modo_de_analisis(self) -> Tuple[str, str]:
+        """Qué análisis corresponde al modelo: ``("SOLIDO", motivo)`` si hay algo que solo se resuelve como sólido 3D
+        (sólidos de forma libre, apoyos o cargas sobre superficies, constraints, o ninguna barra), si no ``("BARRAS", "")``."""
+
+        p = self.proyecto
+        if p.solidos:
+            return "SOLIDO", f"el modelo tiene {len(p.solidos)} sólido(s) de forma libre"
+        if any(isinstance(a, ApoyoSuperficie) for a in self.apoyos) or any(self.cargas_superficie_por_caso.values()):
+            return "SOLIDO", "hay apoyos o cargas asignados a superficies"
+        if p.uniones:
+            return "SOLIDO", "hay constraints entre superficies o elementos"
+        if not p.todas_las_barras():
+            return "SOLIDO", "el modelo no tiene vigas ni columnas (solo losas o muros)"
+        return "BARRAS", ""
+
+    def analizar(self, modo: Optional[str] = None) -> None:
+        """Botón ANALIZAR: elige solo el tipo de análisis (barras o sólido 3D) según lo que tenga el modelo. ``modo``
+        (``"BARRAS"`` o ``"SOLIDO"``) lo fuerza; si no, se usa el modo elegido en *Analizar → Modo de análisis*."""
+
         if self._worker is not None and self._worker.isRunning():
             return
+        modo = modo if modo in ("BARRAS", "SOLIDO") else self.modo_analisis
+        motivo = ""
+        if modo == "AUTO":
+            modo, motivo = self._detectar_modo_de_analisis()
+        if modo == "SOLIDO":
+            self._analizar_solido(motivo)
+        else:
+            self._analizar_barras()
+
+    def _analizar_barras(self) -> None:
         errores, advertencias = validar_modelo(self.proyecto, self.casos, self.combinaciones, self.apoyos, self.conexiones)
         if errores:
             QMessageBox.warning(self, "Todavía no se puede analizar", "\n\n".join(f"• {e}" for e in errores))
@@ -1121,17 +1219,15 @@ class VentanaPrincipal(QMainWindow):
                 return
         self._iniciar_hilo()
 
-    def analizar_3d(self) -> None:
-        if self._worker is not None and self._worker.isRunning():
-            return
+    def _analizar_solido(self, motivo: str = "") -> None:
         if not self.proyecto.todas_las_barras() and not self.proyecto.losas and not self.proyecto.muros and not self.proyecto.solidos:
-            QMessageBox.information(self, "Analizar 3D", "El modelo no tiene elementos que analizar.")
+            QMessageBox.information(self, "Analizar", "El modelo no tiene elementos que analizar.")
             return
         if not self.apoyos:
             QMessageBox.warning(self, "Todavía no se puede analizar",
                                 "• No hay apoyos asignados: seleccione una superficie (modo «Cara») o la cara extrema de una columna o viga y asigne un apoyo.")
             return
-        dialogo = DialogoAnalisis3D(self.proyecto, self)
+        dialogo = DialogoAnalisis3D(self.proyecto, self, motivo)
         if not dialogo.exec():
             return
         self._iniciar_hilo(solido=True, tamano=dialogo.tamano())

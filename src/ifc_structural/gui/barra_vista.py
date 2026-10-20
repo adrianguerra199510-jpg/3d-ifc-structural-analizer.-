@@ -31,6 +31,7 @@ class BarraVista(QWidget):
     flechas_visibles = Signal(bool)  # mostrar u ocultar las flechas de las cargas
     escala_flechas = Signal(float)  # tamaño de las flechas (1 = automático)
     escala_apoyos = Signal(float)  # tamaño de los símbolos de apoyo (1 = automático)
+    apoyos_visibles = Signal(bool)  # mostrar u ocultar los apoyos
     navegacion_cambiada = Signal(str)  # qué hace arrastrar con el botón izquierdo: SELECCION, MOVER o ROTAR
 
     def __init__(self, parent=None):
@@ -110,9 +111,15 @@ class BarraVista(QWidget):
         fila.addSpacing(6)
         fila.addWidget(separador)
         fila.addSpacing(6)
-        etiqueta_apoyos = QLabel("Apoyos")
-        etiqueta_apoyos.setObjectName("chipLeyenda")
-        fila.addWidget(etiqueta_apoyos)
+        self.boton_apoyos = QToolButton()
+        self.boton_apoyos.setText("Apoyos")
+        self.boton_apoyos.setIcon(icono("apoyo"))
+        self.boton_apoyos.setCheckable(True)
+        self.boton_apoyos.setChecked(True)
+        self.boton_apoyos.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.boton_apoyos.setToolTip("Mostrar u ocultar los símbolos de apoyo")
+        self.boton_apoyos.toggled.connect(self._al_cambiar_apoyos)
+        fila.addWidget(self.boton_apoyos)
         self.deslizador_apoyos = QSlider(Qt.Horizontal)
         self.deslizador_apoyos.setRange(20, 400)  # % del tamaño automático
         self.deslizador_apoyos.setValue(100)
@@ -138,6 +145,10 @@ class BarraVista(QWidget):
         fila.addWidget(self.deslizador_flechas)
         fila.addStretch(1)
         self._fila = fila
+
+    def _al_cambiar_apoyos(self, visibles: bool) -> None:
+        self.deslizador_apoyos.setEnabled(visibles)
+        self.apoyos_visibles.emit(visibles)
 
     def _al_cambiar_flechas(self, visibles: bool) -> None:
         self.deslizador_flechas.setEnabled(visibles)

@@ -357,3 +357,56 @@ def test_articulacion_escribe_cuerpos_rigidos_y_ecuaciones(tmp_path: Path):
                           enlaces=[Enlace3D("ARTICULACION", a[:4], b[:4], {1, 2, 3, 4}, "rótula")])
     texto = "\n".join(escribir_comun(modelo, p))
     assert texto.count("*RIGID BODY") == 2 and texto.count("\n2\n") == 4  # 3 traslaciones + 1 giro igualados
+
+
+# ---------------------------------------------------------------------------
+# Constraints entre elementos 3D completos y conexión automática
+# ---------------------------------------------------------------------------
+
+
+def _union_completa(tipo, a, b, tolerancia=0.0, grados=(True,) * 6):
+    return UnionSuperficie(id="UN1", tipo=tipo, a_tipo="SOLIDO", a_id=a.id, a_cara=-1, b_tipo="SOLIDO", b_id=b.id, b_cara=-1,
+                           ux=grados[0], uy=grados[1], uz=grados[2], rx=grados[3], ry=grados[4], rz=grados[5],
+                           nombre=tipo, tolerancia=tolerancia)
+
+
+@requiere_ccx
+def test_soldadura_entre_elementos_completos_une_piezas_con_holgura_de_la_tolerancia(tmp_path: Path):
+    b, h, F = 0.1, 0.1, 10.0
+    a, c = caja("A", 0, 0, 0, 0.5, b, h), caja("B", 0.53, 0, 0, 0.47, b, h)  # 3 cm de holgura
+    p = proyecto_con(a, c)
+    apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="A", cara=cara_hacia(a, (-1, 0, 0)), ux=True, uy=True, uz=True)
+    carga = _carga(c, (1, 0, 0), "FUERZA", F, (0, 0, -1))
+    r = _analizar_con_uniones(p, [apoyo], [carga], [_union_completa("SOLDADURA", a, c, tolerancia=0.04)], tmp_path)
+    x, u = r.malla_tensiones.coordenadas, r.desplazamientos_por_caso["L"]
+    assert -u[np.isclose(x[:, 0], 1.0), 2].mean() == pytest.approx(F * 1.0**3 / (3 * E * b * h**3 / 12), rel=0.10)
+    # con una tolerancia menor que la holgura no se unen: avisa y la pieza queda flotando
+    with pytest.raises(ErrorAnalisis):
+        _analizar_con_uniones(p, [apoyo], [carga], [_union_completa("SOLDADURA", a, c, tolerancia=0.005)], tmp_path / "x")
+
+
+@requiere_ccx
+def test_cuerpo_rigido_entre_elementos_completos_mueve_a_los_dos_como_uno(tmp_path: Path):
+    a, c = caja("A", 0, 0, 0, 0.2, 0.2, 0.2), caja("B", 0.3, 0, 0, 0.2, 0.2, 0.2)
+    apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="A", cara=cara_hacia(a, (-1, 0, 0)), ux=True, uy=True, uz=True)
+    carga = _carga(c, (1, 0, 0), "FUERZA", 10.0, (0, 0, -1))
+    r = _analizar_con_uniones(proyecto_con(a, c), [apoyo], [carga], [_union_completa("CUERPO_RIGIDO", a, c)], tmp_path)
+    x, u = r.malla_tensiones.coordenadas, r.desplazamientos_por_caso["L"]
+    # B es rígido: todos sus nodos siguen un movimiento de cuerpo rígido (y se mueve)
+    assert np.abs(u[x[:, 0] >= 0.3 - 1e-9, 2]).max() > 1e-8
+    en_b = np.where(x[:, 0] >= 0.3 - 1e-9)[0]
+    r_ = x[en_b] - x[en_b].mean(axis=0)
+    filas = np.vstack([np.hstack([np.eye(3), -_antisimetrica(ri)]) for ri in r_])
+    sol, *_ = np.linalg.lstsq(filas, u[en_b].ravel(), rcond=None)
+    assert np.abs(filas @ sol - u[en_b].ravel()).max() < 1e-9
+
+
+def test_detecta_los_elementos_que_se_tocan_y_los_que_estan_a_poca_distancia():
+    from ifc_structural.solido.deteccion import detectar_contactos
+
+    a, b, c = caja("A", 0, 0, 0, 0.2, 0.2, 0.1), caja("B", 0, 0, 0.1, 0.2, 0.2, 0.1), caja("C", 0, 0, 0.215, 0.2, 0.2, 0.1)
+    p = proyecto_con(a, b, c)
+    parejas = lambda tol: {frozenset((x.a_id, x.b_id)) for x in detectar_contactos(p, tol)}
+    assert parejas(0.002) == {frozenset("AB")}  # C está a 15 mm de B
+    assert parejas(0.02) == {frozenset("AB"), frozenset("BC")}
+    assert all(x.area > 0.03 for x in detectar_contactos(p, 0.02))

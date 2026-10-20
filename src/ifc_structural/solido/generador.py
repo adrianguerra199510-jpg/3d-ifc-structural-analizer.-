@@ -109,7 +109,13 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         lineas.append(f"*RIGID BODY,NSET=APOYO{k},REF NODE={ref},ROT NODE={rot}")
         condiciones += [f"{ref},{g},{g}" for g in traslaciones] + [f"{rot},{g},{g}" for g in giros]
     ecuaciones: List[str] = []
+    apoyados = np.unique(np.concatenate([a.nodos for a in modelo.apoyos])) if modelo.apoyos else np.zeros(0, dtype=np.int64)
     for k, enlace in enumerate(modelo.enlaces):
+        # un nodo con apoyo propio no puede además depender de un cuerpo rígido o una ecuación: se deja fuera
+        enlace = Enlace3D(enlace.tipo, np.setdiff1d(enlace.nodos_a, apoyados), np.setdiff1d(enlace.nodos_b, apoyados),
+                          enlace.grados, enlace.nombre)
+        if len(enlace.nodos_a) == 0 or len(enlace.nodos_b) == 0:
+            continue
         siguiente = _escribir_enlace(enlace, k, c, siguiente, lineas, ecuaciones)
     if ecuaciones:
         lineas.append("*EQUATION")

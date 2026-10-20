@@ -25,11 +25,11 @@ from ..solver.analisis import (
 from ..solver.ejecutor_ccx import ejecutar_ccx_todos_los_casos
 from ..solver.generador_inp import ElementoMalla, MallaAnalisis
 from ..solver.lector_resultados import leer_desplazamientos_frd, leer_malla_frd, leer_tensiones_frd
-from .contactos import Union, detectar_uniones, partes_sin_conexion
+from .contactos import Union, _caras_en_contacto, detectar_uniones, partes_sin_conexion
 from .generador import Apoyo3D, CargasCaso, Enlace3D, ModeloSolido, escribir, escribir_caso, escribir_comun, etiqueta
 from .malla import ErrorMalla, MallaSolida, ParteMalla, construir_malla_solida, estimar_hexaedros
 from .miembros import MiembroBarra, construir_miembros, recortar_uniones
-from .superficies import fuerzas_nodales, superficie_en_malla
+from .superficies import _parte_de, fuerzas_nodales, superficie_en_malla
 
 #: Tamaño de elemento por defecto (m) y máximo de hexaedros que se aceptan sin avisar.
 TAMANO_POR_DEFECTO = 0.05
@@ -282,6 +282,35 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
     enlaces: List[Enlace3D] = []
     partes: List[Tuple[int, int]] = []
     for u in manuales:
+        if u.es_completa:  # constraint entre elementos 3D completos
+            pa, pb = _parte_de(malla, u.a_tipo, u.a_id), _parte_de(malla, u.b_tipo, u.b_id)
+            if pa is None or pb is None:
+                avisos.append(f"El constraint «{u.nombre}» no encontró alguno de sus elementos en la malla y se ignora.")
+                continue
+            ia, ib = malla.partes.index(pa), malla.partes.index(pb)
+            if ia == ib:
+                avisos.append(f"El constraint «{u.nombre}» une un elemento consigo mismo y se ignora.")
+                continue
+            if u.tipo == "SOLDADURA":
+                tol = max(u.tolerancia, 2e-3 + 0.25 * tamano)
+                contacto = _caras_en_contacto(malla, ia, ib, tol)
+                if contacto is None:
+                    avisos.append(f"Soldadura «{u.nombre}»: los elementos no se tocan ni están a menos de {tol * 1000:.0f} mm "
+                                  "(aumente la tolerancia); no se unieron.")
+                    continue
+                _, _, f_a, f_b, area_a, area_b = contacto
+                esc, mae = (f_a, f_b) if area_a <= area_b else (f_b, f_a)
+                p_esc, p_mae = (ia, ib) if area_a <= area_b else (ib, ia)
+                ties.append(Union(f"UM{len(ties) + 1}", p_esc, p_mae, esc, mae, 1.5 * tol))
+                partes.append((ia, ib))  # solo cuenta como unión si de verdad se soldó
+                continue
+            partes.append((ia, ib))
+
+            def nodos(parte):
+                return np.unique(malla.hexaedros[parte.primer_hexaedro:parte.ultimo_hexaedro])
+
+            enlaces.append(Enlace3D(u.tipo, nodos(pa), nodos(pb), set(u.grados()), u.nombre))
+            continue
         sa = superficie_en_malla(proyecto, malla, u.a_tipo, u.a_id, u.a_cara, tamano)
         sb = superficie_en_malla(proyecto, malla, u.b_tipo, u.b_id, u.b_cara, tamano)
         if sa is None or sb is None:

@@ -101,6 +101,7 @@ class Visor3D(QtInteractor):
         self._flechas_visibles = True
         self._escala_flechas = 1.0
         self._escala_apoyos = 1.0
+        self._apoyos_visibles = True
         self._argumentos_asignaciones = None
 
         self._grid_esfuerzos: Optional[pv.UnstructuredGrid] = None
@@ -144,6 +145,7 @@ class Visor3D(QtInteractor):
 
     def _limpiar_escena(self) -> None:
         self.clear_actors()
+        self._argumentos_asignaciones = None
         self._visuales.clear()
         self._clave_por_actor.clear()
         self._actor_esfuerzos = None
@@ -392,19 +394,24 @@ class Visor3D(QtInteractor):
 
     def _dibujar_caja(self, a, b) -> None:
         """Rectángulo de selección: continuo y azul si se arrastra de izquierda a derecha (solo lo que queda dentro);
-        discontinuo y verde de derecha a izquierda (todo lo que toca)."""
+        discontinuo y verde de derecha a izquierda (todo lo que toca). Lleva un relleno traslúcido para verse bien."""
 
         from vtkmodules.vtkCommonCore import vtkPoints
         from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
         from vtkmodules.vtkRenderingCore import vtkActor2D, vtkPolyDataMapper2D
 
         if self._caja_actor is None:
-            self._caja_actor = vtkActor2D()
-            self._caja_actor.SetMapper(vtkPolyDataMapper2D())
-            self._caja_actor.GetProperty().SetLineWidth(1.5)
-            self.add_actor(self._caja_actor, reset_camera=False, render=False, name="CAJA_SELECCION", pickable=False)
+            self._caja_actor = (vtkActor2D(), vtkActor2D())  # (contorno, relleno)
+            for actor in self._caja_actor:
+                actor.SetMapper(vtkPolyDataMapper2D())
+            self._caja_actor[0].GetProperty().SetLineWidth(2.0)
+        contorno, relleno = self._caja_actor
+        for actor in self._caja_actor:  # la escena se reconstruye (importar, deshacer...) y borra todos los actores
+            if not self.renderer.HasViewProp(actor):
+                self.add_actor(actor, reset_camera=False, render=False, pickable=False)
         if a is None:
-            self._caja_actor.SetVisibility(False)
+            for actor in self._caja_actor:
+                actor.SetVisibility(False)
             self.render()
             return
         puntos = vtkPoints()
@@ -414,16 +421,27 @@ class Visor3D(QtInteractor):
         lineas.InsertNextCell(5)
         for i in (0, 1, 2, 3, 0):
             lineas.InsertCellPoint(i)
-        datos = vtkPolyData()
-        datos.SetPoints(puntos)
-        datos.SetLines(lineas)
+        caras = vtkCellArray()
+        caras.InsertNextCell(4)
+        for i in (0, 1, 2, 3):
+            caras.InsertCellPoint(i)
+        datos_linea, datos_relleno = vtkPolyData(), vtkPolyData()
+        datos_linea.SetPoints(puntos)
+        datos_linea.SetLines(lineas)
+        datos_relleno.SetPoints(puntos)
+        datos_relleno.SetPolys(caras)
+        contorno.GetMapper().SetInputData(datos_linea)
+        relleno.GetMapper().SetInputData(datos_relleno)
         cruzando = b[0] < a[0]
-        self._caja_actor.GetMapper().SetInputData(datos)
-        propiedad = self._caja_actor.GetProperty()
-        propiedad.SetColor(*((0.1, 0.55, 0.2) if cruzando else (0.1, 0.35, 0.85)))
-        propiedad.SetLineStipplePattern(0x00FF if cruzando else 0xFFFF)
-        self._caja_actor.SetVisibility(True)
+        color = (0.1, 0.65, 0.25) if cruzando else (0.1, 0.35, 0.9)
+        contorno.GetProperty().SetColor(*color)
+        contorno.GetProperty().SetLineStipplePattern(0x00FF if cruzando else 0xFFFF)
+        relleno.GetProperty().SetColor(*color)
+        relleno.GetProperty().SetOpacity(0.12)
+        for actor in self._caja_actor:
+            actor.SetVisibility(True)
         self.render()
+        self.update()
 
     def seleccionar_zona(self, a, b, sumar: bool = False) -> None:
         """Selecciona lo que hay en el rectángulo de esquinas ``a`` y ``b`` (píxeles de VTK). De izquierda a derecha
@@ -609,10 +627,10 @@ class Visor3D(QtInteractor):
 
         # Tamaño de los símbolos: una fracción del modelo y, si hay barras, nunca mayor que parte de la barra típica
         barras = proyecto.todas_las_barras()
-        largo = float(np.clip(0.04 * self._escala, 0.005, 1.5))
+        largo = float(np.clip(0.018 * self._escala, 0.003, 0.8))
         longitudes = [proyecto.longitud_barra(i) for i in barras]
         if longitudes:
-            largo = min(largo, 0.3 * float(np.median(longitudes)))
+            largo = min(largo, 0.12 * float(np.median(longitudes)))
         largo_apoyo = largo * self._escala_apoyos
 
         def punto_de(barra_id: str, s: float) -> np.ndarray:
@@ -636,7 +654,8 @@ class Visor3D(QtInteractor):
             etiquetas_apoyo.append(centro - np.array([0.0, 0.0, 1.35 * largo_apoyo]))
             textos_apoyo.append(nombre_apoyo(grados))
         for color, mallas in por_color.items():
-            self.add_mesh(pv.merge(mallas), color=color, name=f"ASIG_APOYOS_{color}", pickable=False, show_scalar_bar=False)
+            if self._apoyos_visibles:
+                self.add_mesh(pv.merge(mallas), color=color, name=f"ASIG_APOYOS_{color}", pickable=False, show_scalar_bar=False)
 
         # -- apoyos de área: conos pequeños a lo largo de las barras apoyadas ------------
         conos_area: List[pv.PolyData] = []
@@ -661,7 +680,7 @@ class Visor3D(QtInteractor):
                 textos_apoyo.append("apoyo " + "".join(
                     n_ for n_, activo in zip(("Ux", "Uy", "Uz", "Rx", "Ry", "Rz"), (apoyo.ux, apoyo.uy, apoyo.uz, apoyo.rx, apoyo.ry, apoyo.rz)) if activo
                 ))
-        if conos_area:
+        if conos_area and self._apoyos_visibles:
             self.add_mesh(pv.merge(conos_area), color=COLOR_APOYO_AREA, name="ASIG_APOYOS_AREA", pickable=False, show_scalar_bar=False)
 
         # -- conexiones ----------------------------------------------------------------------
@@ -773,11 +792,12 @@ class Visor3D(QtInteractor):
                     por_color_sup.setdefault(color, []).extend(mallas)
             etiquetas_apoyo.append(centro + normal * largo_apoyo * 0.4)
             textos_apoyo.append("empotrada" if all(grados[:3]) else nombre_apoyo(grados))
-        if caras_apoyo:
+        if caras_apoyo and self._apoyos_visibles:
             self.add_mesh(pv.merge(caras_apoyo), color=COLOR_APOYO_AREA, opacity=0.65, name="ASIG_SUPERFICIE_APOYO",
                           pickable=False, show_scalar_bar=False)
         for color, mallas in por_color_sup.items():
-            self.add_mesh(pv.merge(mallas), color=color, name=f"ASIG_APOYOS_{color}", pickable=False, show_scalar_bar=False)
+            if self._apoyos_visibles:
+                self.add_mesh(pv.merge(mallas), color=color, name=f"ASIG_APOYOS_{color}", pickable=False, show_scalar_bar=False)
 
         caras_carga: List[pv.PolyData] = []
         maxima_presion = max((abs(c.valor) for c in cargas_superficie if c.tipo != "MOMENTO"), default=1.0) or 1.0
@@ -810,6 +830,8 @@ class Visor3D(QtInteractor):
             textos.append(f"{abs(carga.valor):g} " + ("kPa" if carga.tipo == "PRESION" else "kN"))
         # -- constraints entre superficies --------------------------------------------------------
         caras_union: List[pv.PolyData] = []
+        etiquetas_union: List[np.ndarray] = []
+        textos_union: List[str] = []
         enlaces: List[pv.PolyData] = []
         for u in uniones:
             ga = self._geometria_de_cara(u.a_tipo, u.a_id, u.a_cara)
@@ -820,8 +842,8 @@ class Visor3D(QtInteractor):
             enlaces += [pv.Sphere(radius=largo_apoyo * 0.25, center=ga[1]), pv.Sphere(radius=largo_apoyo * 0.25, center=gb[1])]
             if np.linalg.norm(gb[1] - ga[1]) > 1e-9:
                 enlaces.append(pv.Line(ga[1], gb[1]).tube(radius=largo_apoyo * 0.07))
-            etiquetas_apoyo.append(0.5 * (ga[1] + gb[1]) + np.array([0.0, 0.0, 0.6 * largo_apoyo]))
-            textos_apoyo.append({"SOLDADURA": "soldadura", "CUERPO_RIGIDO": "cuerpo rígido", "IGUALAR": "igualar " + "".join(
+            etiquetas_union.append(0.5 * (ga[1] + gb[1]) + np.array([0.0, 0.0, 0.6 * largo_apoyo]))
+            textos_union.append({"SOLDADURA": "soldadura", "CUERPO_RIGIDO": "cuerpo rígido", "IGUALAR": "igualar " + "".join(
                 n for n, g in zip(("Ux", "Uy", "Uz"), (u.ux, u.uy, u.uz)) if g), "ARTICULACION": "articulación"}[u.tipo])
         if caras_union:
             self.add_mesh(pv.merge(caras_union), color=COLOR_CONEXION, opacity=0.5, name="ASIG_UNIONES_CARAS",
@@ -838,8 +860,10 @@ class Visor3D(QtInteractor):
             self.add_mesh(pv.merge(flechas), color=COLOR_CARGA, name="ASIG_CARGAS", pickable=False, show_scalar_bar=False)
         if momentos:
             self.add_mesh(pv.merge(momentos), color=COLOR_MOMENTO, name="ASIG_MOMENTOS", pickable=False, show_scalar_bar=False)
-        puntos_etiqueta += etiquetas_apoyo
-        textos += textos_apoyo
+        if not self._apoyos_visibles:  # los apoyos se ocultan con sus etiquetas
+            etiquetas_apoyo, textos_apoyo = [], []
+        puntos_etiqueta += etiquetas_apoyo + etiquetas_union
+        textos += textos_apoyo + textos_union
         if puntos_etiqueta:
             self.add_point_labels(
                 np.array(puntos_etiqueta), textos, name="ASIG_ETIQUETAS", font_size=14, text_color="darkred",
@@ -927,10 +951,13 @@ class Visor3D(QtInteractor):
             self.add_text(texto, position="upper_left", font_size=11, color="black", name="TEXTO_ESFUERZOS")
         self.render()
 
-    def configurar_apoyos(self, escala: float) -> None:
-        """Cambia el tamaño de los símbolos de apoyo y de las marcas de las conexiones (1 = automático)."""
+    def configurar_apoyos(self, escala: Optional[float] = None, visibles: Optional[bool] = None) -> None:
+        """Muestra u oculta los símbolos de apoyo y cambia su tamaño (1 = automático)."""
 
-        self._escala_apoyos = float(escala)
+        if escala is not None:
+            self._escala_apoyos = float(escala)
+        if visibles is not None:
+            self._apoyos_visibles = bool(visibles)
         if self._argumentos_asignaciones is not None:
             self.mostrar_asignaciones(*self._argumentos_asignaciones)
             if self._vista == "ESFUERZOS":
@@ -952,6 +979,21 @@ class Visor3D(QtInteractor):
         """(malla de la cara, centro, normal hacia fuera, puntos de muestra) o None si ya no existe."""
 
         proyecto = self._proyecto
+        if cara is not None and cara < 0:  # elemento completo (constraint entre elementos 3D)
+            try:
+                if tipo == "SOLIDO":
+                    s = proyecto.solidos[id_]
+                    todo = pv.PolyData(np.asarray(s.vertices, dtype=float),
+                                       np.hstack([np.full((len(s.triangulos), 1), 3), s.triangulos]).ravel().astype(np.int64))
+                else:
+                    sol = solido_elemento(proyecto, tipo, id_)
+                    caras = np.hstack([[len(c.indices), *c.indices] for c in sol.caras]).astype(np.int64)
+                    todo = pv.PolyData(np.asarray(sol.puntos, dtype=float), faces=caras)
+            except (KeyError, IndexError):
+                return None
+            centro = np.asarray(todo.center, dtype=float)
+            todo.points = centro + (np.asarray(todo.points) - centro) * 1.004  # un poco más grande: evita el parpadeo con el elemento
+            return todo, centro, np.array([0.0, 0.0, 1.0]), np.array([centro])
         try:
             if tipo == "SOLIDO":
                 s = proyecto.solidos[id_]

@@ -254,6 +254,16 @@ def main(salida: Path) -> None:
     verificar("ASIG_UNIONES" in visor.actors, "el constraint se dibuja")
     ventana.grab().save(str(salida / "03c_constraint.png"))
 
+    # Conectar automáticamente: detecta las parejas de elementos que se tocan y crea constraints de soldadura
+    ventana.conectar_automaticamente()
+    verificar(len(proyecto.uniones) == 4, f"la conexión automática creó las 3 uniones restantes: {[u.nombre for u in proyecto.uniones]}")
+    verificar(sum(u.es_completa for u in proyecto.uniones) == 3, "entre elementos completos")
+    ventana.conectar_automaticamente()
+    verificar(len(proyecto.uniones) == 4, "no repite las parejas que ya tienen constraint")
+    visor.seleccionar([])
+    vista("view_isometric")
+    ventana.grab().save(str(salida / "03e_conexion_automatica.png"))
+
     # Análisis 3D
     from ifc_structural.gui.dialogo_analisis_3d import DialogoAnalisis3D
 
@@ -263,9 +273,10 @@ def main(salida: Path) -> None:
             self.spin_tamano.setValue(20)
 
     vp.DialogoAnalisis3D = Dialogo3D
-    verificar(ventana.accion_analizar_3d.isEnabled(), "el botón ANALIZAR 3D está habilitado")
+    verificar(ventana.accion_analizar.isEnabled(), "el botón ANALIZAR está habilitado")
+    verificar(ventana._detectar_modo_de_analisis()[0] == "SOLIDO", "con sólidos libres el análisis automático es 3D")
     mensajes.clear()
-    ventana.accion_analizar_3d.trigger()
+    ventana.accion_analizar.trigger()  # un solo botón: detecta que hay sólidos y analiza en 3D
     inicio = time.time()
     while ventana._worker.isRunning() and time.time() - inicio < 250:
         bombear(5)
@@ -294,12 +305,12 @@ def main(salida: Path) -> None:
     visor.seleccionar([Objetivo("SOLIDO", ids["PLACA_L"])])
     ventana.eliminar_seleccion()
     verificar(ids["PLACA_L"] not in proyecto_actual().solidos, "la placa en L se elimina")
-    verificar(not proyecto_actual().uniones, "se elimina también su constraint")
+    verificar(len(proyecto_actual().uniones) == 3, "se elimina también su constraint (las otras tres siguen)")
     verificar(sum(len(v) for v in ventana.cargas_superficie_por_caso.values()) == n_cargas - 1, "y su presión")
     verificar(ventana.accion_deshacer.isEnabled() and not ventana.accion_rehacer.isEnabled(), "se puede deshacer")
     ventana.accion_deshacer.trigger()
     bombear()
-    verificar(ids["PLACA_L"] in proyecto_actual().solidos and len(proyecto_actual().uniones) == 1, "deshacer restaura la placa y el constraint")
+    verificar(ids["PLACA_L"] in proyecto_actual().solidos and len(proyecto_actual().uniones) == 4, "deshacer restaura la placa y el constraint")
     verificar(sum(len(v) for v in ventana.cargas_superficie_por_caso.values()) == n_cargas, "y la presión")
     verificar(ventana.accion_rehacer.isEnabled(), "se puede rehacer")
     ventana.accion_rehacer.trigger()
@@ -307,7 +318,19 @@ def main(salida: Path) -> None:
     verificar(ids["PLACA_L"] not in proyecto_actual().solidos, "rehacer vuelve a eliminarla")
     ventana.accion_deshacer.trigger()
     bombear()
+    # el rectángulo de selección se ve al arrastrar, incluso después de reconstruir la escena (deshacer)
     ventana.grab().save(str(salida / "06_deshacer.png"))
+    alto_v = visor.height() - 1
+    QTest.mousePress(visor, Qt.LeftButton, Qt.NoModifier, QPoint(400, 300))
+    QTest.mouseMove(visor, QPoint(500, 350))
+    QTest.mouseMove(visor, QPoint(650, 450))
+    bombear()
+    verificar(visor._caja_actor is not None and all(visor.renderer.HasViewProp(a) and a.GetVisibility() for a in visor._caja_actor),
+              "el recuadro de selección se dibuja mientras se arrastra")
+    ventana.grab().save(str(salida / "06b_recuadro.png"))
+    QTest.mouseRelease(visor, Qt.LeftButton, Qt.NoModifier, QPoint(650, 450))
+    bombear()
+    verificar(not any(a.GetVisibility() for a in visor._caja_actor), "y desaparece al soltar")
     print("OK")
 
 

@@ -361,6 +361,10 @@ class UnionSuperficie:
       en los grados marcados (Ux, Uy, Uz); los demás quedan libres (deslizamiento).
     * ``ARTICULACION``: cada superficie es rígida y sus centros se igualan en las traslaciones; los giros
       marcados (Rx, Ry, Rz) también se igualan y los demás quedan libres (rótula).
+
+    Con ``a_cara = b_cara = -1`` el constraint es entre **elementos 3D completos**: la soldadura une los dos
+    elementos por donde se tocan (o se acercan a menos de ``tolerancia``), el cuerpo rígido convierte a los dos en
+    un solo cuerpo rígido y la articulación hace rígido cada elemento y une sus centros.
     """
 
     id: str
@@ -378,6 +382,13 @@ class UnionSuperficie:
     ry: bool = False
     rz: bool = False
     nombre: str = ""
+    tolerancia: float = 0.0  # m: separación máxima con la que se unen elementos completos (soldadura)
+
+    @property
+    def es_completa(self) -> bool:
+        """``a_cara``/``b_cara`` = -1: el constraint es entre elementos 3D completos, no entre superficies."""
+
+        return self.a_cara < 0 or self.b_cara < 0
 
     def grados(self) -> List[int]:
         """Grados de libertad igualados (1-6, convención CalculiX)."""

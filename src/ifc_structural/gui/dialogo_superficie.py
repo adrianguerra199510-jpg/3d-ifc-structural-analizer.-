@@ -282,15 +282,18 @@ TIPOS_UNION_TEXTO = {
     "Igualar movimientos: los puntos siguen al más cercano en los grados marcados": "IGUALAR",
     "Articulación: superficies rígidas con centros unidos; giros marcados igualados": "ARTICULACION",
 }
+ALCANCE_SUPERFICIES = "Las superficies más cercanas (o las elegidas)"
+ALCANCE_COMPLETOS = "Los elementos 3D completos"
 AYUDA_UNION = {
     "SOLDADURA": "Las superficies quedan soldadas en todos sus puntos (<code>*TIE</code>). Si hay holgura entre ellas, "
-                 "se cierra. Sustituye a la unión automática entre esas dos piezas.",
-    "CUERPO_RIGIDO": "Los nodos de las dos superficies forman un único cuerpo rígido: las superficies no se deforman y "
-                     "las dos se mueven juntas (como el constraint «Body» de SAP).",
+                 "se cierra. Entre elementos completos se sueldan por todas las superficies en que se tocan (o están a "
+                 "menos de la separación máxima). Sustituye a la unión automática entre esas dos piezas.",
+    "CUERPO_RIGIDO": "Los nodos de las dos superficies (o de los dos elementos completos) forman un único cuerpo rígido: "
+                     "no se deforman y se mueven juntos (como el constraint «Body» de SAP).",
     "IGUALAR": "Cada nodo de una superficie iguala el movimiento del nodo más cercano de la otra en las traslaciones "
                "marcadas; las demás quedan libres (deslizamiento). Como el constraint «Equal» de SAP.",
-    "ARTICULACION": "Cada superficie se vuelve rígida y los centros de las dos se igualan en las tres traslaciones. Marque "
-                    "los giros que se igualan (los demás quedan libres): una rótula, una bisagra o una unión con un solo giro.",
+    "ARTICULACION": "Cada superficie (o elemento completo) se vuelve rígida y los centros de las dos se igualan en las tres "
+                    "traslaciones. Marque los giros que se igualan (los demás quedan libres): una rótula, una bisagra o una unión con un solo giro.",
 }
 
 
@@ -312,6 +315,20 @@ class DialogoUnionSuperficie(QDialog):
         self.combo_tipo = QComboBox()
         self.combo_tipo.addItems(list(TIPOS_UNION_TEXTO))
         formulario.addRow("Tipo:", self.combo_tipo)
+        self.combo_alcance = QComboBox()
+        self.combo_alcance.addItems([ALCANCE_SUPERFICIES, ALCANCE_COMPLETOS])
+        self._con_caras = a.cara is not None and b.cara is not None  # se eligieron superficies concretas
+        if self._con_caras:
+            self.combo_alcance.setEnabled(False)
+            self.combo_alcance.setToolTip("Se eligieron superficies concretas (modo «Cara»).")
+        formulario.addRow("Se une:", self.combo_alcance)
+        self.spin_tolerancia = QDoubleSpinBox()
+        self.spin_tolerancia.setRange(0.0, 500.0)
+        self.spin_tolerancia.setDecimals(1)
+        self.spin_tolerancia.setSuffix(" mm")
+        self.spin_tolerancia.setValue(10.0)
+        self.spin_tolerancia.setToolTip("Separación máxima con la que la soldadura une dos elementos completos.")
+        formulario.addRow("Separación máxima:", self.spin_tolerancia)
         self.checks = []
         for texto in NOMBRES_GDL:
             check = QCheckBox(texto + " — se iguala")
@@ -331,10 +348,15 @@ class DialogoUnionSuperficie(QDialog):
         self.botones.rejected.connect(self.reject)
         layout.addWidget(self.botones)
         self.combo_tipo.currentIndexChanged.connect(self._al_cambiar_tipo)
+        self.combo_alcance.currentIndexChanged.connect(self._actualizar)
+        self.spin_tolerancia.valueChanged.connect(self._actualizar)
         self._al_cambiar_tipo()
 
     def tipo(self) -> str:
         return TIPOS_UNION_TEXTO[self.combo_tipo.currentText()]
+
+    def completo(self) -> bool:
+        return not self._con_caras and self.combo_alcance.currentText() == ALCANCE_COMPLETOS
 
     def _al_cambiar_tipo(self) -> None:
         tipo = self.tipo()
@@ -349,21 +371,27 @@ class DialogoUnionSuperficie(QDialog):
             check.setEnabled(tipo == "IGUALAR" and i < 3 or tipo == "ARTICULACION" and i >= 3)
             check.blockSignals(False)
         self.ayuda.setText(AYUDA_UNION[tipo])
+        if not self._con_caras:  # entre elementos enteros, lo normal para el cuerpo rígido y la articulación es unir los elementos completos
+            self.combo_alcance.blockSignals(True)
+            self.combo_alcance.setCurrentText(ALCANCE_COMPLETOS if tipo in ("CUERPO_RIGIDO", "ARTICULACION") else ALCANCE_SUPERFICIES)
+            self.combo_alcance.blockSignals(False)
         self._actualizar()
 
     def grados(self) -> Tuple[bool, ...]:
         return tuple(c.isChecked() for c in self.checks)
 
     def union(self, id_: str = "-"):
-        return union_para(self._proyecto, self._a, self._b, id_, self.tipo(), self.grados())
+        return union_para(self._proyecto, self._a, self._b, id_, self.tipo(), self.grados(), completo=self.completo(),
+                          tolerancia=self.spin_tolerancia.value() / 1000.0)
 
     def _actualizar(self, *_args) -> None:
         try:
             u = self.union()
             iguales = ", ".join(n for n, g in zip(("Ux", "Uy", "Uz", "Rx", "Ry", "Rz"), (u.ux, u.uy, u.uz, u.rx, u.ry, u.rz)) if g)
             texto = f"✓ {u.nombre}\n   Grados de libertad que se transmiten: {iguales}."
-            self.etiqueta.setText(f"<b>Superficie A:</b> {descripcion(self._proyecto, Objetivo(u.a_tipo, u.a_id, u.a_cara))}<br>"
-                                  f"<b>Superficie B:</b> {descripcion(self._proyecto, Objetivo(u.b_tipo, u.b_id, u.b_cara))}")
+            self.spin_tolerancia.setEnabled(u.tipo == "SOLDADURA" and u.es_completa)
+            self.etiqueta.setText(f"<b>A:</b> {descripcion(self._proyecto, Objetivo(u.a_tipo, u.a_id, None if u.a_cara < 0 else u.a_cara))}<br>"
+                                  f"<b>B:</b> {descripcion(self._proyecto, Objetivo(u.b_tipo, u.b_id, None if u.b_cara < 0 else u.b_cara))}")
             self.botones.button(QDialogButtonBox.Ok).setEnabled(True)
         except ErrorAsignacion as exc:
             texto = f"✗ {exc}"

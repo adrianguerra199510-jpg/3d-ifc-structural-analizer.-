@@ -130,14 +130,22 @@ def caras_mas_cercanas(proyecto: Proyecto, a: Objetivo, b: Objetivo) -> Tuple[Ob
     return Objetivo(a.tipo, a.id, mejor[1]), Objetivo(b.tipo, b.id, mejor[2])
 
 
-def union_para(proyecto: Proyecto, a: Objetivo, b: Objetivo, id_: str, tipo: str, grados: Sequence[bool]) -> UnionSuperficie:
-    """Constraint entre dos objetivos. Si alguno no tiene cara elegida se toma la más cercana al otro."""
+def union_para(proyecto: Proyecto, a: Objetivo, b: Objetivo, id_: str, tipo: str, grados: Sequence[bool],
+               completo: bool = False, tolerancia: float = 0.0) -> UnionSuperficie:
+    """Constraint entre dos objetivos. Si alguno no tiene cara elegida se toma la más cercana al otro, salvo con
+    ``completo``: entonces es entre los dos elementos 3D enteros (``tolerancia`` = separación máxima de la soldadura)."""
 
     if tipo not in TIPOS_UNION:
         raise ErrorAsignacion(f"Tipo de constraint desconocido: {tipo}")
-    if a.tipo == b.tipo and a.id == b.id and (a.cara is None or b.cara is None or a.cara == b.cara):
+    if completo:
+        if a.tipo == b.tipo and a.id == b.id:
+            raise ErrorAsignacion("Elija dos elementos distintos.")
+        if tipo == "IGUALAR":
+            raise ErrorAsignacion("Igualar movimientos se aplica entre superficies, no entre elementos completos.")
+        a, b = Objetivo(a.tipo, a.id, -1), Objetivo(b.tipo, b.id, -1)
+    elif a.tipo == b.tipo and a.id == b.id and (a.cara is None or b.cara is None or a.cara == b.cara):
         raise ErrorAsignacion("Elija dos superficies distintas (de elementos diferentes o dos caras distintas del mismo).")
-    if a.cara is None or b.cara is None:
+    elif a.cara is None or b.cara is None:
         a, b = caras_mas_cercanas(proyecto, a, b)
     if tipo == "IGUALAR" and not any(grados[:3]):
         raise ErrorAsignacion("Marque al menos una traslación (Ux, Uy, Uz) que se iguale.")
@@ -147,9 +155,13 @@ def union_para(proyecto: Proyecto, a: Objetivo, b: Objetivo, id_: str, tipo: str
         grados = (True,) * 6
     if tipo == "ARTICULACION":
         grados = (True, True, True) + tuple(bool(g) for g in grados[3:6])
-    nombre_a, nombre_b = descripcion(proyecto, a), descripcion(proyecto, b)
+    if completo:
+        nombre_a, nombre_b = descripcion(proyecto, Objetivo(a.tipo, a.id)), descripcion(proyecto, Objetivo(b.tipo, b.id))
+    else:
+        nombre_a, nombre_b = descripcion(proyecto, a), descripcion(proyecto, b)
     return UnionSuperficie(
         id=id_, tipo=tipo, a_tipo=a.tipo, a_id=a.id, a_cara=int(a.cara), b_tipo=b.tipo, b_id=b.id, b_cara=int(b.cara),
         ux=bool(grados[0]), uy=bool(grados[1]), uz=bool(grados[2]), rx=bool(grados[3]), ry=bool(grados[4]), rz=bool(grados[5]),
-        nombre=f"{NOMBRES_UNION[tipo].capitalize()}: {nombre_a} ↔ {nombre_b}",
+        nombre=f"{NOMBRES_UNION[tipo].capitalize()}: {nombre_a} ↔ {nombre_b}" + (" (elementos completos)" if completo else ""),
+        tolerancia=float(tolerancia),
     )

@@ -116,7 +116,7 @@ def main(salida: Path) -> None:
 
     # Análisis
     mensajes.clear()
-    ventana.accion_analizar.trigger()
+    ventana.analizar(modo="BARRAS")
     inicio = time.time()
     while ventana._worker.isRunning() and time.time() - inicio < 150:
         bombear(5)
@@ -157,10 +157,11 @@ def main(salida: Path) -> None:
             self.spin_tamano.setValue(25)
 
     vp.DialogoAnalisis3D = Dialogo3D
-    verificar(ventana.accion_analizar_3d.isEnabled(), "el botón ANALIZAR 3D está habilitado")
+    verificar(ventana.accion_analizar.isEnabled(), "el botón ANALIZAR está habilitado")
+    verificar(ventana._detectar_modo_de_analisis()[0] == "SOLIDO", "la conexión tiene placas y pernos: el análisis automático es 3D")
     ventana.volver_al_modelo()
     mensajes.clear()
-    ventana.accion_analizar_3d.trigger()
+    ventana.accion_analizar.trigger()
     inicio = time.time()
     while ventana._worker.isRunning() and time.time() - inicio < 200:
         bombear(5)
