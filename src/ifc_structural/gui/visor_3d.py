@@ -34,6 +34,7 @@ from ..core.cargas import Apoyo, ApoyoArea, CargaArea, CargaLineal, CargaPuntual
 from ..core.geometria import Solido, normal_losa, solido_elemento
 from ..core.modelo import Proyecto
 from ..solver.lector_resultados import MallaTensiones
+from .simbolos_apoyo import COLORES_SIMBOLO, nombre_apoyo, simbolo_apoyo
 
 logger = logging.getLogger(__name__)
 
@@ -311,7 +312,7 @@ class Visor3D(QtInteractor):
         (las que se pasan). Las flechas de una carga variable tienen longitud
         proporcional a su valor, de modo que se ve su forma."""
 
-        for nombre in ("ASIG_APOYOS", "ASIG_APOYOS_AREA", "ASIG_CONEXIONES", "ASIG_CARGAS", "ASIG_MOMENTOS", "ASIG_ETIQUETAS"):
+        for nombre in tuple(f"ASIG_APOYOS_{c}" for c in COLORES_SIMBOLO) + ("ASIG_APOYOS_AREA", "ASIG_CONEXIONES", "ASIG_CARGAS", "ASIG_MOMENTOS", "ASIG_ETIQUETAS"):
             self.remove_actor(nombre, render=False)
         proyecto = self._proyecto
         if proyecto is None:
@@ -326,21 +327,24 @@ class Visor3D(QtInteractor):
             b = np.array(proyecto.nodos[barra.nodo_fin].coordenadas)
             return a + s * (b - a)
 
-        # -- apoyos puntuales -------------------------------------------------------
-        conos = [
-            pv.Cone(
-                center=np.array(proyecto.nodos[a.nodo_id].coordenadas) - np.array([0, 0, largo * 0.4]),
-                direction=(0, 0, 1), height=largo * 0.8, radius=largo * 0.45, resolution=16,
-            )
-            for a in apoyos if not isinstance(a, ApoyoArea) and a.nodo_id in proyecto.nodos
-        ]
-        if conos:
-            self.add_mesh(pv.merge(conos), color=COLOR_APOYO, name="ASIG_APOYOS", pickable=False, show_scalar_bar=False)
+        # -- apoyos puntuales: símbolo según los grados de libertad restringidos ------------
+        por_color: Dict[str, List[pv.PolyData]] = {}
+        etiquetas_apoyo: List[np.ndarray] = []
+        textos_apoyo: List[str] = []
+        for a in apoyos:
+            if isinstance(a, ApoyoArea) or a.nodo_id not in proyecto.nodos:
+                continue
+            grados = (a.ux, a.uy, a.uz, a.rx, a.ry, a.rz)
+            centro = np.array(proyecto.nodos[a.nodo_id].coordenadas)
+            for color, mallas in simbolo_apoyo(grados, centro, largo).items():
+                por_color.setdefault(color, []).extend(mallas)
+            etiquetas_apoyo.append(centro - np.array([0.0, 0.0, 1.35 * largo]))
+            textos_apoyo.append(nombre_apoyo(grados))
+        for color, mallas in por_color.items():
+            self.add_mesh(pv.merge(mallas), color=color, name=f"ASIG_APOYOS_{color}", pickable=False, show_scalar_bar=False)
 
         # -- apoyos de área: conos pequeños a lo largo de las barras apoyadas ------------
         conos_area: List[pv.PolyData] = []
-        etiquetas_apoyo: List[np.ndarray] = []
-        textos_apoyo: List[str] = []
         for apoyo in apoyos:
             if not isinstance(apoyo, ApoyoArea):
                 continue

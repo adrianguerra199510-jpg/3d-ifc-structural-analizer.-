@@ -36,6 +36,7 @@ from ..core.casos_carga import CasoCarga, Combinacion
 from ..core.materiales import modulo_en_mpa, usos_de_material
 from ..core.modelo import Proyecto
 from .dialogo_casos import formula
+from .simbolos_apoyo import nombre_apoyo
 from .iconos import ICONO_DE_TIPO, icono
 from .panel_resultados import ENVOLVENTE
 
@@ -61,12 +62,8 @@ def tipo_de_asignacion(obj) -> str:
 
 
 def _gdl(grados: Iterable[int]) -> str:
-    grados = list(grados)
-    if grados == [1, 2, 3, 4, 5, 6]:
-        return "empotrado"
-    if grados == [1, 2, 3]:
-        return "articulado"
-    return " ".join(NOMBRES_GDL[g] for g in grados)
+    grados = set(grados)
+    return nombre_apoyo([g in grados for g in range(1, 7)])
 
 
 def _partir_nombre(nombre: str) -> Tuple[str, str]:
