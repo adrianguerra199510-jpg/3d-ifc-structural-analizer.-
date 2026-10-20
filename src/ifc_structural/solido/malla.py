@@ -241,7 +241,10 @@ def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra],
     for k, solido in enumerate(ordenados):
         if not solido.cerrado:
             raise ErrorMalla(f"El sólido {solido.id} ({solido.nombre}) no es una superficie cerrada y no se puede mallar en 3D.")
-        libre = mallar_solido(solido, tamano, ordenados[:k], lambda p: _dentro_de_barras(proyecto, miembros, p))
+        try:
+            libre = mallar_solido(solido, tamano, ordenados[:k], lambda p: _dentro_de_barras(proyecto, miembros, p))
+        except ValueError as exc:  # coordenadas no válidas
+            raise ErrorMalla(str(exc)) from exc
         if libre is None:
             avisos.append(f"El sólido {solido.id} ({solido.nombre}) queda dentro de otras piezas y no se analiza.")
             continue

@@ -126,6 +126,7 @@ def conectar_uniones_en_t(proyecto: Proyecto, holgura: float = HOLGURA_UNION_T) 
     nodos_de_barras = {n for b in proyecto.todas_las_barras().values() for n in (b.nodo_inicio, b.nodo_fin)}
     cortes: Dict[str, List[tuple]] = {}  # barra atravesada -> [(s, nodo_nuevo)]
     trasladados: Dict[str, str] = {}  # nodo viejo -> nodo nuevo
+    candidatos: Dict[str, tuple] = {}  # nodo -> (distancia, barra atravesada, s, punto)
     for nodo_id in sorted(nodos_de_barras):
         p = np.array(proyecto.nodos[nodo_id].coordenadas, dtype=float)
         mejor = None
@@ -149,11 +150,20 @@ def conectar_uniones_en_t(proyecto: Proyecto, holgura: float = HOLGURA_UNION_T) 
             if mejor is None or distancia < mejor[0]:
                 mejor = (distancia, barra_id, s, punto)
         if mejor is not None:
-            _, barra_id, s, punto = mejor
-            nuevo = proyecto.nodo_o_existente(*(round(float(c), 6) + 0.0 for c in punto))
-            trasladados[nodo_id] = nuevo.id
-            if not any(abs(s - s0) < 1e-6 for s0, n0 in cortes.get(barra_id, []) if n0 == nuevo.id):
-                cortes.setdefault(barra_id, []).append((s, nuevo.id))
+            candidatos[nodo_id] = mejor
+
+    # Una barra cuyos dos extremos caerían en el mismo punto del eje de otra (un rigidizador transversal dentro de una
+    # viga, por ejemplo) se quedaría con longitud cero: se deja como está y no se traslada ninguno de sus extremos.
+    for barra in proyecto.todas_las_barras().values():
+        a, b = candidatos.get(barra.nodo_inicio), candidatos.get(barra.nodo_fin)
+        if a is not None and b is not None and a[1] == b[1] and abs(a[2] - b[2]) < 1e-6:
+            candidatos.pop(barra.nodo_inicio, None)
+            candidatos.pop(barra.nodo_fin, None)
+    for nodo_id, (_, barra_id, s, punto) in candidatos.items():
+        nuevo = proyecto.nodo_o_existente(*(round(float(c), 6) + 0.0 for c in punto))
+        trasladados[nodo_id] = nuevo.id
+        if not any(abs(s - s0) < 1e-6 for s0, n0 in cortes.get(barra_id, []) if n0 == nuevo.id):
+            cortes.setdefault(barra_id, []).append((s, nuevo.id))
 
     if not trasladados:
         return 0

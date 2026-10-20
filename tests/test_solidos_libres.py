@@ -410,3 +410,32 @@ def test_detecta_los_elementos_que_se_tocan_y_los_que_estan_a_poca_distancia():
     assert parejas(0.002) == {frozenset("AB")}  # C está a 15 mm de B
     assert parejas(0.02) == {frozenset("AB"), frozenset("BC")}
     assert all(x.area > 0.03 for x in detectar_contactos(p, 0.02))
+
+
+# ---------------------------------------------------------------------------
+# Placas delgadas y piezas sueltas (modelo real de Revit: viga armada en cajón)
+# ---------------------------------------------------------------------------
+
+
+def test_una_placa_delgada_larga_lleva_una_sola_capa_en_el_espesor_y_pocas_celdas():
+    from ifc_structural.solido.libres import celdas_por_eje, estimar_hexaedros_solido
+
+    alma = caja("W", 0, 0, 0, 6.0, 0.01, 0.56)  # alma de 10 mm de una viga de 6 m
+    n = celdas_por_eje(alma, 0.05)
+    assert n[1] == 1 and n[0] == 120 and n[2] <= 12
+    assert estimar_hexaedros_solido(alma, 0.05) < 3000  # con celdas cúbicas de 5 mm serían ~270 000
+    m = mallar_solido(alma, 0.05)
+    c = m.coordenadas[m.hexaedros]
+    assert np.prod(c[:, 6] - c[:, 0], axis=1).sum() == pytest.approx(alma.volumen, rel=1e-5)
+
+
+@requiere_ccx
+def test_una_pieza_suelta_sin_asignaciones_se_deja_fija_y_se_avisa(tmp_path: Path):
+    a, suelta = caja("A", 0, 0, 0, 0.5, 0.1, 0.1), caja("B", 2.0, 2.0, 0, 0.2, 0.2, 0.05)
+    p = proyecto_con(a, suelta)
+    apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="A", cara=cara_hacia(a, (-1, 0, 0)), ux=True, uy=True, uz=True)
+    r = _analizar(p, [apoyo], [_carga(a, (1, 0, 0), "FUERZA", 5.0, (0, 0, -1))], tmp_path)
+    assert any("B" in aviso and "no tocan" in aviso for aviso in r.advertencias)
+    # si la pieza suelta tiene una carga asignada, sí es un error (quedaría flotando)
+    with pytest.raises(ErrorAnalisis):
+        _analizar(p, [apoyo], [_carga(a, (1, 0, 0), "FUERZA", 5.0, (0, 0, -1)), _carga(suelta, (0, 0, 1), "PRESION", 10.0, None)], tmp_path / "x")

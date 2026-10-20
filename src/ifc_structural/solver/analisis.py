@@ -216,6 +216,11 @@ def validar_modelo(
     if not casos:
         errores.append("No hay casos de carga definidos.")
 
+    from ..solido.miembros import barras_de_longitud_cero
+
+    cero = barras_de_longitud_cero(proyecto)
+    if cero:
+        errores.append(f"Las barras {', '.join(cero)} tienen longitud cero (sus dos extremos coinciden): elimínelas del modelo.")
     nodos_barras = {n for b in barras.values() for n in (b.nodo_inicio, b.nodo_fin)}
     apoyos_validos = []
     for a in apoyos:

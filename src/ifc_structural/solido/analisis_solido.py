@@ -28,7 +28,7 @@ from ..solver.lector_resultados import leer_desplazamientos_frd, leer_malla_frd,
 from .contactos import Union, _caras_en_contacto, detectar_uniones, partes_sin_conexion
 from .generador import Apoyo3D, CargasCaso, Enlace3D, ModeloSolido, escribir, escribir_caso, escribir_comun, etiqueta
 from .malla import ErrorMalla, MallaSolida, ParteMalla, construir_malla_solida, estimar_hexaedros
-from .miembros import MiembroBarra, construir_miembros, recortar_uniones
+from .miembros import MiembroBarra, barras_de_longitud_cero, construir_miembros, recortar_uniones
 from .superficies import _parte_de, fuerzas_nodales, superficie_en_malla
 
 #: Tamaño de elemento por defecto (m) y máximo de hexaedros que se aceptan sin avisar.
@@ -371,6 +371,9 @@ def ejecutar_analisis_solido(
                             "las piezas se unen por las superficies en contacto.")
 
     avanzar("Preparando los miembros sólidos...")
+    degeneradas = barras_de_longitud_cero(proyecto)
+    if degeneradas:
+        advertencias.append(f"Las barras {', '.join(degeneradas)} tienen longitud cero (sus dos extremos coinciden) y se omiten.")
     miembros = construir_miembros(proyecto)
     advertencias.extend(recortar_uniones(proyecto, miembros))
     estimados = estimar_hexaedros(proyecto, miembros, tamano)
@@ -400,10 +403,32 @@ def ejecutar_analisis_solido(
     uniones = [u for u in uniones if frozenset((u.parte_esclava, u.parte_maestra)) not in pares_manuales] + ties_manuales
     flotantes = partes_sin_conexion(malla, uniones, partes_apoyadas, partes_enlazadas)
     if flotantes:
+        # Un sólido suelto al que no se le asignó nada (apoyo, carga ni constraint) y que no toca a nada no participa
+        # en la estructura (una placa de prueba, una pieza de otro conjunto...): se deja fija y se avisa.
+        con_asignacion = {(a.elemento_tipo, a.elemento_id) for a in apoyos if isinstance(a, (ApoyoSuperficie, ApoyoArea))}
+        for lista in cargas_area_por_caso.values():
+            for c in lista:
+                con_asignacion.add(("LOSA", c.losa_id) if c.losa_id else ("MURO", c.muro_id))
+        con_asignacion |= {(c.elemento_tipo, c.elemento_id) for lista in cargas_superficie_por_caso.values() for c in lista}
+        for u in uniones_manuales:
+            con_asignacion |= {(u.a_tipo, u.a_id), (u.b_tipo, u.b_id)}
+        sueltos = [i for i in flotantes if malla.partes[i].tipo in ("SOLIDO", "LOSA", "MURO")
+                   and (malla.partes[i].tipo, malla.partes[i].id) not in con_asignacion]
+        for i in sueltos:
+            parte = malla.partes[i]
+            nodos = np.unique(malla.hexaedros[parte.primer_hexaedro:parte.ultimo_hexaedro])
+            apoyos_3d.append(Apoyo3D(nodos, {1, 2, 3}, rigido=False, nombre=f"pieza suelta {parte.id}"))
+        if sueltos:
+            advertencias.append(
+                f"Las piezas {', '.join(malla.partes[i].id for i in sueltos)} no tocan a ninguna otra ni tienen apoyos o "
+                "cargas: no participan en la estructura y se dejaron fijos (sus esfuerzos no son significativos).")
+        flotantes = [i for i in flotantes if i not in sueltos]
+    if flotantes:
         nombres = ", ".join(malla.partes[i].id for i in flotantes)
         raise ErrorAnalisis(
             f"Hay piezas que no tocan a ninguna otra con apoyo (quedarían flotando): {nombres}. En el modelo sólido las "
-            "piezas se unen por las caras que se tocan: revise que se apoyen unas en otras (o que haya apoyos en cada grupo).")
+            "piezas se unen por las caras que se tocan: revise que se apoyen unas en otras (o que haya apoyos en cada grupo); "
+            "también puede unirlas con un constraint (Conectar).")
 
     materiales = {m: etiqueta(m) for m in {p.material for p in malla.partes}}
     modelo = ModeloSolido(malla=malla, uniones=uniones, apoyos=apoyos_3d, materiales=materiales, enlaces=enlaces)

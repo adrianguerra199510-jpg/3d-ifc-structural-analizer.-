@@ -367,3 +367,50 @@ def crear_ifc_geometria_libre(ruta: str) -> None:
     for elemento in (base, poste, cartela, en_l):
         asociar(elemento)
     model.write(ruta)
+
+
+def crear_ifc_viga_armada_en_milimetros(ruta: str) -> None:
+    """Viga armada como la exporta Revit con unidades en milímetros: una viga IPE de 6 m, once rigidizadores
+    transversales de 10 mm de espesor clasificados como IfcMember y una placa superior (IfcPlate).
+
+    Ejercita: la unidad del archivo (mm), las placas clasificadas como barras (rigidizadores) y los materiales
+    sin propiedades.
+    """
+
+    model = ifcopenshell.file(schema="IFC4")
+    longitud = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Prefix="MILLI", Name="METRE")
+    unidades = model.create_entity("IfcUnitAssignment", Units=[longitud])
+    origen = model.create_entity("IfcAxis2Placement3D", Location=model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0, 0.0)))
+    contexto = model.create_entity("IfcGeometricRepresentationContext", ContextType="Model", CoordinateSpaceDimension=3,
+                                   Precision=1e-5, WorldCoordinateSystem=origen)
+    model.create_entity("IfcProject", GlobalId=guid.new(), Name="Viga armada (mm)", UnitsInContext=unidades,
+                        RepresentationContexts=[contexto])
+    piso = model.create_entity("IfcBuildingStorey", GlobalId=guid.new(), Name="Nivel 1", ObjectPlacement=_placement(model))
+    acero = model.create_entity("IfcMaterial", Name="Acero T18 mm")  # sin propiedades mecánicas: se deduce del nombre
+
+    def forma(perfil, profundidad):
+        posicion = model.create_entity("IfcAxis2Placement3D", Location=model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0, 0.0)))
+        solido = model.create_entity("IfcExtrudedAreaSolid", SweptArea=perfil, Position=posicion,
+                                     ExtrudedDirection=model.create_entity("IfcDirection", DirectionRatios=(0.0, 0.0, 1.0)), Depth=profundidad)
+        representacion = model.create_entity("IfcShapeRepresentation", ContextOfItems=contexto, RepresentationIdentifier="Body",
+                                             RepresentationType="SweptSolid", Items=[solido])
+        return model.create_entity("IfcProductDefinitionShape", Representations=[representacion])
+
+    def elemento(clase, nombre, x, y, z, perfil, profundidad, axis=None, ref=None):
+        e = model.create_entity(clase, GlobalId=guid.new(), Name=nombre,
+                                ObjectPlacement=_placement(model, x, y, z, axis=axis, ref_direction=ref),
+                                Representation=forma(perfil, profundidad))
+        model.create_entity("IfcRelAssociatesMaterial", GlobalId=guid.new(), RelatingMaterial=acero, RelatedObjects=[e])
+        model.create_entity("IfcRelContainedInSpatialStructure", GlobalId=guid.new(), RelatingStructure=piso, RelatedElements=[e])
+        return e
+
+    def rect(x, y):
+        return model.create_entity("IfcRectangleProfileDef", ProfileType="AREA", XDim=x, YDim=y)
+
+    ipe = model.create_entity("IfcIShapeProfileDef", ProfileType="AREA", ProfileName="IPE600", OverallWidth=220.0,
+                              OverallDepth=600.0, WebThickness=12.0, FlangeThickness=19.0)
+    elemento("IfcBeam", "VIGA", 0.0, 0.0, 300.0, ipe, 6000.0, axis=(1.0, 0.0, 0.0), ref=(0.0, 1.0, 0.0))
+    for i in range(1, 12):  # rigidizadores: placas de 10 mm clasificadas como IfcMember dentro de la viga
+        elemento("IfcMember", f"RIG_{i}", i * 500.0, 0.0, 19.0, rect(10.0, 200.0), 562.0)
+    elemento("IfcPlate", "PLACA_SUP", 3000.0, 0.0, 600.0, rect(6000.0, 260.0), 12.0)
+    model.write(ruta)

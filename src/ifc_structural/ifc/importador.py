@@ -45,6 +45,7 @@ revise en la aplicación.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -86,8 +87,9 @@ def _vertices_elemento(elemento, ajustes, factor_longitud: float) -> Optional[np
     except Exception as exc:  # ifcopenshell lanza distintas excepciones según el caso
         logger.warning("No se pudo obtener la geometría de %s (%s): %s", elemento.is_a(), elemento.GlobalId, exc)
         return None
-    verts = np.array(forma.geometry.verts, dtype=float).reshape(-1, 3)
-    return verts * factor_longitud
+    # ifcopenshell entrega la geometría ya en metros, sea cual sea la unidad del archivo (mm, cm, pies...):
+    # ``factor_longitud`` solo sirve para los valores crudos del IFC (dimensiones de perfiles, por ejemplo).
+    return np.array(forma.geometry.verts, dtype=float).reshape(-1, 3)
 
 
 def _pca(vertices: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -137,8 +139,34 @@ def _propiedades_mecanicas(material_ifc) -> Optional[Tuple[float, float, float]]
     return None
 
 
+#: Acero estructural por defecto (E = 210 GPa, ν = 0,3, γ = 78,5 kN/m³) para materiales sin propiedades cuyo nombre,
+#: o el del elemento o de su tipo, delata que son de acero (p. ej. «Muro básico:Acero T18 mm»).
+_ES_ACERO = re.compile(r"\b(acero|steel|inox|s\s?235|s\s?275|s\s?355|a36|a572|a992)\b", re.IGNORECASE)
+E_ACERO_KPA, POISSON_ACERO, DENSIDAD_ACERO_KN_M3 = 2.1e8, 0.3, 78.5
+
+
+def _nombres_del_elemento(elemento, material_ifc=None) -> str:
+    """Nombre del material, del elemento, de su tipo y de su clase: de ahí se adivina el material si el IFC no lo dice."""
+
+    nombres = [getattr(elemento, "Name", None), getattr(elemento, "ObjectType", None), getattr(material_ifc, "Name", None)]
+    try:
+        tipo = util_element.get_type(elemento)
+        if tipo is not None:
+            nombres.append(getattr(tipo, "Name", None))
+    except Exception:
+        pass
+    return " ".join(n for n in nombres if n)
+
+
 def _obtener_o_crear_material(proyecto: Proyecto, elemento) -> str:
     material_ifc = util_element.get_material(elemento)
+    if material_ifc is None and _ES_ACERO.search(_nombres_del_elemento(elemento)):
+        if "ACERO_POR_NOMBRE" not in proyecto.materiales:
+            proyecto.avisos.append("Los elementos sin material cuyo nombre indica acero se importaron como acero "
+                                   "(E = 210 GPa, ν = 0,3, γ = 78,5 kN/m³): revise el material.")
+            proyecto.agregar_material(Material(nombre="ACERO_POR_NOMBRE", modulo_elasticidad=E_ACERO_KPA,
+                                               modulo_poisson=POISSON_ACERO, densidad=DENSIDAD_ACERO_KN_M3))
+        return "ACERO_POR_NOMBRE"
     if material_ifc is None:
         nombre = "HORMIGON_DEFECTO"
         if nombre not in proyecto.materiales:
@@ -174,6 +202,10 @@ def _obtener_o_crear_material(proyecto: Proyecto, elemento) -> str:
         return nombre
 
     propiedades = _propiedades_mecanicas(material_base)
+    if propiedades is None and _ES_ACERO.search(_nombres_del_elemento(elemento, material_base)):
+        propiedades = (E_ACERO_KPA, POISSON_ACERO, DENSIDAD_ACERO_KN_M3)  # el nombre dice acero
+        proyecto.avisos.append(f"El material «{nombre}» no tiene propiedades en el IFC pero su nombre indica acero: "
+                               "se usó acero estructural (E = 210 GPa, ν = 0,3, γ = 78,5 kN/m³); revíselo.")
     if propiedades is None:
         logger.warning(
             "El material '%s' no tiene propiedades mecánicas en el IFC; "
@@ -379,6 +411,14 @@ def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: floa
         return
 
     centro, ejes, minimos, maximos = _pca(vertices)
+    # Una placa (rigidizador, cartela, platina) clasificada como viga o columna no es una barra: su sección es una
+    # lámina (espesor < 8 % del ancho) y idealizarla por el eje no representa nada. Se deja para la importación de
+    # sólidos, que conserva su geometría real.
+    extension = np.sort(maximos - minimos)
+    if extension[1] > 0 and extension[0] < 0.08 * extension[1]:
+        proyecto.avisos.append(f"{elemento.Name or elemento.GlobalId}: es una placa delgada y se importó como sólido "
+                               "(no como barra).")
+        return
     eje_principal = ejes[:, 0]
     punto_inicio = centro + eje_principal * minimos[0]
     punto_fin = centro + eje_principal * maximos[0]
@@ -504,7 +544,7 @@ def importar_solido_de_elemento(proyecto: Proyecto, elemento, ajustes, factor_lo
     except Exception as exc:  # ifcopenshell lanza distintas excepciones según el caso
         logger.debug("Sin geometría en %s %s: %s", elemento.is_a(), elemento.GlobalId, exc)
         return None
-    vertices = np.array(forma.geometry.verts, dtype=float).reshape(-1, 3) * factor_longitud
+    vertices = np.array(forma.geometry.verts, dtype=float).reshape(-1, 3)  # ya en metros
     triangulos = np.array(forma.geometry.faces, dtype=np.int64).reshape(-1, 3)
     if len(vertices) < 4 or len(triangulos) < 4:
         return None

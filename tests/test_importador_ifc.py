@@ -126,3 +126,27 @@ def test_portico_detecta_las_vigas_de_soporte_de_la_losa(proyecto_portico):
     assert all(losa.vigas_soporte), losa.vigas_soporte
     assert sorted(losa.vigas_soporte) == sorted(proyecto_portico.vigas)
     assert losa.espesor == pytest.approx(0.2, abs=1e-3)
+
+
+def test_un_ifc_en_milimetros_se_importa_en_metros_y_las_placas_no_son_barras(tmp_path):
+    """Regresión: la geometría de ifcopenshell ya viene en metros; escalarla otra vez con la unidad del archivo
+    dejaba el modelo 1000 veces más pequeño y rompía el análisis (NaN)."""
+
+    from .ayuda_ifc import crear_ifc_viga_armada_en_milimetros
+
+    ruta = tmp_path / "viga_mm.ifc"
+    crear_ifc_viga_armada_en_milimetros(str(ruta))
+    p = importar_ifc(str(ruta))
+    assert len(p.vigas) == 1 and not p.columnas  # los rigidizadores no son barras
+    viga = next(iter(p.vigas.values()))
+    a, b = p.nodos[viga.nodo_inicio], p.nodos[viga.nodo_fin]
+    assert abs(b.x - a.x) == pytest.approx(6.0, abs=1e-3)  # 6000 mm = 6 m
+    assert p.perfiles[viga.perfil].altura == pytest.approx(0.6)
+    assert len(p.solidos) == 12  # 11 rigidizadores y la placa superior, con su geometría real
+    extension = max(s.extension.max() for s in p.solidos.values())
+    assert extension == pytest.approx(6.0, abs=1e-3)
+    material = p.materiales[next(iter(p.materiales))]
+    assert material.modulo_elasticidad == pytest.approx(2.1e8)  # «Acero» en el nombre: acero estructural
+    from ifc_structural.solido.miembros import barras_de_longitud_cero
+
+    assert barras_de_longitud_cero(p) == []

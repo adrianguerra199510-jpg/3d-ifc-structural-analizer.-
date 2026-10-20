@@ -90,10 +90,22 @@ def _continuas(proyecto: Proyecto, a: ElementoBarra, b: ElementoBarra, nodo: str
     return abs(abs(float(np.dot(ea.e1, eb.e1))) - 1.0) < 1e-6 and ea.profundidad_en_e1 == eb.profundidad_en_e1
 
 
-def construir_miembros(proyecto: Proyecto) -> List[MiembroBarra]:
-    """Miembros del modelo con las barras continuas fundidas (sin recortar)."""
+def barras_de_longitud_cero(proyecto: Proyecto) -> List[str]:
+    """Barras con los dos extremos en el mismo punto (no se pueden mallar ni analizar)."""
 
-    barras = proyecto.todas_las_barras()
+    resultado = []
+    for id_, b in proyecto.todas_las_barras().items():
+        a, c = np.array(proyecto.nodos[b.nodo_inicio].coordenadas), np.array(proyecto.nodos[b.nodo_fin].coordenadas)
+        if not np.isfinite(a).all() or not np.isfinite(c).all() or float(np.linalg.norm(c - a)) < 1e-6:
+            resultado.append(id_)
+    return resultado
+
+
+def construir_miembros(proyecto: Proyecto) -> List[MiembroBarra]:
+    """Miembros del modelo con las barras continuas fundidas (sin recortar). Las barras de longitud cero se omiten."""
+
+    degeneradas = set(barras_de_longitud_cero(proyecto))
+    barras = {i: b for i, b in proyecto.todas_las_barras().items() if i not in degeneradas}
     por_nodo: Dict[str, List[str]] = {}
     for id_, b in barras.items():
         for n in (b.nodo_inicio, b.nodo_fin):

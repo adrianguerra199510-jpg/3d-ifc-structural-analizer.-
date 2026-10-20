@@ -36,21 +36,43 @@ class MallaLibre:
     descartados: int = 0  # hexaedros quitados por solapar con otras piezas
 
 
-def tamano_local(solido: SolidoGeneral, tamano: float) -> float:
-    """Tamaño de celda del sólido: el pedido, pero al menos 2 celdas (3 si no es una caja) en su dimensión menor."""
+def celdas_por_eje(solido: SolidoGeneral, tamano: float) -> np.ndarray:
+    """Número de celdas de la cuadrícula en X, Y y Z.
+
+    * Una **placa delgada** (caras paralelas a los ejes, espesor menor que la cuarta parte de su otra dimensión) lleva una
+      sola capa de hexaedros en el espesor (``C3D8I`` flexiona bien así) y celdas de ``tamano`` en su plano (como mucho
+      12 veces el espesor): un alma de 10 mm y 6 m de largo no se convierte en cientos de miles de celdas.
+    * Cualquier otra pieza lleva celdas cúbicas, al menos 2 por la dimensión menor (4 si no es una caja).
+    """
 
     dimensiones = np.maximum(solido.extension, 1e-9)
     caja = float(np.prod(dimensiones))
-    llenado = solido.volumen / caja if caja > 0 else 1.0
-    h = min(tamano, float(dimensiones.min()) / (2.0 if llenado > 0.97 else 4.0))
-    estimado = max(solido.volumen, 1e-12) / h**3
-    if estimado > MAXIMO_POR_SOLIDO:
-        h *= (estimado / MAXIMO_POR_SOLIDO) ** (1.0 / 3.0)
-    return h
+    llenado = solido.volumen / caja if caja > 0 and np.isfinite(solido.volumen) else 1.0
+    orden = np.argsort(dimensiones)
+    fino, medio = dimensiones[orden[0]], dimensiones[orden[1]]
+    if llenado > 0.9 and fino <= 0.25 * medio:
+        paso_plano = min(tamano, 12.0 * fino)
+        n = np.maximum(1, np.ceil(dimensiones / paso_plano - 1e-3)).astype(int)
+        n[orden[0]] = 1 if fino <= 0.6 * tamano else max(2, int(np.ceil(fino / tamano - 1e-3)))
+    else:
+        h = min(tamano, float(dimensiones.min()) / (2.0 if llenado > 0.97 else 4.0))
+        n = np.maximum(1, np.ceil(dimensiones / h - 1e-3)).astype(int)
+    # tope de hexaedros por sólido: se agrandan las celdas del plano (o todas)
+    while float(np.prod(n)) * max(llenado, 0.05) > MAXIMO_POR_SOLIDO and (n > 1).any():
+        n = np.where(n > 1, np.maximum(1, (n * 0.85).astype(int)), 1)
+    return n
+
+
+def tamano_local(solido: SolidoGeneral, tamano: float) -> float:
+    """Tamaño de celda mayor de la cuadrícula del sólido (el del plano en una placa delgada)."""
+
+    return float((np.maximum(solido.extension, 1e-9) / celdas_por_eje(solido, tamano)).max())
 
 
 def estimar_hexaedros_solido(solido: SolidoGeneral, tamano: float) -> int:
-    return int(max(solido.volumen, 1e-12) / tamano_local(solido, tamano) ** 3)
+    n = celdas_por_eje(solido, tamano)
+    llenado = solido.volumen / max(float(np.prod(np.maximum(solido.extension, 1e-9))), 1e-30) if np.isfinite(solido.volumen) else 1.0
+    return int(max(1.0, float(np.prod(n)) * min(max(llenado, 0.05), 1.0)))
 
 
 def malla_poligonal(vertices: np.ndarray, triangulos: np.ndarray) -> pv.PolyData:
@@ -81,9 +103,11 @@ def mallar_solido(solido: SolidoGeneral, tamano: float, mayores: Sequence[Solido
     el volumen común) y ``excluir`` devuelve, para una lista de puntos, cuáles están dentro de
     otras piezas (barras) que también le quitan volumen. ``None`` si no queda ningún hexaedro."""
 
-    h = tamano_local(solido, tamano)
     minimo, maximo = solido.minimo, solido.maximo
-    n = np.maximum(1, np.ceil((maximo - minimo) / h - 1e-3)).astype(int)
+    if not (np.isfinite(minimo).all() and np.isfinite(maximo).all() and np.isfinite(solido.volumen)):
+        raise ValueError(f"el sólido {solido.id} ({solido.nombre}) tiene coordenadas no válidas")
+    n = celdas_por_eje(solido, tamano)
+    h = float((np.maximum(maximo - minimo, 1e-9) / n).max())
     paso = (maximo - minimo) / n
     ejes = [minimo[a] + (np.arange(n[a]) + 0.5) * paso[a] for a in range(3)]
     centros = np.stack(np.meshgrid(*ejes, indexing="ij"), axis=-1).reshape(-1, 3)

@@ -87,10 +87,10 @@ vigas y columnas.
   |---|---|
   | Clic izquierdo | selecciona (Ctrl o Mayús suma o quita) |
   | Arrastrar con el izquierdo | rectángulo de selección: de izquierda a derecha, lo que queda dentro; de derecha a izquierda, lo que toca |
-  | Rueda | zoom |
+  | Rueda | zoom hacia el cursor (la cámara se acerca sin cambiar el ángulo de visión, con límites) |
   | Botón central (rueda pulsada) arrastrando | desplaza la vista |
   | Ctrl o Mayús + botón central arrastrando | gira la vista alrededor del punto enfocado, con el eje Z siempre vertical |
-  | Clic derecho | menú del elemento |
+  | Clic derecho | menú del elemento; sobre el fondo, el menú de la vista (estilo, vistas de cámara, qué se muestra, escala) |
 
   Sin botón central (touchpad): el grupo **Ratón** de la barra de vista cambia lo que hace el arrastre
   izquierdo a *Mover* o *Rotar* (un clic sin arrastrar sigue seleccionando); *Seleccionar* es el modo normal.
@@ -98,6 +98,8 @@ vigas y columnas.
   (asignaciones, materiales, casos, constraints y eliminaciones; los últimos 60). *Eliminar* (**Supr** con el
   visor activo, o clic derecho → «Eliminar del modelo») quita los elementos seleccionados con sus apoyos,
   cargas, conexiones y constraints, y los nodos que quedan sin uso; Ctrl+Z lo recupera.
+- **Estilo de vista** (*Ver → Estilo de vista* o clic derecho sobre el fondo): **sólido**, **transparente** (se ve a través
+  de las piezas, que se siguen pudiendo elegir) y **alambre** (solo aristas).
 - **Tamaño de los símbolos:** los apoyos, las flechas de las cargas, los constraints y las etiquetas se dimensionan
   según el modelo (y, si hay barras, la longitud típica). *Ver → Escala de símbolos…* cambia cada parámetro al instante,
   como **porcentaje** del tamaño automático o como **tamaño en píxeles** de pantalla (que se mantiene al acercar o
@@ -235,6 +237,13 @@ y la conserva como **sólido de forma libre**:
   la cámara. Con Ctrl/Mayús se suma a la selección actual.
 - **Apoyos y cargas.** Los interruptores de apoyos, cargas y constraints de la barra de vista (y *Ver → Mostrar…*)
   los ocultan o muestran; el tamaño se cambia en *Ver → Escala de símbolos…*; en las cargas sobre una superficie la flecha nunca es mayor que ella.
+- **Archivos reales (Revit y similares).** Se respeta la unidad del archivo (mm, cm, pies): la geometría se importa siempre
+  en metros. Los materiales sin propiedades cuyo nombre (o el del elemento o su tipo) dice *acero* se importan como
+  acero estructural y se avisa. Las placas delgadas clasificadas como viga, columna o miembro (rigidizadores) y los muros
+  o losas que son chapas se mallan con **una capa** de hexaedros en el espesor y celdas de hasta 12 veces el espesor en
+  su plano (un alma de 10 mm y 6 m no se convierte en cientos de miles de celdas). Las piezas sueltas (sin tocar a
+  nada, sin apoyos ni cargas) no abortan el análisis: se dejan fijas y se avisa. Probado con una viga armada en cajón
+  exportada de Revit en milímetros (`Lifting Device`).
 - **Qué no hace.** Los sólidos no participan en el análisis de barras (se avisa) y no se modelan
   pernos con pretensión, contacto con separación ni fricción. Comprobado con CalculiX contra la
   teoría (voladizo `PL³/3EI`, compresión `σ = p`, perno en tracción `FL/EA`) en
