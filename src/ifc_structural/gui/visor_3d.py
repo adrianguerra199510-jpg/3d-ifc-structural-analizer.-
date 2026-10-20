@@ -19,6 +19,7 @@ elemento es una malla aparte cuya celda número ``i`` es su cara ``i``
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import warnings
@@ -92,6 +93,28 @@ class _Visual:
     #: Sólidos de forma libre: superficie (cara) a la que pertenece cada triángulo de la malla.
     cara_de_celda: Optional[np.ndarray] = None
     actor_bordes: object = None  # líneas de contorno de las superficies (solo sólidos de forma libre)
+
+
+def conserva_camara(funcion):
+    """Al dibujar o quitar actores, pyvista reajusta la cámara a lo que hay en escena y se pierde el zoom y el
+    encuadre del usuario: este decorador devuelve la cámara a como estaba."""
+
+    @functools.wraps(funcion)
+    def envuelta(self, *args, **kwargs):
+        cam = self.renderer.GetActiveCamera()
+        estado = (cam.GetPosition(), cam.GetFocalPoint(), cam.GetViewUp(), cam.GetViewAngle(), cam.GetParallelScale())
+        try:
+            return funcion(self, *args, **kwargs)
+        finally:
+            cam = self.renderer.GetActiveCamera()
+            cam.SetPosition(*estado[0])
+            cam.SetFocalPoint(*estado[1])
+            cam.SetViewUp(*estado[2])
+            cam.SetViewAngle(estado[3])
+            cam.SetParallelScale(estado[4])
+            self.renderer.ResetCameraClippingRange()
+
+    return envuelta
 
 
 class Visor3D(QtInteractor):
@@ -192,6 +215,7 @@ class Visor3D(QtInteractor):
             if visual.actor_bordes is not None:
                 visual.actor_bordes.GetProperty().SetLineWidth(2.2 if self._estilo == ESTILO_ALAMBRE else 1.2)
 
+    @conserva_camara
     def reemplazar_modelo(self, proyecto: Proyecto) -> None:
         """Dibuja otro estado del proyecto (deshacer, rehacer o eliminar) sin mover la cámara."""
 
@@ -706,6 +730,7 @@ class Visor3D(QtInteractor):
     # ------------------------------------------------------------------
     # Apoyos y cargas
     # ------------------------------------------------------------------
+    @conserva_camara
     def mostrar_asignaciones(
         self,
         apoyos: Sequence,
@@ -975,6 +1000,7 @@ class Visor3D(QtInteractor):
     # ------------------------------------------------------------------
     # Vista de esfuerzos
     # ------------------------------------------------------------------
+    @conserva_camara
     def mostrar_esfuerzos(
         self,
         malla: MallaTensiones,
@@ -1212,6 +1238,7 @@ class Visor3D(QtInteractor):
         for titulo in list(self.scalar_bars.keys()):
             self.remove_scalar_bar(titulo, render=False)
 
+    @conserva_camara
     def volver_al_modelo(self, reconstruir: bool = False) -> None:
         """Vuelve a la vista del modelo (o la reconstruye desde cero)."""
 

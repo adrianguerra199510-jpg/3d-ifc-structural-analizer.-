@@ -147,6 +147,22 @@ def main(salida: Path) -> None:
     ventana.grab().save(str(salida / "03b_flechas_ocultas.png"))
     barra.boton_flechas.setChecked(True)
     bombear()
+    # al dibujar apoyos o cargas la cámara no se reajusta (se perdía el zoom del usuario)
+    camara_u = visor.renderer.GetActiveCamera()
+    foco_u, pos_u = np.array(camara_u.GetFocalPoint()), np.array(camara_u.GetPosition())
+    camara_u.SetPosition(*(foco_u + (pos_u - foco_u) * 0.3))  # el usuario acerca la vista
+    camara_u.SetFocalPoint(*(foco_u + np.array([0.02, 0.01, 0.0])))
+    antes_u = (np.array(camara_u.GetPosition()), np.array(camara_u.GetFocalPoint()), camara_u.GetViewAngle())
+    ventana._refrescar_asignaciones()
+    barra.boton_apoyos.setChecked(False)
+    barra.boton_apoyos.setChecked(True)
+    visor.reemplazar_modelo(proyecto)
+    ventana._refrescar_asignaciones()
+    bombear()
+    despues_u = (np.array(camara_u.GetPosition()), np.array(camara_u.GetFocalPoint()), camara_u.GetViewAngle())
+    verificar(all(np.allclose(a, b, atol=1e-9) for a, b in zip(antes_u, despues_u)), f"el zoom del usuario se conserva al dibujar asignaciones: {antes_u} {despues_u}")
+    visor.reset_camera()
+    vista("view_isometric")
     largo_normal = visor.actors["ASIG_CARGAS"].GetMapper().GetInput().GetBounds()
     from ifc_structural.gui.dialogo_escalas import DialogoEscalas
     from ifc_structural.gui.visor_3d import ESCALA_PIXELES, ESCALA_PORCENTAJE
