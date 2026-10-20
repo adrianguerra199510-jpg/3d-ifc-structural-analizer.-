@@ -201,8 +201,6 @@ def main(salida: Path) -> None:
         bombear()
 
     # Estilos de vista (Ver → Estilo de vista) y menú del clic derecho sobre el fondo
-    from PySide6.QtWidgets import QMenu
-
     from ifc_structural.gui.visor_3d import ESTILO_ALAMBRE, ESTILO_SOLIDO, ESTILO_TRANSPARENTE
 
     ventana.accion_modo_elemento.trigger()
@@ -225,7 +223,8 @@ def main(salida: Path) -> None:
     verificar(visor.estilo == ESTILO_SOLIDO and actor_poste.GetProperty().GetOpacity() == 1.0, "y el sólido lo restablece")
     visor.seleccionar([])
     menus = []
-    QMenu.exec = lambda self, *a, **k: menus.append(self)
+    visor.menu_fondo.disconnect()  # el menú real se abriría de forma modal: se recoge para inspeccionarlo
+    visor.menu_fondo.connect(lambda: menus.append(ventana.construir_menu_fondo()))
     arrastrar_boton(Qt.RightButton, 60, 60, 60, 60)  # clic derecho en una esquina vacía del visor
     verificar(menus and any(a.text() == "Estilo de vista" for a in menus[-1].actions()), "el clic derecho sobre el fondo ofrece el estilo de vista")
     ventana._acciones_estilo[ESTILO_SOLIDO].setChecked(True)
