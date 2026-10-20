@@ -15,7 +15,7 @@ from typing import Any, Dict
 
 from .cargas import (
     Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion, PerfilPresion,
-    SistemaReferencia,
+    SistemaReferencia, UnionSuperficie,
 )
 from .solidos import a_diccionario, desde_diccionario
 from .casos_carga import Combinacion, CasoCarga, TipoCaso
@@ -61,6 +61,7 @@ def guardar_proyecto(
         "nombre": proyecto.nombre,
         "ruta_ifc": proyecto.ruta_ifc,
         "solidos": [a_diccionario(s) for s in proyecto.solidos.values()],
+        "uniones": [_a_dict(u) for u in proyecto.uniones],
         "cargas_superficie": {caso: [_a_dict(c) for c in lista] for caso, lista in (cargas_superficie_por_caso or {}).items()},
         "nodos": [_a_dict(n) for n in proyecto.nodos.values()],
         "materiales": [_a_dict(m) for m in proyecto.materiales.values()],
@@ -126,6 +127,8 @@ def cargar_proyecto(ruta: Path):
         proyecto.muros[m["id"]] = Muro(**m)
 
     proyecto.ruta_ifc = datos.get("ruta_ifc")
+    for u in datos.get("uniones", []):
+        proyecto.uniones.append(UnionSuperficie(**u))
     for s in datos.get("solidos", []):
         proyecto.solidos[s["id"]] = desde_diccionario(s)
 

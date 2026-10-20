@@ -28,6 +28,8 @@ class SuperficieMallada:
     centro: np.ndarray  # (n, 3)
     normal: np.ndarray  # (n, 3) unitaria, hacia fuera
     area: np.ndarray  # (n,)
+    hexaedro: np.ndarray = None  # (n,) índice global del hexaedro de cada cara
+    cara: np.ndarray = None  # (n,) número de cara 1..6 de CalculiX
 
     @property
     def area_total(self) -> float:
@@ -48,7 +50,8 @@ def _geometria(malla: MallaSolida, parte: ParteMalla, hexaedro_local: np.ndarray
     normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-30)
     centro_hex = malla.coordenadas[hexa].mean(axis=1)
     normal[np.einsum("ij,ij->i", normal, centro - centro_hex) < 0] *= -1.0
-    return SuperficieMallada(parte=malla.partes.index(parte), nodos=nodos, centro=centro, normal=normal, area=area)
+    return SuperficieMallada(parte=malla.partes.index(parte), nodos=nodos, centro=centro, normal=normal, area=area,
+                             hexaedro=parte.primer_hexaedro + np.asarray(hexaedro_local), cara=np.asarray(cara))
 
 
 def _parte_de(malla: MallaSolida, tipo: str, id_: str) -> Optional[ParteMalla]:
@@ -111,7 +114,7 @@ def superficie_en_malla(proyecto: Proyecto, malla: MallaSolida, tipo: str, id_: 
     if not marca.any():
         return None
     return SuperficieMallada(parte=malla.partes.index(parte), nodos=f.nodos[marca], centro=f.centro[marca],
-                             normal=f.normal[marca], area=f.area[marca])
+                             normal=f.normal[marca], area=f.area[marca], hexaedro=f.hexaedro[marca], cara=f.cara[marca])
 
 
 # ---------------------------------------------------------------------------

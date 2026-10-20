@@ -96,7 +96,7 @@ def main(salida: Path) -> None:
 
     # Carga: presión sobre la cara superior de la placa en L
     vista("view_xy")
-    clic(*a_pantalla(0.1, 0.15, 0.55))
+    clic(*a_pantalla(0.3, 0.1, 0.55))
     verificar(visor.seleccion == [Objetivo("SOLIDO", ids["PLACA_L"], cara_con_normal("PLACA_L", (0, 0, 1)))],
               f"cara superior de la placa en L: {visor.seleccion}")
 
@@ -151,6 +151,56 @@ def main(salida: Path) -> None:
     verificar((largo_grande[5] - largo_grande[4]) > 1.15 * (largo_normal[5] - largo_normal[4]), "el deslizador agranda las flechas")
     barra.deslizador_flechas.setValue(100)
     bombear()
+
+    # Selección por zona: arrastrar un rectángulo (modo Cara: izquierda→derecha, solo caras que quedan dentro)
+    def arrastrar(x0, y0, x1, y1, modificador=Qt.NoModifier):
+        alto = visor.height() - 1
+        QTest.mousePress(visor, Qt.LeftButton, modificador, QPoint(x0, alto - y0))
+        QTest.mouseMove(visor, QPoint((x0 + x1) // 2, alto - (y0 + y1) // 2))
+        QTest.mouseMove(visor, QPoint(x1, alto - y1))
+        QTest.mouseRelease(visor, Qt.LeftButton, modificador, QPoint(x1, alto - y1))
+        bombear()
+
+    ventana.accion_modo_cara.trigger()
+    vista("view_xy")
+    xa, ya = a_pantalla(0.0, 0.0, 0.55)
+    xb, yb = a_pantalla(0.4, 0.3, 0.55)
+    margen = 40
+    # ventana grande que contiene la placa base y todo lo demás: de izquierda a derecha solo caras completas
+    arrastrar(min(xa, xb) - margen, min(ya, yb) - margen, max(xa, xb) + margen, max(ya, yb) + margen, Qt.ShiftModifier)
+    caras_sel = {(o.tipo, o.id, o.cara) for o in visor.seleccion}
+    verificar((("SOLIDO", ids["PLACA_L"], cara_con_normal("PLACA_L", (0, 0, 1)))) in caras_sel,
+              f"la cara superior de la placa en L queda dentro de la ventana: {caras_sel}")
+    verificar(all(o.cara is not None for o in visor.seleccion) and len(visor.seleccion) >= 2, "se eligen superficies")
+    ventana.grab().save(str(salida / "03d_seleccion_zona.png"))
+    # rectángulo pequeño de derecha a izquierda (toca): solo la placa en L, que está arriba, en elemento
+    ventana.accion_modo_elemento.trigger()
+    vista("view_xy")
+    cx, cy = a_pantalla(0.3, 0.1, 0.55)
+    arrastrar(cx + 6, cy + 6, cx - 6, cy - 6, Qt.ControlModifier)
+    verificar(Objetivo("SOLIDO", ids["PLACA_L"]) in visor.seleccion, f"zona que toca a la placa en L: {visor.seleccion}")
+    # modo zona activado desde la barra: arrastrar sin teclas ya no gira la vista
+    ventana.barra_vista.boton_zona.setChecked(True)
+    arrastrar(min(xa, xb) - margen, min(ya, yb) - margen, max(xa, xb) + margen, max(ya, yb) + margen)
+    verificar(len(visor.seleccion) == len(proyecto.solidos), f"la ventana grande elige los 4 sólidos: {visor.seleccion}")
+    ventana.barra_vista.boton_zona.setChecked(False)
+    visor.seleccionar([])
+    vista("view_isometric")
+
+    # Constraint entre dos elementos enteros: se unen sus caras más cercanas (tapa del poste y cara inferior de la placa en L)
+    ventana.accion_modo_elemento.trigger()
+    visor.seleccionar([Objetivo("SOLIDO", ids["PLACA_L"]), Objetivo("SOLIDO", ids["POSTE"])])
+    bombear()
+    ventana.asignar_union_superficie()
+    verificar(len(proyecto.uniones) == 1 and proyecto.uniones[0].tipo == "SOLDADURA", f"constraint creado: {proyecto.uniones}")
+    u = proyecto.uniones[0]
+    caras = {(u.a_id, u.a_cara), (u.b_id, u.b_cara)}
+    verificar(caras == {(ids["PLACA_L"], cara_con_normal("PLACA_L", (0, 0, -1))), (ids["POSTE"], cara_con_normal("POSTE", (0, 0, 1)))},
+              f"caras más cercanas elegidas: {caras}")
+    visor.seleccionar([])
+    vista("view_isometric")
+    verificar("ASIG_UNIONES" in visor.actors, "el constraint se dibuja")
+    ventana.grab().save(str(salida / "03c_constraint.png"))
 
     # Análisis 3D
     from ifc_structural.gui.dialogo_analisis_3d import DialogoAnalisis3D

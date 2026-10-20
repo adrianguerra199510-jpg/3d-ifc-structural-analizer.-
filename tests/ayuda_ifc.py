@@ -317,7 +317,7 @@ def crear_ifc_geometria_libre(ruta: str) -> None:
     - Placa base 400 x 300 x 20 mm (IfcPlate), con z = 0 a 0,02.
     - Poste cilíndrico de radio 50 mm y 0,5 m de alto (IfcBuildingElementProxy) en el centro de la placa.
     - Cartela triangular de 20 mm de espesor soldada a la placa y al poste (IfcPlate, plano XZ).
-    - Placa superior en L de 30 mm sobre el poste (perfil poligonal cualquiera, IfcPlate).
+    - Placa superior en L de 30 mm sobre el poste (perfil poligonal cualquiera, IfcPlate) que cubre toda la tapa del poste.
     """
 
     model = ifcopenshell.file(schema="IFC4")
@@ -363,7 +363,7 @@ def crear_ifc_geometria_libre(ruta: str) -> None:
         Representation=forma(poligono([(0.0, 0.0), (0.2, 0.0), (0.0, 0.3)]), 0.02))
     en_l = model.create_entity(
         "IfcPlate", GlobalId=guid.new(), Name="PLACA_L", ObjectPlacement=_placement(model, 0.0, 0.0, 0.52),
-        Representation=forma(poligono([(0.05, 0.0), (0.35, 0.0), (0.35, 0.1), (0.15, 0.1), (0.15, 0.3), (0.05, 0.3)]), 0.03))
+        Representation=forma(poligono([(0.1, 0.05), (0.35, 0.05), (0.35, 0.21), (0.26, 0.21), (0.26, 0.3), (0.1, 0.3)]), 0.03))
     for elemento in (base, poste, cartela, en_l):
         asociar(elemento)
     model.write(ruta)

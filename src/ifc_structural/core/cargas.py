@@ -346,3 +346,41 @@ class CargaArea:
             self.nombre = self.id
         if not self.losa_id and not self.muro_id:
             raise ValueError("CargaArea debe referenciar una losa o un muro")
+
+
+TIPOS_UNION = ("SOLDADURA", "CUERPO_RIGIDO", "IGUALAR", "ARTICULACION")
+
+
+@dataclass
+class UnionSuperficie:
+    """Constraint entre dos superficies (como los joint constraints de SAP), solo en el análisis 3D.
+
+    * ``SOLDADURA``: las dos superficies quedan unidas punto a punto (``*TIE``), aunque haya una holgura.
+    * ``CUERPO_RIGIDO``: las dos superficies se mueven juntas como un único cuerpo rígido.
+    * ``IGUALAR``: los puntos de una superficie igualan el movimiento del punto más cercano de la otra
+      en los grados marcados (Ux, Uy, Uz); los demás quedan libres (deslizamiento).
+    * ``ARTICULACION``: cada superficie es rígida y sus centros se igualan en las traslaciones; los giros
+      marcados (Rx, Ry, Rz) también se igualan y los demás quedan libres (rótula).
+    """
+
+    id: str
+    tipo: str
+    a_tipo: str
+    a_id: str
+    a_cara: int
+    b_tipo: str
+    b_id: str
+    b_cara: int
+    ux: bool = True
+    uy: bool = True
+    uz: bool = True
+    rx: bool = False
+    ry: bool = False
+    rz: bool = False
+    nombre: str = ""
+
+    def grados(self) -> List[int]:
+        """Grados de libertad igualados (1-6, convención CalculiX)."""
+
+        banderas = [self.ux, self.uy, self.uz, self.rx, self.ry, self.rz]
+        return [i + 1 for i, activo in enumerate(banderas) if activo]

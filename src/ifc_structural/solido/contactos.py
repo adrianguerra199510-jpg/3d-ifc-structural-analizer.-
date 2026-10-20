@@ -10,7 +10,7 @@ pernos ni contacto con separación o fricción.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -120,7 +120,8 @@ def _caras_en_contacto(malla: MallaSolida, i: int, j: int, tol: float):
     return i, j, f_a, f_b, float(a.area[sorted(en_a)].sum()), float(b.area[sorted(en_b)].sum())
 
 
-def partes_sin_conexion(malla: MallaSolida, uniones: List[Union], partes_apoyadas: Set[int]) -> List[int]:
+def partes_sin_conexion(malla: MallaSolida, uniones: List[Union], partes_apoyadas: Set[int],
+                        enlaces: Sequence[Tuple[int, int]] = ()) -> List[int]:
     """Partes que no están unidas (directa o indirectamente) a ninguna parte con apoyos."""
 
     padre = list(range(len(malla.partes)))
@@ -133,5 +134,7 @@ def partes_sin_conexion(malla: MallaSolida, uniones: List[Union], partes_apoyada
 
     for u in uniones:
         padre[buscar(u.parte_esclava)] = buscar(u.parte_maestra)
+    for a, b in enlaces:  # constraints manuales entre superficies de dos partes
+        padre[buscar(a)] = buscar(b)
     raices_apoyadas = {buscar(p) for p in partes_apoyadas}
     return [i for i in range(len(malla.partes)) if buscar(i) not in raices_apoyadas]

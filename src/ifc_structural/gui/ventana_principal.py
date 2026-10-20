@@ -51,7 +51,7 @@ from ..core.asignacion import (
     descripcion,
 )
 from ..core.cargas import (
-    Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion,
+    Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion, UnionSuperficie,
 )
 from ..core.casos_carga import CasoCarga, Combinacion, casos_y_combinaciones_por_defecto
 from ..core.materiales import descripcion_material
@@ -65,7 +65,7 @@ from .dialogo_analisis_3d import DialogoAnalisis3D
 from .dialogo_acerca import DialogoAcerca
 from .dialogo_apoyos import DialogoApoyo
 from .dialogo_cargas import DialogoCargas
-from .dialogo_superficie import DialogoApoyoSuperficie, DialogoCargaSuperficie
+from .dialogo_superficie import DialogoApoyoSuperficie, DialogoCargaSuperficie, DialogoUnionSuperficie
 from .dialogo_casos import DialogoCasos
 from .dialogo_conexion import DialogoConexion
 from .dialogo_materiales import DialogoAsignarMaterial, DialogoMateriales
@@ -246,6 +246,7 @@ class VentanaPrincipal(QMainWindow):
 
         menu = self.menuBar().addMenu("A&signar")
         menu.addActions([self.accion_apoyo, self.accion_carga, self.accion_material, self.accion_conexion])
+        menu.addAction(icono("conectar"), "Constraint 3D entre superficies…", self.asignar_union_superficie)
         menu.addSeparator()
         menu.addActions([self.accion_materiales, self.accion_casos])
 
@@ -358,6 +359,7 @@ class VentanaPrincipal(QMainWindow):
         self.pagina_bienvenida.importar_solicitado.connect(self._importar_ifc)
         self.pagina_bienvenida.abrir_solicitado.connect(self._abrir_proyecto)
         self.barra_vista.vista_solicitada.connect(self._cambiar_vista)
+        self.barra_vista.zona_activada.connect(self.visor.set_modo_zona)
         self.barra_vista.flechas_visibles.connect(lambda v: self.visor.configurar_flechas(visibles=v))
         self.barra_vista.escala_flechas.connect(lambda e: self.visor.configurar_flechas(escala=e))
         self.barra_vista.visibilidad_cambiada.connect(lambda t, v: self._cambiar_visibilidad(t, v, desde_menu=False))
@@ -403,7 +405,7 @@ class VentanaPrincipal(QMainWindow):
         self.accion_analizar_3d.setEnabled((hay_modelo or hay_solidos) and not ocupado)
         self.accion_apoyo.setEnabled(hay_modelo or hay_solidos)
         self.accion_material.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
-        self.accion_conexion.setEnabled(len(self.proyecto.todas_las_barras()) >= 2)
+        self.accion_conexion.setEnabled(len(self.proyecto.todas_las_barras()) >= 2 or len(self.proyecto.solidos) + len(self.proyecto.losas) + len(self.proyecto.muros) >= 2)
         self.accion_materiales.setEnabled(True)
         self.accion_carga.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
         self.accion_ver_esfuerzos.setEnabled(self.resultado is not None)
@@ -552,7 +554,7 @@ class VentanaPrincipal(QMainWindow):
     # Asignaciones
     # ------------------------------------------------------------------
     def _ids_en_uso(self) -> set:
-        usados = {a.id for a in self.apoyos} | {c.id for c in self.conexiones}
+        usados = {a.id for a in self.apoyos} | {c.id for c in self.conexiones} | {u.id for u in self.proyecto.uniones}
         for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso,
                          self.cargas_superficie_por_caso):
             usados.update(c.id for lista in por_caso.values() for c in lista)
@@ -697,7 +699,35 @@ class VentanaPrincipal(QMainWindow):
             self._marcar_resultados_desactualizados()
             self.statusBar().showMessage(f"{len(self.proyecto.materiales)} material(es) definidos.")
 
+    def asignar_union_superficie(self) -> None:
+        """Constraint 3D entre dos superficies (o dos elementos: se toman las caras más cercanas)."""
+
+        pares = list(dict.fromkeys((o.tipo, o.id, o.cara) for o in self.visor.seleccion))
+        if len(pares) != 2:
+            QMessageBox.information(
+                self, "Constraint entre superficies",
+                "Seleccione exactamente dos superficies (modo «Cara») o dos elementos (modo «Elemento»); Ctrl + clic suma el "
+                "segundo. Con elementos enteros se unen sus caras más cercanas.",
+            )
+            return
+        a, b = (Objetivo(*p) for p in pares)
+        dialogo = DialogoUnionSuperficie(self.proyecto, a, b, self)
+        if not dialogo.exec():
+            return
+        try:
+            union = dialogo.union(self._siguiente_id("CT"))
+        except ErrorAsignacion as exc:
+            QMessageBox.warning(self, "No se pudo crear el constraint", str(exc))
+            return
+        self.proyecto.uniones.append(union)
+        self._marcar_resultados_desactualizados()
+        self._refrescar_asignaciones()
+        self.statusBar().showMessage(f"Constraint creado: {union.nombre}. Se aplica en ANALIZAR 3D.")
+
     def asignar_conexion(self) -> None:
+        if any(o.tipo in ("SOLIDO", "LOSA", "MURO") for o in self.visor.seleccion):
+            self.asignar_union_superficie()  # entre sólidos libres, losas o muros solo hay constraints de superficie
+            return
         barras = list(dict.fromkeys(o for o in self.visor.seleccion if o.tipo in ("VIGA", "COLUMNA")))
         distintas = {o.id for o in barras}
         if len(distintas) != 2:
@@ -753,6 +783,10 @@ class VentanaPrincipal(QMainWindow):
         accion.setEnabled(len(barras) == 2)
         if len(barras) != 2:
             accion.setToolTip("Seleccione dos vigas/columnas (Ctrl + clic)")
+        union = menu.addAction("Constraint 3D entre superficies… (análisis 3D)", self.asignar_union_superficie)
+        union.setEnabled(len(set((o.tipo, o.id, o.cara) for o in seleccion)) == 2)
+        if not union.isEnabled():
+            union.setToolTip("Seleccione dos superficies o dos elementos (Ctrl + clic)")
         menu.addSeparator()
         menu.addAction("Propiedades…", self.mostrar_propiedades)
         menu.addAction("Quitar la selección", lambda: self.visor.seleccionar([]))
@@ -817,6 +851,7 @@ class VentanaPrincipal(QMainWindow):
                  else "Apoyo en superficie" if isinstance(a, ApoyoSuperficie) else "Apoyo"), a.id) not in claves
         ]
         self.conexiones = [c for c in self.conexiones if ("Conexión", c.id) not in claves]
+        self.proyecto.uniones = [u for u in self.proyecto.uniones if ("Constraint", u.id) not in claves]
         for tipo, por_caso in (
             ("Carga en superficie", self.cargas_superficie_por_caso),
             ("Carga de área", self.cargas_area_por_caso),
@@ -837,6 +872,7 @@ class VentanaPrincipal(QMainWindow):
             self.cargas_puntuales_por_caso.get(caso, []),
             self.conexiones,
             self.cargas_superficie_por_caso.get(caso, []),
+            self.proyecto.uniones,
         )
         self._refrescar_arbol()
 
@@ -982,6 +1018,7 @@ class VentanaPrincipal(QMainWindow):
         lineales = {k: list(v) for k, v in self.cargas_lineales_por_caso.items()}
         puntuales = {k: list(v) for k, v in self.cargas_puntuales_por_caso.items()}
         superficiales = {k: list(v) for k, v in self.cargas_superficie_por_caso.items()}
+        uniones = list(self.proyecto.uniones)
         configuracion = self.configuracion
 
         def trabajo(avanzar):
@@ -990,6 +1027,7 @@ class VentanaPrincipal(QMainWindow):
                     proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,
                     configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx_efectiva, avanzar,
                     tamano=tamano, conexiones=conexiones, cargas_superficie_por_caso=superficiales,
+                    uniones_manuales=uniones,
                 )
             return ejecutar_analisis(
                 proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,

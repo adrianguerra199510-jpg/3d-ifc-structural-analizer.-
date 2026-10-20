@@ -8,7 +8,7 @@ import numpy as np
 import pyvista as pv
 import pytest
 
-from ifc_structural.core.cargas import ApoyoSuperficie, CargaSuperficie
+from ifc_structural.core.cargas import ApoyoSuperficie, CargaSuperficie, UnionSuperficie
 from ifc_structural.core.casos_carga import CasoCarga, Combinacion, TipoCaso
 from ifc_structural.core.modelo import Material, Proyecto
 from ifc_structural.core.persistencia import cargar_cargas_superficie, cargar_proyecto, guardar_proyecto
@@ -244,3 +244,116 @@ def test_los_solidos_y_las_asignaciones_en_superficies_se_guardan_y_se_recuperan
     s2 = p2.solidos["S1"]
     assert len(s2.caras) == 6 and s2.volumen == pytest.approx(s.volumen)
     assert np.allclose(s2.vertices, s.vertices)
+
+
+# ---------------------------------------------------------------------------
+# Constraints entre superficies
+# ---------------------------------------------------------------------------
+
+
+def _union(tipo, a, ca, b, cb, grados=(True,) * 6):
+    return UnionSuperficie(id="UN1", tipo=tipo, a_tipo="SOLIDO", a_id=a.id, a_cara=cara_hacia(a, ca), b_tipo="SOLIDO",
+                           b_id=b.id, b_cara=cara_hacia(b, cb), ux=grados[0], uy=grados[1], uz=grados[2],
+                           rx=grados[3], ry=grados[4], rz=grados[5], nombre=tipo)
+
+
+def _analizar_con_uniones(p, apoyos, cargas, uniones, tmp_path, tamano=0.05):
+    casos, combinaciones = _casos()
+    return ejecutar_analisis_solido(p, casos, combinaciones, apoyos, {}, {}, {}, tmp_path, tamano=tamano,
+                                    cargas_superficie_por_caso={"L": cargas}, uniones_manuales=uniones)
+
+
+@requiere_ccx
+def test_soldadura_entre_dos_superficies_con_holgura_se_comporta_como_una_sola_pieza(tmp_path: Path):
+    b, h, F = 0.1, 0.1, 10.0
+    a, c = caja("A", 0, 0, 0, 0.5, b, h), caja("B", 0.53, 0, 0, 0.47, b, h)  # 3 cm de holgura
+    p = proyecto_con(a, c)
+    apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="A", cara=cara_hacia(a, (-1, 0, 0)), ux=True, uy=True, uz=True)
+    carga = _carga(c, (1, 0, 0), "FUERZA", F, (0, 0, -1))
+    with pytest.raises(ErrorAnalisis):  # sin constraint, B queda flotando
+        _analizar_con_uniones(p, [apoyo], [carga], [], tmp_path)
+    r = _analizar_con_uniones(p, [apoyo], [carga], [_union("SOLDADURA", a, (1, 0, 0), c, (-1, 0, 0))], tmp_path)
+    x, u = r.malla_tensiones.coordenadas, r.desplazamientos_por_caso["L"]
+    flecha = -u[np.isclose(x[:, 0], 1.0), 2].mean()
+    assert flecha == pytest.approx(F * 1.0**3 / (3 * E * b * h**3 / 12), rel=0.10)
+
+
+@requiere_ccx
+def test_igualar_movimientos_de_dos_superficies_equivale_a_soldarlas(tmp_path: Path):
+    a, c = caja("A", 0, 0, 0, 0.2, 0.2, 0.1), caja("B", 0, 0, 0.101, 0.2, 0.2, 0.3)  # 1 mm de holgura
+    base = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="A", cara=cara_hacia(a, (0, 0, -1)), ux=True, uy=True, uz=True)
+    carga = _carga(c, (1, 0, 0), "FUERZA", 20.0, (0, 1, 0))
+    p = proyecto_con(a, c)
+    r1 = _analizar_con_uniones(p, [base], [carga], [_union("IGUALAR", a, (0, 0, 1), c, (0, 0, -1))], tmp_path / "i")
+    r2 = _analizar_con_uniones(p, [base], [carga], [_union("SOLDADURA", a, (0, 0, 1), c, (0, 0, -1))], tmp_path / "s")
+
+    def punta(r):
+        return r.desplazamientos_por_caso["L"][np.isclose(r.malla_tensiones.coordenadas[:, 2], 0.401), 1].mean()
+
+    assert punta(r1) > 0 and punta(r1) == pytest.approx(punta(r2), rel=0.05)
+
+
+@requiere_ccx
+def test_cuerpo_rigido_entre_dos_superficies_las_mueve_como_una_sola_pieza(tmp_path: Path):
+    a, c = caja("A", 0, 0, 0, 0.2, 0.2, 0.2), caja("B", 0.3, 0, 0, 0.2, 0.2, 0.2)
+    apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="A", cara=cara_hacia(a, (-1, 0, 0)), ux=True, uy=True, uz=True)
+    carga = _carga(c, (1, 0, 0), "FUERZA", 10.0, (0, 0, -1))
+    r = _analizar_con_uniones(proyecto_con(a, c), [apoyo], [carga], [_union("CUERPO_RIGIDO", a, (1, 0, 0), c, (-1, 0, 0))], tmp_path)
+    x, u = r.malla_tensiones.coordenadas, r.desplazamientos_por_caso["L"]
+    en_a, en_b = np.isclose(x[:, 0], 0.2), np.isclose(x[:, 0], 0.3)
+    nodos = np.where(en_a | en_b)[0]
+    # ajuste de un movimiento de cuerpo rígido u = t + θ × r: el residuo debe ser nulo
+    r_ = x[nodos] - x[nodos].mean(axis=0)
+    filas = np.vstack([np.hstack([np.eye(3), -_antisimetrica(ri)]) for ri in r_])
+    solucion, *_ = np.linalg.lstsq(filas, u[nodos].ravel(), rcond=None)
+    assert np.abs(filas @ solucion - u[nodos].ravel()).max() < 1e-9
+    assert np.abs(u[nodos, 2]).max() > 1e-6  # y sí se mueven
+
+
+def _antisimetrica(v):
+    return np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+
+
+@requiere_ccx
+def test_articulacion_entre_superficies_iguala_traslaciones_y_los_giros_marcados(tmp_path: Path):
+    a, c = caja("A", 0, 0, 0, 0.2, 0.2, 0.2), caja("B", 0, 0, 0.2, 0.2, 0.2, 0.4)
+    base = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="A", cara=cara_hacia(a, (0, 0, -1)), ux=True, uy=True, uz=True)
+    carga = _carga(c, (0, 0, 1), "MOMENTO", 2.0, (1, 0, 0))  # momento alrededor de X: Rx está igualado, la rótula lo resiste
+    # solo el giro alrededor de Y queda libre (sin carga que lo excite)
+    union = _union("ARTICULACION", a, (0, 0, 1), c, (0, 0, -1), (True, True, True, True, False, True))
+    r = _analizar_con_uniones(proyecto_con(a, c), [base], [carga], [union], tmp_path)
+    x, u = r.malla_tensiones.coordenadas, r.desplazamientos_por_caso["L"]
+    assert np.abs(u[:, 1]).max() > 0  # el momento flexiona la parte superior
+
+
+def test_constraint_entre_elementos_enteros_toma_las_caras_mas_cercanas_y_se_guarda(tmp_path: Path):
+    from ifc_structural.core.asignacion import ErrorAsignacion, Objetivo
+    from ifc_structural.core.asignacion_superficie import union_para
+
+    a, c = caja("A", 0, 0, 0, 0.2, 0.2, 0.1), caja("B", 0.5, 0, 0, 0.2, 0.2, 0.1)
+    p = proyecto_con(a, c)
+    u = union_para(p, Objetivo("SOLIDO", "A"), Objetivo("SOLIDO", "B"), "CT1", "SOLDADURA", (True,) * 6)
+    assert (u.a_cara, u.b_cara) == (cara_hacia(a, (1, 0, 0)), cara_hacia(c, (-1, 0, 0)))
+    with pytest.raises(ErrorAsignacion):
+        union_para(p, Objetivo("SOLIDO", "A"), Objetivo("SOLIDO", "A"), "CT2", "SOLDADURA", (True,) * 6)
+    with pytest.raises(ErrorAsignacion):  # igualar sin ninguna traslación
+        union_para(p, Objetivo("SOLIDO", "A"), Objetivo("SOLIDO", "B"), "CT3", "IGUALAR", (False,) * 6)
+    p.uniones.append(union_para(p, Objetivo("SOLIDO", "A"), Objetivo("SOLIDO", "B"), "CT4", "IGUALAR", (True, False, True, True, True, True)))
+    casos, combinaciones = _casos()
+    ruta = tmp_path / "p.json"
+    guardar_proyecto(ruta, p, [], casos, combinaciones, {}, {}, {})
+    leida = cargar_proyecto(ruta)[0].uniones
+    assert len(leida) == 1 and leida[0].tipo == "IGUALAR" and leida[0].grados() == [1, 3]
+
+
+def test_articulacion_escribe_cuerpos_rigidos_y_ecuaciones(tmp_path: Path):
+    from ifc_structural.solido.generador import Enlace3D, ModeloSolido, escribir_comun
+
+    p = proyecto_con(caja("A", 0, 0, 0, 0.2, 0.2, 0.2), caja("B", 0, 0, 0.2, 0.2, 0.2, 0.2))
+    malla = construir_malla_solida(p, [], 0.1)
+    a = np.unique(malla.hexaedros[malla.partes[0].primer_hexaedro:malla.partes[0].ultimo_hexaedro])
+    b = np.unique(malla.hexaedros[malla.partes[1].primer_hexaedro:malla.partes[1].ultimo_hexaedro])
+    modelo = ModeloSolido(malla=malla, uniones=[], apoyos=[], materiales={"ACERO": "ACERO"},
+                          enlaces=[Enlace3D("ARTICULACION", a[:4], b[:4], {1, 2, 3, 4}, "rótula")])
+    texto = "\n".join(escribir_comun(modelo, p))
+    assert texto.count("*RIGID BODY") == 2 and texto.count("\n2\n") == 4  # 3 traslaciones + 1 giro igualados

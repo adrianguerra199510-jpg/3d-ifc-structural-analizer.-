@@ -31,7 +31,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.cargas import ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion
+from ..core.cargas import (
+    ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion, UnionSuperficie,
+)
 from ..core.casos_carga import CasoCarga, Combinacion
 from ..core.materiales import modulo_en_mpa, usos_de_material
 from ..core.modelo import Proyecto
@@ -42,13 +44,15 @@ from .panel_resultados import ENVOLVENTE
 
 NOMBRES_GDL = {1: "Ux", 2: "Uy", 3: "Uz", 4: "Rx", 5: "Ry", 6: "Rz"}
 ABIERTOS_POR_DEFECTO = {
-    ("PROYECTO",), ("GRUPO", "Elementos"), ("GRUPO", "Apoyos"), ("GRUPO", "Cargas"), ("GRUPO", "Resultados"),
+    ("PROYECTO",), ("GRUPO", "Elementos"), ("GRUPO", "Apoyos"), ("GRUPO", "Constraints"), ("GRUPO", "Cargas"), ("GRUPO", "Resultados"),
 }
 TIPOS_ELEMENTO = (("VIGA", "Vigas", "viga"), ("COLUMNA", "Columnas", "columna"), ("LOSA", "Losas", "losa"),
                   ("MURO", "Muros", "muro"), ("SOLIDO", "Sólidos", "solido"))
 
 
 def tipo_de_asignacion(obj) -> str:
+    if isinstance(obj, UnionSuperficie):
+        return "Constraint"
     if isinstance(obj, ApoyoSuperficie):
         return "Apoyo en superficie"
     if isinstance(obj, CargaSuperficie):
@@ -228,6 +232,8 @@ class PanelArbol(QWidget):
                     adjuntar("LOSA", c.losa_id, c, caso_id)
 
         def destino_de(obj) -> List[Tuple[str, str]]:
+            if isinstance(obj, UnionSuperficie):
+                return [(obj.a_tipo, obj.a_id), (obj.b_tipo, obj.b_id)]
             if isinstance(obj, (ApoyoArea, ApoyoSuperficie, CargaSuperficie)):
                 return [(obj.elemento_tipo, obj.elemento_id)]
             if isinstance(obj, Conexion):
@@ -240,6 +246,9 @@ class PanelArbol(QWidget):
             return [(tipo_de_barra[i], i) for i, b in barras.items() if nodo in (b.nodo_inicio, b.nodo_fin)]
 
         def fila_de(obj, caso: str = "", bajo_elemento: bool = False) -> Tuple[str, str]:
+            if isinstance(obj, UnionSuperficie):
+                modo = obj.nombre.split(": ")[0]
+                return f"{modo} {obj.a_id} ↔ {obj.b_id}", obj.id
             if isinstance(obj, ApoyoSuperficie):
                 cabeza = obj.nombre.split(": ")[0]
                 detalle = "empotrada" if obj.ux and obj.uy and obj.uz else _gdl(obj.grados_restringidos())  # una cara fija es un empotramiento
@@ -312,6 +321,11 @@ class PanelArbol(QWidget):
         grupo = self._nuevo(raiz, f"Conexiones ({len(conexiones)})", "", "conectar", ("GRUPO", "Conexiones"), negrita=True)
         for obj in conexiones:
             crear_asignacion(grupo, obj)
+
+        if proyecto.uniones:
+            grupo = self._nuevo(raiz, f"Constraints ({len(proyecto.uniones)})", "", "conectar", ("GRUPO", "Constraints"), negrita=True)
+            for obj in proyecto.uniones:
+                crear_asignacion(grupo, obj)
 
         # -- cargas, por caso -------------------------------------------------------------
         total = sum(len(v) for d in (cargas_area, cargas_lineales, cargas_puntuales, cargas_superficie) for v in d.values())

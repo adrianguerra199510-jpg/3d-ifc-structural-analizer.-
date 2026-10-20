@@ -18,9 +18,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..core.asignacion import DIRECCIONES, ErrorAsignacion, Objetivo
+from ..core.asignacion import DIRECCIONES, ErrorAsignacion, Objetivo, descripcion
 from ..core.asignacion_superficie import (
-    Superficie, apoyo_superficie_para, carga_superficie_para, superficie_de,
+    Superficie, apoyo_superficie_para, carga_superficie_para, superficie_de, union_para,
 )
 from ..core.casos_carga import CasoCarga
 from ..core.modelo import Proyecto
@@ -274,3 +274,98 @@ class DialogoCargaSuperficie(QDialog):
                 if str(exc) not in errores:
                     errores.append(str(exc))
         return creadas, errores
+
+
+TIPOS_UNION_TEXTO = {
+    "Soldadura: une las dos superficies punto a punto (cierra la holgura)": "SOLDADURA",
+    "Cuerpo rígido: las dos superficies se mueven juntas como un cuerpo rígido": "CUERPO_RIGIDO",
+    "Igualar movimientos: los puntos siguen al más cercano en los grados marcados": "IGUALAR",
+    "Articulación: superficies rígidas con centros unidos; giros marcados igualados": "ARTICULACION",
+}
+AYUDA_UNION = {
+    "SOLDADURA": "Las superficies quedan soldadas en todos sus puntos (<code>*TIE</code>). Si hay holgura entre ellas, "
+                 "se cierra. Sustituye a la unión automática entre esas dos piezas.",
+    "CUERPO_RIGIDO": "Los nodos de las dos superficies forman un único cuerpo rígido: las superficies no se deforman y "
+                     "las dos se mueven juntas (como el constraint «Body» de SAP).",
+    "IGUALAR": "Cada nodo de una superficie iguala el movimiento del nodo más cercano de la otra en las traslaciones "
+               "marcadas; las demás quedan libres (deslizamiento). Como el constraint «Equal» de SAP.",
+    "ARTICULACION": "Cada superficie se vuelve rígida y los centros de las dos se igualan en las tres traslaciones. Marque "
+                    "los giros que se igualan (los demás quedan libres): una rótula, una bisagra o una unión con un solo giro.",
+}
+
+
+class DialogoUnionSuperficie(QDialog):
+    """Constraint entre dos superficies (o entre dos elementos: se toman las caras más cercanas)."""
+
+    def __init__(self, proyecto: Proyecto, a: Objetivo, b: Objetivo, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Constraint entre superficies")
+        self.resize(640, 560)
+        self._proyecto, self._a, self._b = proyecto, a, b
+        layout = QVBoxLayout(self)
+        layout.addWidget(EncabezadoDialogo("conectar", "Constraint entre superficies",
+                                           "Une dos superficies o elementos en el análisis 3D (como los joint constraints de SAP)."))
+        self.etiqueta = QLabel()
+        self.etiqueta.setWordWrap(True)
+        layout.addWidget(self.etiqueta)
+        formulario = QFormLayout()
+        self.combo_tipo = QComboBox()
+        self.combo_tipo.addItems(list(TIPOS_UNION_TEXTO))
+        formulario.addRow("Tipo:", self.combo_tipo)
+        self.checks = []
+        for texto in NOMBRES_GDL:
+            check = QCheckBox(texto + " — se iguala")
+            check.toggled.connect(self._actualizar)
+            self.checks.append(check)
+            formulario.addRow(check)
+        layout.addLayout(formulario)
+        self.ayuda = QLabel()
+        self.ayuda.setWordWrap(True)
+        layout.addWidget(self.ayuda)
+        layout.addWidget(QLabel("<b>Resultado:</b>"))
+        self.vista_previa = QPlainTextEdit()
+        self.vista_previa.setReadOnly(True)
+        layout.addWidget(self.vista_previa)
+        self.botones = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.botones.accepted.connect(self.accept)
+        self.botones.rejected.connect(self.reject)
+        layout.addWidget(self.botones)
+        self.combo_tipo.currentIndexChanged.connect(self._al_cambiar_tipo)
+        self._al_cambiar_tipo()
+
+    def tipo(self) -> str:
+        return TIPOS_UNION_TEXTO[self.combo_tipo.currentText()]
+
+    def _al_cambiar_tipo(self) -> None:
+        tipo = self.tipo()
+        for i, check in enumerate(self.checks):
+            check.blockSignals(True)
+            if tipo == "IGUALAR":
+                check.setChecked(i < 3)
+            elif tipo == "ARTICULACION":
+                check.setChecked(i < 3)
+            else:
+                check.setChecked(True)
+            check.setEnabled(tipo == "IGUALAR" and i < 3 or tipo == "ARTICULACION" and i >= 3)
+            check.blockSignals(False)
+        self.ayuda.setText(AYUDA_UNION[tipo])
+        self._actualizar()
+
+    def grados(self) -> Tuple[bool, ...]:
+        return tuple(c.isChecked() for c in self.checks)
+
+    def union(self, id_: str = "-"):
+        return union_para(self._proyecto, self._a, self._b, id_, self.tipo(), self.grados())
+
+    def _actualizar(self, *_args) -> None:
+        try:
+            u = self.union()
+            iguales = ", ".join(n for n, g in zip(("Ux", "Uy", "Uz", "Rx", "Ry", "Rz"), (u.ux, u.uy, u.uz, u.rx, u.ry, u.rz)) if g)
+            texto = f"✓ {u.nombre}\n   Grados de libertad que se transmiten: {iguales}."
+            self.etiqueta.setText(f"<b>Superficie A:</b> {descripcion(self._proyecto, Objetivo(u.a_tipo, u.a_id, u.a_cara))}<br>"
+                                  f"<b>Superficie B:</b> {descripcion(self._proyecto, Objetivo(u.b_tipo, u.b_id, u.b_cara))}")
+            self.botones.button(QDialogButtonBox.Ok).setEnabled(True)
+        except ErrorAsignacion as exc:
+            texto = f"✗ {exc}"
+            self.botones.button(QDialogButtonBox.Ok).setEnabled(False)
+        self.vista_previa.setPlainText(texto)

@@ -27,12 +27,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pyvista as pv
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from pyvistaqt import QtInteractor
 from vtkmodules.vtkRenderingCore import vtkCellPicker
 
 from ..core.asignacion import Objetivo, barras_de_apoyo_area
-from ..core.cargas import Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion
+from ..core.cargas import Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, Conexion, UnionSuperficie
 from ..core.geometria import Solido, normal_losa, solido_elemento
 from ..core.modelo import Proyecto
 from ..solver.lector_resultados import MallaTensiones
@@ -104,6 +104,12 @@ class Visor3D(QtInteractor):
         self._puntos_sin_deformar: Optional[np.ndarray] = None
         self._desplazamientos: Optional[np.ndarray] = None
         self._escala_deformada = 1.0
+
+        # selección por zona (arrastrar un rectángulo)
+        self._modo_zona = False
+        self._caja_inicio: Optional[Tuple[float, float]] = None  # píxeles de VTK (origen abajo a la izquierda)
+        self._caja_sumar = False
+        self._caja_actor = None
 
         self._picker = vtkCellPicker()
         self._picker.SetTolerance(0.0005)
@@ -234,6 +240,160 @@ class Visor3D(QtInteractor):
             visual.malla.Modified()
         self.render()
 
+    # ------------------------------------------------------------------
+    # Selección por zona: arrastrar un rectángulo
+    # ------------------------------------------------------------------
+    def set_modo_zona(self, activo: bool) -> None:
+        """Con el modo zona activo, arrastrar con el botón izquierdo dibuja un rectángulo de selección en vez de
+        girar la vista (Ctrl o Mayús + arrastrar lo hace en cualquier momento)."""
+
+        self._modo_zona = bool(activo)
+
+    def _pixel_vtk(self, ev) -> Tuple[float, float]:
+        ratio = self.devicePixelRatioF()
+        return ev.position().x() * ratio, (self.height() - 1 - ev.position().y()) * ratio
+
+    def mousePressEvent(self, ev) -> None:
+        mod = ev.modifiers()
+        con_tecla = bool(mod & (Qt.ControlModifier | Qt.ShiftModifier))
+        if ev.button() == Qt.LeftButton and self._vista == "MODELO" and (self._modo_zona or con_tecla):
+            self._caja_inicio = self._pixel_vtk(ev)
+            self._caja_sumar = con_tecla
+            return  # no llega a VTK: la cámara no gira
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev) -> None:
+        if self._caja_inicio is not None:
+            x, y = self._pixel_vtk(ev)
+            self._dibujar_caja(self._caja_inicio, (x, y))
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev) -> None:
+        if self._caja_inicio is not None and ev.button() == Qt.LeftButton:
+            inicio, self._caja_inicio = self._caja_inicio, None
+            fin = self._pixel_vtk(ev)
+            self._dibujar_caja(None, None)
+            if abs(fin[0] - inicio[0]) <= UMBRAL_ARRASTRE_PX and abs(fin[1] - inicio[1]) <= UMBRAL_ARRASTRE_PX:
+                self._clic_en_modelo(int(fin[0]), int(fin[1]), self._caja_sumar)  # fue un clic
+                return
+            self.seleccionar_zona(inicio, fin, sumar=self._caja_sumar)
+            return
+        super().mouseReleaseEvent(ev)
+
+    def _dibujar_caja(self, a, b) -> None:
+        """Rectángulo de selección: continuo y azul si se arrastra de izquierda a derecha (solo lo que queda dentro);
+        discontinuo y verde de derecha a izquierda (todo lo que toca)."""
+
+        from vtkmodules.vtkCommonCore import vtkPoints
+        from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
+        from vtkmodules.vtkRenderingCore import vtkActor2D, vtkPolyDataMapper2D
+
+        if self._caja_actor is None:
+            self._caja_actor = vtkActor2D()
+            self._caja_actor.SetMapper(vtkPolyDataMapper2D())
+            self._caja_actor.GetProperty().SetLineWidth(1.5)
+            self.add_actor(self._caja_actor, reset_camera=False, render=False, name="CAJA_SELECCION", pickable=False)
+        if a is None:
+            self._caja_actor.SetVisibility(False)
+            self.render()
+            return
+        puntos = vtkPoints()
+        for x, y in ((a[0], a[1]), (b[0], a[1]), (b[0], b[1]), (a[0], b[1])):
+            puntos.InsertNextPoint(x, y, 0.0)
+        lineas = vtkCellArray()
+        lineas.InsertNextCell(5)
+        for i in (0, 1, 2, 3, 0):
+            lineas.InsertCellPoint(i)
+        datos = vtkPolyData()
+        datos.SetPoints(puntos)
+        datos.SetLines(lineas)
+        cruzando = b[0] < a[0]
+        self._caja_actor.GetMapper().SetInputData(datos)
+        propiedad = self._caja_actor.GetProperty()
+        propiedad.SetColor(*((0.1, 0.55, 0.2) if cruzando else (0.1, 0.35, 0.85)))
+        propiedad.SetLineStipplePattern(0x00FF if cruzando else 0xFFFF)
+        self._caja_actor.SetVisibility(True)
+        self.render()
+
+    def seleccionar_zona(self, a, b, sumar: bool = False) -> None:
+        """Selecciona lo que hay en el rectángulo de esquinas ``a`` y ``b`` (píxeles de VTK). De izquierda a derecha
+        se eligen solo los elementos (o caras) que quedan por completo dentro; de derecha a izquierda, los que tocan
+        el rectángulo."""
+
+        nuevos = self.objetivos_en_zona(a, b, cruzando=b[0] < a[0])
+        if sumar:
+            actuales = list(self._seleccion)
+            nuevos = actuales + [o for o in nuevos if o not in actuales]
+        self.seleccionar(nuevos)
+
+    def _proyectar(self, puntos: np.ndarray):
+        """Píxeles (x, y) de VTK de los puntos del mundo y máscara de los que están delante de la cámara."""
+
+        camara = self.renderer.GetActiveCamera()
+        ancho, alto = self.renderer.GetSize()
+        m = camara.GetCompositeProjectionTransformMatrix(ancho / max(alto, 1), -1, 1)
+        matriz = np.array([[m.GetElement(i, j) for j in range(4)] for i in range(4)])
+        h = np.hstack([puntos, np.ones((len(puntos), 1))]) @ matriz.T
+        delante = h[:, 3] > 1e-9
+        w = np.where(delante, h[:, 3], 1.0)
+        return np.column_stack([(h[:, 0] / w + 1.0) * 0.5 * ancho, (h[:, 1] / w + 1.0) * 0.5 * alto]), delante
+
+    def objetivos_en_zona(self, a, b, cruzando: bool) -> List[Objetivo]:
+        from vtkmodules.util.numpy_support import vtk_to_numpy
+
+        x0, x1 = sorted((a[0], b[0]))
+        y0, y1 = sorted((a[1], b[1]))
+        posicion = np.array(self.renderer.GetActiveCamera().GetPosition())
+        resultado: List[Objetivo] = []
+        for (tipo, id_), visual in self._visuales.items():
+            if not self._visibles[tipo]:
+                continue
+            malla = visual.malla
+            puntos = np.asarray(malla.points, dtype=float)
+            pantalla, delante = self._proyectar(puntos)
+            dentro = delante & (pantalla[:, 0] >= x0) & (pantalla[:, 0] <= x1) & (pantalla[:, 1] >= y0) & (pantalla[:, 1] <= y1)
+            polis = malla.GetPolys()
+            desplazamientos = vtk_to_numpy(polis.GetOffsetsArray()).astype(np.int64)
+            conectividad = vtk_to_numpy(polis.GetConnectivityArray()).astype(np.int64)
+            n_celdas = len(desplazamientos) - 1
+            tamanos = np.diff(desplazamientos)
+            celda_de_vertice = np.repeat(np.arange(n_celdas), tamanos)
+            todos = np.bincount(celda_de_vertice, weights=dentro[conectividad], minlength=n_celdas) == tamanos
+            # recuadro en pantalla de cada celda y su solape con el rectángulo
+            px, py = pantalla[conectividad, 0], pantalla[conectividad, 1]
+            minx, maxx = np.minimum.reduceat(px, desplazamientos[:-1]), np.maximum.reduceat(px, desplazamientos[:-1])
+            miny, maxy = np.minimum.reduceat(py, desplazamientos[:-1]), np.maximum.reduceat(py, desplazamientos[:-1])
+            detras = np.bincount(celda_de_vertice, weights=~delante[conectividad], minlength=n_celdas) > 0
+            solapa = (maxx >= x0) & (minx <= x1) & (maxy >= y0) & (miny <= y1) & ~detras
+            if visual.solido is not None:  # barras, losas y muros: normal y centro de cada cara
+                normales = np.array([c.normal for c in visual.solido.caras])
+                centros = np.array([c.centro for c in visual.solido.caras])
+            else:
+                p = puntos[conectividad.reshape(-1, 3)]
+                normales = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+                centros = p.mean(axis=1)
+            de_frente = np.einsum("ij,ij->i", normales, posicion - centros) > 0
+            if self._modo == MODO_ELEMENTO:
+                elegido = bool(dentro[np.unique(conectividad)].all()) if not cruzando else bool(solapa.any())
+                if elegido:
+                    resultado.append(Objetivo(tipo, id_, None))
+                continue
+            if visual.cara_de_celda is None:
+                cumple = (todos if not cruzando else solapa) & de_frente
+                resultado += [Objetivo(tipo, id_, int(i)) for i in np.where(cumple)[0]]
+            else:
+                cara = visual.cara_de_celda
+                n_cara = np.bincount(cara)
+                if cruzando:
+                    elegidas = np.bincount(cara, weights=(solapa & de_frente), minlength=len(n_cara)) > 0
+                else:
+                    dentro_cara = np.bincount(cara, weights=todos, minlength=len(n_cara)) == n_cara
+                    con_frente = np.bincount(cara, weights=de_frente, minlength=len(n_cara)) > 0
+                    elegidas = dentro_cara & con_frente
+                resultado += [Objetivo(tipo, id_, int(i)) for i in np.where(elegidas)[0]]
+        return resultado
+
     def _elegir(self, x: int, y: int):
         """(clave, índice de celda) bajo el píxel, o (None, -1)."""
 
@@ -356,15 +516,16 @@ class Visor3D(QtInteractor):
         cargas_puntuales: Sequence[CargaPuntual],
         conexiones: Sequence[Conexion] = (),
         cargas_superficie: Sequence[CargaSuperficie] = (),
+        uniones: Sequence[UnionSuperficie] = (),
     ) -> None:
         """Dibuja los apoyos, las conexiones y las cargas del caso activo
         (las que se pasan). Las flechas de una carga variable tienen longitud
         proporcional a su valor, de modo que se ve su forma."""
 
         for nombre in tuple(f"ASIG_APOYOS_{c}" for c in COLORES_SIMBOLO) + ("ASIG_APOYOS_AREA", "ASIG_CONEXIONES", "ASIG_CARGAS", "ASIG_MOMENTOS", "ASIG_ETIQUETAS",
-                                                                                "ASIG_SUPERFICIE_APOYO", "ASIG_SUPERFICIE_CARGA"):
+                                                                                "ASIG_SUPERFICIE_APOYO", "ASIG_SUPERFICIE_CARGA", "ASIG_UNIONES", "ASIG_UNIONES_CARAS"):
             self.remove_actor(nombre, render=False)
-        self._argumentos_asignaciones = (apoyos, cargas_area, cargas_lineales, cargas_puntuales, conexiones, cargas_superficie)
+        self._argumentos_asignaciones = (apoyos, cargas_area, cargas_lineales, cargas_puntuales, conexiones, cargas_superficie, uniones)
         proyecto = self._proyecto
         if proyecto is None:
             return
@@ -566,6 +727,26 @@ class Visor3D(QtInteractor):
                 flechas.append(flecha(punto, d, longitud))
             puntos_etiqueta.append(centro - d * longitud * 1.15)
             textos.append(f"{abs(carga.valor):g} " + ("kPa" if carga.tipo == "PRESION" else "kN"))
+        # -- constraints entre superficies --------------------------------------------------------
+        caras_union: List[pv.PolyData] = []
+        enlaces: List[pv.PolyData] = []
+        for u in uniones:
+            ga = self._geometria_de_cara(u.a_tipo, u.a_id, u.a_cara)
+            gb = self._geometria_de_cara(u.b_tipo, u.b_id, u.b_cara)
+            if ga is None or gb is None:
+                continue
+            caras_union += [ga[0], gb[0]]
+            enlaces += [pv.Sphere(radius=largo_apoyo * 0.25, center=ga[1]), pv.Sphere(radius=largo_apoyo * 0.25, center=gb[1])]
+            if np.linalg.norm(gb[1] - ga[1]) > 1e-9:
+                enlaces.append(pv.Line(ga[1], gb[1]).tube(radius=largo_apoyo * 0.07))
+            etiquetas_apoyo.append(0.5 * (ga[1] + gb[1]) + np.array([0.0, 0.0, 0.6 * largo_apoyo]))
+            textos_apoyo.append({"SOLDADURA": "soldadura", "CUERPO_RIGIDO": "cuerpo rígido", "IGUALAR": "igualar " + "".join(
+                n for n, g in zip(("Ux", "Uy", "Uz"), (u.ux, u.uy, u.uz)) if g), "ARTICULACION": "articulación"}[u.tipo])
+        if caras_union:
+            self.add_mesh(pv.merge(caras_union), color=COLOR_CONEXION, opacity=0.5, name="ASIG_UNIONES_CARAS",
+                          pickable=False, show_scalar_bar=False)
+            self.add_mesh(pv.merge(enlaces), color=COLOR_CONEXION, name="ASIG_UNIONES", pickable=False, show_scalar_bar=False)
+
         if not self._flechas_visibles:  # las cargas se ocultan (los apoyos siguen a la vista)
             flechas, momentos, caras_carga, puntos_etiqueta, textos = [], [], [], [], []
         if caras_carga:

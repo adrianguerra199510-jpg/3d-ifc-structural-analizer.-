@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
+from .cargas import UnionSuperficie
 from .solidos import SolidoGeneral
 
 Vector3 = Tuple[float, float, float]
@@ -208,6 +209,7 @@ class Proyecto:
     muros: Dict[str, Muro] = field(default_factory=dict)
     #: Geometría real de cualquier otro elemento del IFC (placas, pernos, zapatas...), con superficies.
     solidos: Dict[str, SolidoGeneral] = field(default_factory=dict)
+    uniones: List[UnionSuperficie] = field(default_factory=list)  # constraints entre superficies (análisis 3D)
     #: Archivo IFC del que viene el modelo (para volver a leer la geometría real de un elemento).
     ruta_ifc: Optional[str] = None
 

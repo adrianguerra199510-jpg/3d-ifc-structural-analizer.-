@@ -30,11 +30,23 @@ class Apoyo3D:
 
 
 @dataclass
+class Enlace3D:
+    """Constraint manual entre dos superficies (las soldaduras van como ``Union`` en ``*TIE``)."""
+
+    tipo: str  # "CUERPO_RIGIDO", "IGUALAR" o "ARTICULACION"
+    nodos_a: np.ndarray  # índices 0-based
+    nodos_b: np.ndarray
+    grados: Set[int]  # 1..6
+    nombre: str = ""
+
+
+@dataclass
 class ModeloSolido:
     malla: MallaSolida
     uniones: List[Union]
     apoyos: List[Apoyo3D]
     materiales: Dict[str, str]  # material del proyecto -> etiqueta ccx
+    enlaces: List[Enlace3D] = field(default_factory=list)
 
     @property
     def n_nodos(self) -> int:
@@ -96,9 +108,50 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         lineas += _numeros(nodos)
         lineas.append(f"*RIGID BODY,NSET=APOYO{k},REF NODE={ref},ROT NODE={rot}")
         condiciones += [f"{ref},{g},{g}" for g in traslaciones] + [f"{rot},{g},{g}" for g in giros]
+    ecuaciones: List[str] = []
+    for k, enlace in enumerate(modelo.enlaces):
+        siguiente = _escribir_enlace(enlace, k, c, siguiente, lineas, ecuaciones)
+    if ecuaciones:
+        lineas.append("*EQUATION")
+        lineas += ecuaciones
     if condiciones:
         lineas += ["*BOUNDARY"] + list(dict.fromkeys(condiciones))
     return lineas
+
+
+def _cuerpo_rigido(nombre: str, nodos: np.ndarray, coordenadas: np.ndarray, siguiente: int, lineas: List[str]):
+    """Escribe un ``*RIGID BODY`` con nodo de referencia y de giro en el centro. Devuelve (ref, rot, siguiente)."""
+
+    ref, rot = siguiente, siguiente + 1
+    centro = coordenadas[nodos].mean(axis=0)
+    lineas += ["*NODE", f"{ref},{centro[0]:.7g},{centro[1]:.7g},{centro[2]:.7g}",
+               f"{rot},{centro[0]:.7g},{centro[1]:.7g},{centro[2]:.7g}", f"*NSET,NSET={nombre}"]
+    lineas += _numeros([int(n) + 1 for n in nodos])
+    lineas.append(f"*RIGID BODY,NSET={nombre},REF NODE={ref},ROT NODE={rot}")
+    return ref, rot, siguiente + 2
+
+
+def _escribir_enlace(enlace: Enlace3D, k: int, c: np.ndarray, siguiente: int, lineas: List[str], ecuaciones: List[str]) -> int:
+    from scipy.spatial import cKDTree
+
+    a, b = np.unique(enlace.nodos_a), np.unique(enlace.nodos_b)
+    if enlace.tipo == "CUERPO_RIGIDO":
+        _, _, siguiente = _cuerpo_rigido(f"CR{k}", np.union1d(a, b), c, siguiente, lineas)
+    elif enlace.tipo == "ARTICULACION":
+        ref_a, rot_a, siguiente = _cuerpo_rigido(f"ARA{k}", a, c, siguiente, lineas)
+        ref_b, rot_b, siguiente = _cuerpo_rigido(f"ARB{k}", b, c, siguiente, lineas)
+        for g in sorted(enlace.grados):
+            na, nb = (ref_a, ref_b) if g <= 3 else (rot_a, rot_b)
+            gl = g if g <= 3 else g - 3
+            ecuaciones += ["2", f"{na},{gl},1.,{nb},{gl},-1."]
+    elif enlace.tipo == "IGUALAR":
+        # cada nodo de la superficie con menos nodos sigue al nodo más cercano de la otra
+        corto, largo = (a, b) if len(a) <= len(b) else (b, a)
+        _, vecino = cKDTree(c[largo]).query(c[corto])
+        for g in sorted(g for g in enlace.grados if g <= 3):
+            for n, m in zip(corto, largo[vecino]):
+                ecuaciones += ["2", f"{int(n) + 1},{g},1.,{int(m) + 1},{g},-1."]
+    return siguiente
 
 
 @dataclass

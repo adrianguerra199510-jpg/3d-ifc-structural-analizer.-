@@ -187,6 +187,24 @@ y la conserva como **sólido de forma libre**:
   solapan, la pieza menor cede el volumen común, para no contarlo dos veces; las piezas se unen
   por las superficies que se tocan (`*TIE`) y las que no tocan a ninguna otra con apoyo se
   detectan antes de resolver. Los sólidos deben ser superficies cerradas (se avisa si no lo son).
+- **Constraints entre superficies.** *Asignar → Constraint 3D entre superficies…* (o clic derecho)
+  con dos superficies (modo **Cara**) o dos elementos (modo **Elemento**: se toman sus caras más
+  cercanas, y a igual distancia las que se miran), como los *joint constraints* de SAP:
+  **soldadura** (`*TIE`, une punto a punto y cierra la holgura; sustituye a la unión automática entre
+  esas dos piezas), **cuerpo rígido** (las dos superficies se mueven juntas, `*RIGID BODY`),
+  **igualar movimientos** (cada nodo sigue al más cercano de la otra superficie en Ux, Uy, Uz
+  marcados, `*EQUATION`) y **articulación** (superficies rígidas con los centros igualados en las tres
+  traslaciones y en los giros marcados). Aparecen en el árbol (*Constraints*), se dibujan en el visor
+  y se guardan en el proyecto. Solo se aplican en ANALIZAR 3D; el botón *Conectar* sigue siendo la
+  articulación o el enlace rígido entre barras del análisis de barras (con un sólido, losa o muro
+  abre este diálogo). Un nodo no puede ser a la vez esclavo de dos constraints.
+- **Selección por zona.** Arrastre un rectángulo con **Ctrl** o **Mayús** (o active el botón
+  **Zona** de la barra de vista para hacerlo sin teclas): de izquierda a derecha (azul, continuo)
+  se eligen solo los elementos —o superficies, en modo Cara— que quedan por completo dentro; de derecha
+  a izquierda (verde, discontinuo), todo lo que toca. En modo Cara solo cuentan las caras que miran a
+  la cámara. Con Ctrl/Mayús se suma a la selección actual.
+- **Flechas de las cargas.** El botón **Cargas** de la barra de vista las oculta o las muestra y el
+  deslizador cambia su tamaño; en las cargas sobre una superficie la flecha nunca es mayor que ella.
 - **Qué no hace.** Los sólidos no participan en el análisis de barras (se avisa) y no se modelan
   pernos con pretensión, contacto con separación ni fricción. Comprobado con CalculiX contra la
   teoría (voladizo `PL³/3EI`, compresión `σ = p`, perno en tracción `FL/EA`) en

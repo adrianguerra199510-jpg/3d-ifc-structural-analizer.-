@@ -35,6 +35,7 @@ def main(salida: Path) -> None:
     mensajes = []
     for nombre in ("information", "warning", "critical"):
         setattr(QMessageBox, nombre, staticmethod(lambda *a, _n=nombre, **k: mensajes.append((_n, a[1:3])) or QMessageBox.Ok))
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)  # «¿analizar de todos modos?» (los sólidos no entran en el análisis de barras)
     QDialog.exec = lambda self: 1
 
     import ifc_structural.gui.ventana_principal as vp

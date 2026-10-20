@@ -102,6 +102,10 @@ CUERPOS: Dict[str, str] = {
         '<path d="M12 3l8.5 4.8v8.4L12 21l-8.5-4.8V7.8z"/><path d="M12 12l8.5-4.2M12 12v9M12 12L3.5 7.8"/>'
         '<path d="M8.2 5.4l8.5 4.8M3.5 12l8.5 4.8 8.5-4.8M16.1 5.4L7.6 10.2" stroke="@A@" stroke-width="1.1"/>'
     ),
+    "zona": (
+        '<rect x="4" y="5" width="12" height="10" rx="1" stroke-dasharray="3 2.4"/>'
+        '<path d="M13 12l7 2.5-3 1.2 2 3.3-1.6.9-2-3.3-2.4 2z" fill="@A@" fill-opacity=".35" stroke="@A@"/>'
+    ),
     "modelo": (
         '<path d="M12 3l8.5 4.8v8.4L12 21l-8.5-4.8V7.8z"/><path d="M12 12l8.5-4.2M12 12v9M12 12L3.5 7.8" stroke="@A@"/>'
     ),
@@ -163,7 +167,7 @@ CUERPOS: Dict[str, str] = {
 #: Para qué tipo de elemento/asignación se usa cada icono (paneles y tablas).
 ICONO_DE_TIPO = {
     "VIGA": "viga", "COLUMNA": "columna", "LOSA": "losa", "MURO": "muro", "SOLIDO": "solido",
-    "Apoyo en superficie": "apoyo", "Carga en superficie": "carga_dist",
+    "Apoyo en superficie": "apoyo", "Constraint": "conectar", "Carga en superficie": "carga_dist",
     "Apoyo": "apoyo", "Apoyo de área": "apoyo_area", "Conexión": "conectar",
     "Carga de área": "carga", "Carga lineal": "carga_dist", "Carga puntual": "carga",
 }

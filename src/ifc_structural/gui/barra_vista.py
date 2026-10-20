@@ -30,6 +30,7 @@ class BarraVista(QWidget):
     visibilidad_cambiada = Signal(str, bool)  # tipo, visible
     flechas_visibles = Signal(bool)  # mostrar u ocultar las flechas de las cargas
     escala_flechas = Signal(float)  # tamaño de las flechas (1 = automático)
+    zona_activada = Signal(bool)  # arrastrar con el botón izquierdo dibuja un rectángulo de selección
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,6 +79,17 @@ class BarraVista(QWidget):
         fila.addSpacing(6)
         fila.addWidget(separador)
         fila.addSpacing(6)
+        self.boton_zona = QToolButton()
+        self.boton_zona.setText("Zona")
+        self.boton_zona.setIcon(icono("zona"))
+        self.boton_zona.setCheckable(True)
+        self.boton_zona.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.boton_zona.setToolTip(
+            "Seleccionar arrastrando un rectángulo (también Ctrl o Mayús + arrastrar).\n"
+            "De izquierda a derecha: solo lo que queda dentro. De derecha a izquierda: todo lo que toca."
+        )
+        self.boton_zona.toggled.connect(self.zona_activada.emit)
+        fila.addWidget(self.boton_zona)
         self.boton_flechas = QToolButton()
         self.boton_flechas.setText("Cargas")
         self.boton_flechas.setIcon(icono("carga"))
