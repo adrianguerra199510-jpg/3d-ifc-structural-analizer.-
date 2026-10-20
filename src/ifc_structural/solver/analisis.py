@@ -216,8 +216,10 @@ def validar_modelo(
     if not casos:
         errores.append("No hay casos de carga definidos.")
 
+    from ..core.validacion import problemas_de_geometria
     from ..solido.miembros import barras_de_longitud_cero
 
+    errores.extend(problemas_de_geometria(proyecto))
     cero = barras_de_longitud_cero(proyecto)
     if cero:
         errores.append(f"Las barras {', '.join(cero)} tienen longitud cero (sus dos extremos coinciden): elimínelas del modelo.")

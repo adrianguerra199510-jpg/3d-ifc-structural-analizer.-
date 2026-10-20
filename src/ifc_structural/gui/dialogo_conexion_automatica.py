@@ -92,7 +92,11 @@ class DialogoConexionAutomatica(QDialog):
             contactos = detectar_contactos(self._proyecto, self.spin_tolerancia.value() / 1000.0)
         except Exception as exc:  # el mallado puede fallar con geometrías raras: se informa, no se cae
             contactos = []
-            self.resumen.setText(f"No se pudo analizar el modelo: {exc}")
+            import logging
+            from .trabajador_analisis import ubicacion_del_error
+
+            logging.getLogger(__name__).exception("No se pudo detectar contactos")
+            self.resumen.setText(f"No se pudo analizar el modelo: {exc}\n(en {ubicacion_del_error(exc)})")
         finally:
             QApplication.restoreOverrideCursor()
         existentes = {frozenset(((u.a_tipo, u.a_id), (u.b_tipo, u.b_id))) for u in self._proyecto.uniones}

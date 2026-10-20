@@ -21,6 +21,7 @@ from shapely.geometry import LineString, Polygon
 
 from ..core.geometria import ejes_seccion
 from ..core.modelo import ElementoBarra, Proyecto
+from ..core.validacion import exigir_geometria_valida
 from .seccion2d import contorno_local
 
 _TOL = 1e-6
@@ -104,6 +105,7 @@ def barras_de_longitud_cero(proyecto: Proyecto) -> List[str]:
 def construir_miembros(proyecto: Proyecto) -> List[MiembroBarra]:
     """Miembros del modelo con las barras continuas fundidas (sin recortar). Las barras de longitud cero se omiten."""
 
+    exigir_geometria_valida(proyecto)
     degeneradas = set(barras_de_longitud_cero(proyecto))
     barras = {i: b for i, b in proyecto.todas_las_barras().items() if i not in degeneradas}
     por_nodo: Dict[str, List[str]] = {}

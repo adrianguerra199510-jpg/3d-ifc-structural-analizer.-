@@ -81,7 +81,7 @@ def _ajustes_geometria() -> "ifcopenshell.geom.settings":
     return ajustes
 
 
-def _vertices_elemento(elemento, ajustes, factor_longitud: float) -> Optional[np.ndarray]:
+def _vertices_elemento(elemento, ajustes, factor_longitud: float, proyecto: Optional[Proyecto] = None) -> Optional[np.ndarray]:
     try:
         forma = ifcopenshell.geom.create_shape(ajustes, elemento)
     except Exception as exc:  # ifcopenshell lanza distintas excepciones según el caso
@@ -89,7 +89,22 @@ def _vertices_elemento(elemento, ajustes, factor_longitud: float) -> Optional[np
         return None
     # ifcopenshell entrega la geometría ya en metros, sea cual sea la unidad del archivo (mm, cm, pies...):
     # ``factor_longitud`` solo sirve para los valores crudos del IFC (dimensiones de perfiles, por ejemplo).
-    return np.array(forma.geometry.verts, dtype=float).reshape(-1, 3)
+    vertices = np.array(forma.geometry.verts, dtype=float).reshape(-1, 3)
+    return _solo_finitos(vertices, elemento, proyecto)
+
+
+def _solo_finitos(vertices: np.ndarray, elemento, proyecto: Optional[Proyecto]) -> Optional[np.ndarray]:
+    """``vertices`` sin los puntos con coordenadas no finitas; ``None`` (con aviso) si no queda geometría o es nula."""
+
+    buenos = np.isfinite(vertices).all(axis=1)
+    if buenos.all():
+        return vertices
+    nombre = getattr(elemento, "Name", None) or elemento.GlobalId
+    logger.warning("%s %s tiene vértices con coordenadas no válidas", elemento.is_a(), elemento.GlobalId)
+    if proyecto is not None:
+        proyecto.avisos.append(f"{nombre} ({elemento.is_a()}): su geometría tiene coordenadas no válidas (NaN); "
+                               + ("se omitieron los puntos erróneos." if buenos.sum() >= 3 else "se omitió el elemento."))
+    return vertices[buenos] if buenos.sum() >= 3 else None
 
 
 def _pca(vertices: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -405,7 +420,7 @@ def _limpiar(punto: np.ndarray) -> Tuple[float, float, float]:
 
 
 def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: float, tipo: str) -> None:
-    vertices = _vertices_elemento(elemento, ajustes, factor_longitud)
+    vertices = _vertices_elemento(elemento, ajustes, factor_longitud, proyecto)
     if vertices is None or len(vertices) < 2:
         logger.warning("Se omite %s %s por no tener geometría utilizable", tipo, elemento.GlobalId)
         return
@@ -429,6 +444,10 @@ def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: floa
     if tipo != "VIGA" and punto_fin[2] < punto_inicio[2]:
         punto_inicio, punto_fin = punto_fin, punto_inicio
 
+    if not (np.isfinite(punto_inicio).all() and np.isfinite(punto_fin).all()) or np.linalg.norm(punto_fin - punto_inicio) < 1e-5:
+        proyecto.avisos.append(f"{elemento.Name or elemento.GlobalId}: su eje tiene longitud cero o coordenadas no válidas; "
+                               "se omitió la barra.")
+        return
     nodo_inicio = proyecto.nodo_o_existente(*_limpiar(punto_inicio))
     nodo_fin = proyecto.nodo_o_existente(*_limpiar(punto_fin))
 
@@ -449,7 +468,7 @@ def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: floa
 
 
 def _importar_losa(proyecto: Proyecto, elemento, ajustes, factor_longitud: float) -> None:
-    vertices = _vertices_elemento(elemento, ajustes, factor_longitud)
+    vertices = _vertices_elemento(elemento, ajustes, factor_longitud, proyecto)
     if vertices is None or len(vertices) < 3:
         logger.warning("Se omite losa %s por no tener geometría utilizable", elemento.GlobalId)
         return
@@ -471,7 +490,7 @@ def _importar_losa(proyecto: Proyecto, elemento, ajustes, factor_longitud: float
 
 
 def _importar_muro(proyecto: Proyecto, elemento, ajustes, factor_longitud: float) -> None:
-    vertices = _vertices_elemento(elemento, ajustes, factor_longitud)
+    vertices = _vertices_elemento(elemento, ajustes, factor_longitud, proyecto)
     if vertices is None or len(vertices) < 3:
         logger.warning("Se omite muro %s por no tener geometría utilizable", elemento.GlobalId)
         return
@@ -546,6 +565,10 @@ def importar_solido_de_elemento(proyecto: Proyecto, elemento, ajustes, factor_lo
         return None
     vertices = np.array(forma.geometry.verts, dtype=float).reshape(-1, 3)  # ya en metros
     triangulos = np.array(forma.geometry.faces, dtype=np.int64).reshape(-1, 3)
+    if not np.isfinite(vertices).all():
+        proyecto.avisos.append(f"{elemento.Name or elemento.GlobalId} ({elemento.is_a()}): su geometría tiene coordenadas "
+                               "no válidas (NaN); se omitió el elemento.")
+        return None
     if len(vertices) < 4 or len(triangulos) < 4:
         return None
     vertices, triangulos = soldar_vertices(vertices, triangulos)
