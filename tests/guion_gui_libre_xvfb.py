@@ -263,6 +263,15 @@ def main(salida: Path) -> None:
     visor.seleccionar([])
     vista("view_isometric")
     ventana.grab().save(str(salida / "03e_conexion_automatica.png"))
+    # los constraints tienen su propio interruptor (independiente de los apoyos y las cargas)
+    ventana.barra_vista.boton_uniones.setChecked(False)
+    bombear()
+    verificar("ASIG_UNIONES" not in visor.actors and "ASIG_UNIONES_CARAS" not in visor.actors, "los constraints se ocultan")
+    verificar("ASIG_CARGAS" in visor.actors and any(n.startswith("ASIG_APOYOS") for n in visor.actors), "sin tocar apoyos ni cargas")
+    ventana.grab().save(str(salida / "03f_constraints_ocultos.png"))
+    ventana.barra_vista.boton_uniones.setChecked(True)
+    bombear()
+    verificar("ASIG_UNIONES" in visor.actors, "y se vuelven a mostrar")
 
     # Análisis 3D
     from ifc_structural.gui.dialogo_analisis_3d import DialogoAnalisis3D

@@ -292,7 +292,8 @@ class VentanaPrincipal(QMainWindow):
         for dock in self._docks:  # reabrir los paneles si se cerraron
             self.menu_ver.addAction(dock.toggleViewAction())
         self.menu_ver.addSeparator()
-        for texto, boton in (("Mostrar apoyos", self.barra_vista.boton_apoyos), ("Mostrar cargas", self.barra_vista.boton_flechas)):
+        for texto, boton in (("Mostrar apoyos", self.barra_vista.boton_apoyos), ("Mostrar cargas", self.barra_vista.boton_flechas),
+                             ("Mostrar constraints", self.barra_vista.boton_uniones)):
             accion_vista = QAction(texto, self, checkable=True, checked=True)
             accion_vista.toggled.connect(boton.setChecked)
             boton.toggled.connect(accion_vista.setChecked)
@@ -398,6 +399,7 @@ class VentanaPrincipal(QMainWindow):
         self.barra_vista.escala_flechas.connect(lambda e: self.visor.configurar_flechas(escala=e))
         self.barra_vista.escala_apoyos.connect(lambda e: self.visor.configurar_apoyos(escala=e))
         self.barra_vista.apoyos_visibles.connect(lambda v: self.visor.configurar_apoyos(visibles=v))
+        self.barra_vista.uniones_visibles.connect(self.visor.configurar_uniones)
         self.barra_vista.visibilidad_cambiada.connect(lambda t, v: self._cambiar_visibilidad(t, v, desde_menu=False))
         self.visor.seleccion_cambiada.connect(self._al_cambiar_seleccion)
         self.visor.menu_contextual.connect(self._mostrar_menu_contextual)

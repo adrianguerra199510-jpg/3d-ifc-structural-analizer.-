@@ -102,6 +102,7 @@ class Visor3D(QtInteractor):
         self._escala_flechas = 1.0
         self._escala_apoyos = 1.0
         self._apoyos_visibles = True
+        self._uniones_visibles = True
         self._argumentos_asignaciones = None
 
         self._grid_esfuerzos: Optional[pv.UnstructuredGrid] = None
@@ -830,10 +831,8 @@ class Visor3D(QtInteractor):
             textos.append(f"{abs(carga.valor):g} " + ("kPa" if carga.tipo == "PRESION" else "kN"))
         # -- constraints entre superficies --------------------------------------------------------
         caras_union: List[pv.PolyData] = []
-        etiquetas_union: List[np.ndarray] = []
-        textos_union: List[str] = []
         enlaces: List[pv.PolyData] = []
-        for u in uniones:
+        for u in (uniones if self._uniones_visibles else ()):
             ga = self._geometria_de_cara(u.a_tipo, u.a_id, u.a_cara)
             gb = self._geometria_de_cara(u.b_tipo, u.b_id, u.b_cara)
             if ga is None or gb is None:
@@ -842,9 +841,6 @@ class Visor3D(QtInteractor):
             enlaces += [pv.Sphere(radius=largo_apoyo * 0.25, center=ga[1]), pv.Sphere(radius=largo_apoyo * 0.25, center=gb[1])]
             if np.linalg.norm(gb[1] - ga[1]) > 1e-9:
                 enlaces.append(pv.Line(ga[1], gb[1]).tube(radius=largo_apoyo * 0.07))
-            etiquetas_union.append(0.5 * (ga[1] + gb[1]) + np.array([0.0, 0.0, 0.6 * largo_apoyo]))
-            textos_union.append({"SOLDADURA": "soldadura", "CUERPO_RIGIDO": "cuerpo rígido", "IGUALAR": "igualar " + "".join(
-                n for n, g in zip(("Ux", "Uy", "Uz"), (u.ux, u.uy, u.uz)) if g), "ARTICULACION": "articulación"}[u.tipo])
         if caras_union:
             self.add_mesh(pv.merge(caras_union), color=COLOR_CONEXION, opacity=0.5, name="ASIG_UNIONES_CARAS",
                           pickable=False, show_scalar_bar=False)
@@ -862,8 +858,8 @@ class Visor3D(QtInteractor):
             self.add_mesh(pv.merge(momentos), color=COLOR_MOMENTO, name="ASIG_MOMENTOS", pickable=False, show_scalar_bar=False)
         if not self._apoyos_visibles:  # los apoyos se ocultan con sus etiquetas
             etiquetas_apoyo, textos_apoyo = [], []
-        puntos_etiqueta += etiquetas_apoyo + etiquetas_union
-        textos += textos_apoyo + textos_union
+        puntos_etiqueta += etiquetas_apoyo
+        textos += textos_apoyo
         if puntos_etiqueta:
             self.add_point_labels(
                 np.array(puntos_etiqueta), textos, name="ASIG_ETIQUETAS", font_size=14, text_color="darkred",
@@ -958,6 +954,15 @@ class Visor3D(QtInteractor):
             self._escala_apoyos = float(escala)
         if visibles is not None:
             self._apoyos_visibles = bool(visibles)
+        if self._argumentos_asignaciones is not None:
+            self.mostrar_asignaciones(*self._argumentos_asignaciones)
+            if self._vista == "ESFUERZOS":
+                self._mostrar_asignaciones(self._desplazamientos is None)
+
+    def configurar_uniones(self, visibles: bool) -> None:
+        """Muestra u oculta los constraints (superficies resaltadas, enlaces y etiquetas)."""
+
+        self._uniones_visibles = bool(visibles)
         if self._argumentos_asignaciones is not None:
             self.mostrar_asignaciones(*self._argumentos_asignaciones)
             if self._vista == "ESFUERZOS":

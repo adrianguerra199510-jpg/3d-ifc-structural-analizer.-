@@ -32,6 +32,7 @@ class BarraVista(QWidget):
     escala_flechas = Signal(float)  # tamaño de las flechas (1 = automático)
     escala_apoyos = Signal(float)  # tamaño de los símbolos de apoyo (1 = automático)
     apoyos_visibles = Signal(bool)  # mostrar u ocultar los apoyos
+    uniones_visibles = Signal(bool)  # mostrar u ocultar los constraints
     navegacion_cambiada = Signal(str)  # qué hace arrastrar con el botón izquierdo: SELECCION, MOVER o ROTAR
 
     def __init__(self, parent=None):
@@ -143,6 +144,15 @@ class BarraVista(QWidget):
         self.deslizador_flechas.setToolTip("Tamaño de las flechas de las cargas (100 % = automático)")
         self.deslizador_flechas.valueChanged.connect(lambda v: self.escala_flechas.emit(v / 100.0))
         fila.addWidget(self.deslizador_flechas)
+        self.boton_uniones = QToolButton()
+        self.boton_uniones.setText("Constraints")
+        self.boton_uniones.setIcon(icono("conectar"))
+        self.boton_uniones.setCheckable(True)
+        self.boton_uniones.setChecked(True)
+        self.boton_uniones.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.boton_uniones.setToolTip("Mostrar u ocultar los constraints (superficies unidas, enlaces y etiquetas)")
+        self.boton_uniones.toggled.connect(self.uniones_visibles.emit)
+        fila.addWidget(self.boton_uniones)
         fila.addStretch(1)
         self._fila = fila
 
