@@ -1,8 +1,8 @@
 """Panel de esfuerzos: qué resultado y qué magnitud mostrar en el visor,
 con escala configurable, y la tabla de esfuerzos máximos por viga/columna.
 
-Solo se muestran esfuerzos (kPa del solver convertidos a MPa), no fuerzas
-internas ni desplazamientos.
+Se muestran esfuerzos (kPa del solver convertidos a MPa), no fuerzas internas.
+Opcionalmente la deformada (desplazamientos ampliados), animada y exportable a video.
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QGroupBox,
+    QHBoxLayout,
     QDoubleSpinBox,
     QFormLayout,
     QHeaderView,
@@ -41,6 +43,9 @@ class ParametrosVista:
     minimo: float  # MPa
     maximo: float  # MPa
     colormap: str
+    deformada: bool = False
+    escala_deformada: float = 1.0  # factor de ampliación de los desplazamientos
+    mostrar_original: bool = True
 
 
 class PanelEsfuerzos(QWidget):
@@ -49,6 +54,9 @@ class PanelEsfuerzos(QWidget):
 
     cambio = Signal()
     volver_al_modelo = Signal()
+    animacion_alternada = Signal(bool)
+    video_solicitado = Signal()
+    escala_automatica_solicitada = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,6 +73,21 @@ class PanelEsfuerzos(QWidget):
         self.spin_maximo.setValue(10.0)
         self.combo_colormap = QComboBox()
         self.combo_colormap.addItems(COLORMAPS)
+
+        self.check_deformada = QCheckBox("Mostrar deformada")
+        self.spin_escala_deformada = QDoubleSpinBox()
+        self.spin_escala_deformada.setRange(0.1, 1e7)
+        self.spin_escala_deformada.setDecimals(1)
+        self.spin_escala_deformada.setValue(100.0)
+        self.spin_escala_deformada.setPrefix("× ")
+        self.boton_escala_auto = QPushButton("Auto")
+        self.boton_escala_auto.setToolTip("Ampliación que hace visible la deformada (≈ 8 % del tamaño del modelo)")
+        self.check_original = QCheckBox("Mostrar el contorno sin deformar")
+        self.check_original.setChecked(True)
+        self.boton_animar = QPushButton("▶ Animar")
+        self.boton_animar.setCheckable(True)
+        self.boton_video = QPushButton("Guardar video…")
+        self.boton_video.setToolTip("Graba la deformada animada en un video MP4 (o GIF) con la vista actual")
 
         self.boton_volver = QPushButton("Volver al modelo (selección)")
         self.etiqueta_resumen = QLabel("Ejecute el análisis para ver los esfuerzos.")
@@ -84,8 +107,22 @@ class PanelEsfuerzos(QWidget):
         formulario.addRow("Máximo [MPa]:", self.spin_maximo)
         formulario.addRow("Colores:", self.combo_colormap)
 
+        grupo = QGroupBox("Deformada")
+        capa = QVBoxLayout(grupo)
+        capa.addWidget(self.check_deformada)
+        fila = QHBoxLayout()
+        fila.addWidget(self.spin_escala_deformada, 1)
+        fila.addWidget(self.boton_escala_auto)
+        capa.addLayout(fila)
+        capa.addWidget(self.check_original)
+        botones = QHBoxLayout()
+        botones.addWidget(self.boton_animar)
+        botones.addWidget(self.boton_video)
+        capa.addLayout(botones)
+
         layout = QVBoxLayout(self)
         layout.addLayout(formulario)
+        layout.addWidget(grupo)
         layout.addWidget(self.etiqueta_resumen)
         layout.addWidget(self.tabla)
         layout.addWidget(self.boton_volver)
@@ -101,6 +138,13 @@ class PanelEsfuerzos(QWidget):
             senal.connect(self.cambio)
         self.check_escala_automatica.toggled.connect(self._al_cambiar_escala_automatica)
         self.boton_volver.clicked.connect(self.volver_al_modelo)
+        self.check_deformada.toggled.connect(self._al_cambiar_deformada)
+        self.check_original.toggled.connect(self.cambio)
+        self.spin_escala_deformada.editingFinished.connect(self.cambio)
+        self.boton_escala_auto.clicked.connect(self.escala_automatica_solicitada)
+        self.boton_animar.toggled.connect(self._al_alternar_animacion)
+        self.boton_video.clicked.connect(self.video_solicitado)
+        self._actualizar_deformada_habilitada()
 
     @staticmethod
     def _spin() -> QDoubleSpinBox:
@@ -113,6 +157,28 @@ class PanelEsfuerzos(QWidget):
     def _al_cambiar_escala_automatica(self) -> None:
         self._actualizar_escala_habilitada()
         self.cambio.emit()
+
+    def _al_cambiar_deformada(self) -> None:
+        self._actualizar_deformada_habilitada()
+        if not self.check_deformada.isChecked() and self.boton_animar.isChecked():
+            self.boton_animar.setChecked(False)
+        self.cambio.emit()
+
+    def _al_alternar_animacion(self, activa: bool) -> None:
+        self.boton_animar.setText("■ Detener" if activa else "▶ Animar")
+        if activa and not self.check_deformada.isChecked():
+            self.check_deformada.setChecked(True)  # muestra la deformada antes de animarla
+        self.animacion_alternada.emit(activa)
+
+    def _actualizar_deformada_habilitada(self) -> None:
+        activa = self.check_deformada.isChecked()
+        for w in (self.spin_escala_deformada, self.boton_escala_auto, self.check_original):
+            w.setEnabled(activa)
+
+    def fijar_escala_deformada(self, valor: float) -> None:
+        self.spin_escala_deformada.blockSignals(True)
+        self.spin_escala_deformada.setValue(valor)
+        self.spin_escala_deformada.blockSignals(False)
 
     def _actualizar_escala_habilitada(self) -> None:
         manual = not self.check_escala_automatica.isChecked()
@@ -144,6 +210,9 @@ class PanelEsfuerzos(QWidget):
             minimo=self.spin_minimo.value(),
             maximo=self.spin_maximo.value(),
             colormap=self.combo_colormap.currentText(),
+            deformada=self.check_deformada.isChecked(),
+            escala_deformada=self.spin_escala_deformada.value(),
+            mostrar_original=self.check_original.isChecked(),
         )
 
     def fijar_escala(self, minimo: float, maximo: float) -> None:

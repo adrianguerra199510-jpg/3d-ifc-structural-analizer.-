@@ -627,6 +627,8 @@ def generar_inp_caso(
         lineas.append("*DLOAD")
         lineas.extend(lineas_dload)
 
+    lineas.append("*NODE FILE")
+    lineas.append("U")
     lineas.append("*EL FILE")
     lineas.append("S")
     lineas.append("*END STEP")

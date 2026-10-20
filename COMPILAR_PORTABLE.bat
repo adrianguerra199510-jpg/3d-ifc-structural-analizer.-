@@ -86,6 +86,8 @@ if exist "%BUILD%\work" rmdir /s /q "%BUILD%\work"
     --collect-data pyvista ^
     --collect-all pyvistaqt ^
     --collect-all shapely ^
+    --collect-all imageio ^
+    --collect-all imageio_ffmpeg ^
     "%~dp0iniciar_app.py"
 if errorlevel 1 goto :error
 if not exist "%CARPETA%\AnalizadorEstructuralIFC.exe" goto :error

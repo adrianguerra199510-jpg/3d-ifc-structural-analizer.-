@@ -12,11 +12,12 @@ Flujo de uso:
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -75,6 +76,9 @@ from .visor_3d import MODO_CARA, MODO_ELEMENTO, Visor3D
 
 logger = logging.getLogger(__name__)
 
+#: Fotogramas de un ciclo de la deformada animada (0 → 1 → 0).
+PASOS_DE_ANIMACION = 48
+
 AYUDA = (
     "<b>Cómo se usa</b><ol>"
     "<li><b>Archivo → Importar IFC</b>.</li>"
@@ -115,6 +119,10 @@ class VentanaPrincipal(QMainWindow):
         self._resultado_desactualizado = False
         self._desde_arbol = False  # la selección del visor la provocó el árbol (evita el bucle)
         self._worker: Optional[TrabajadorAnalisis] = None
+        self._timer_animacion = QTimer(self)
+        self._timer_animacion.setInterval(40)
+        self._timer_animacion.timeout.connect(self._paso_de_animacion)
+        self._paso_animacion = 0
         self._dialogo_progreso: Optional[QProgressDialog] = None
 
         self.setWindowIcon(icono_aplicacion())
@@ -357,6 +365,9 @@ class VentanaPrincipal(QMainWindow):
         self.panel_arbol.editar_casos.connect(self._gestionar_casos)
         self.panel_arbol.propiedades_solicitadas.connect(self.mostrar_propiedades)
         self.panel_esfuerzos.cambio.connect(self.mostrar_esfuerzos)
+        self.panel_esfuerzos.animacion_alternada.connect(self._alternar_animacion)
+        self.panel_esfuerzos.video_solicitado.connect(self._guardar_video)
+        self.panel_esfuerzos.escala_automatica_solicitada.connect(self._aplicar_escala_automatica)
         self.panel_esfuerzos.volver_al_modelo.connect(self.volver_al_modelo)
 
     # ------------------------------------------------------------------
@@ -940,6 +951,8 @@ class VentanaPrincipal(QMainWindow):
             [(c.id, c.nombre) for c in self.combinaciones.values() if c.id in resultado.tensiones_por_combinacion],
         )
         self._actualizar_estado_de_acciones()
+        self._detener_animacion()
+        self.panel_esfuerzos.fijar_escala_deformada(self._escala_deformada_automatica(resultado))
         self.accion_ver_esfuerzos.setChecked(True)
         self._docks[1].show()
         self._refrescar_arbol()
@@ -996,13 +1009,124 @@ class VentanaPrincipal(QMainWindow):
         if self._resultado_desactualizado:
             resumen = "⚠ Resultados anteriores a los últimos cambios.\n" + resumen
 
+        desplazamientos, origen_u = (None, "")
+        if parametros.deformada:
+            desplazamientos, origen_u = self._desplazamientos_de(resultado, parametros.resultado)
+            if desplazamientos is not None:
+                u_max = float(np.linalg.norm(desplazamientos, axis=1).max())
+                resumen += (f"\nDeformada de {origen_u}: desplazamiento máximo {u_max * 1000:.3f} mm, "
+                            f"dibujada ×{parametros.escala_deformada:g}.")
         self.visor.mostrar_esfuerzos(
             resultado.malla_tensiones, valores, resultado.barra_de_cada_celda(),
             titulo=f"{magnitud.nombre} [MPa]", rango=(minimo, maximo), cmap=parametros.colormap,
-            texto=f"{origen}\n{magnitud.nombre}" + (" (modelo sólido 3D)" if resultado.es_solido else ""),
+            texto=f"{origen}\n{magnitud.nombre}" + (" (modelo sólido 3D)" if resultado.es_solido else "")
+            + (f"\nDeformada ×{parametros.escala_deformada:g}" if desplazamientos is not None else ""),
             ocultar_planos=resultado.es_solido,
+            desplazamientos=desplazamientos, escala_deformada=parametros.escala_deformada,
+            factor_deformada=self._factor_animacion(), mostrar_original=parametros.mostrar_original,
         )
         self.panel_esfuerzos.mostrar_resumen(resumen, resultado.resumen_por_barra(valores))
+
+    # ------------------------------------------------------------------
+    # Deformada, animación y video
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _desplazamientos_de(resultado: ResultadoAnalisis, id_resultado: str):
+        """(desplazamientos (N, 3), texto) del caso o combinación elegidos; con la envolvente,
+        los de la combinación que más desplaza la estructura."""
+
+        if id_resultado == ENVOLVENTE:
+            if not resultado.desplazamientos_por_combinacion:
+                return None, ""
+            mayor = max(resultado.desplazamientos_por_combinacion,
+                        key=lambda c: float(np.linalg.norm(resultado.desplazamientos_por_combinacion[c], axis=1).max()))
+            return resultado.desplazamientos_por_combinacion[mayor], f"la combinación {mayor} (la mayor)"
+        if id_resultado in resultado.desplazamientos_por_combinacion:
+            return resultado.desplazamientos_por_combinacion[id_resultado], f"la combinación {id_resultado}"
+        if id_resultado in resultado.desplazamientos_por_caso:
+            return resultado.desplazamientos_por_caso[id_resultado], f"el caso {id_resultado}"
+        return None, ""
+
+    @staticmethod
+    def _escala_deformada_automatica(resultado: ResultadoAnalisis) -> float:
+        """Ampliación con la que el mayor desplazamiento mide ~8 % del tamaño del modelo."""
+
+        todos = list(resultado.desplazamientos_por_caso.values()) + list(resultado.desplazamientos_por_combinacion.values())
+        if not todos:
+            return 1.0
+        u_max = max(float(np.linalg.norm(u, axis=1).max()) for u in todos)
+        coordenadas = resultado.malla_tensiones.coordenadas
+        tamano = float(np.linalg.norm(coordenadas.max(axis=0) - coordenadas.min(axis=0)))
+        if u_max < 1e-12 or tamano < 1e-9:
+            return 1.0
+        bruta = 0.08 * tamano / u_max
+        cifras = 10 ** (math.floor(math.log10(bruta)) - 1)  # dos cifras significativas
+        return float(min(1e7, max(1.0, round(bruta / cifras) * cifras)))
+
+    def _aplicar_escala_automatica(self) -> None:
+        if self.resultado is not None:
+            self.panel_esfuerzos.fijar_escala_deformada(self._escala_deformada_automatica(self.resultado))
+            self.mostrar_esfuerzos()
+
+    def _factor_animacion(self) -> float:
+        if not self._timer_animacion.isActive():
+            return 1.0
+        return 0.5 * (1.0 - math.cos(2.0 * math.pi * self._paso_animacion / PASOS_DE_ANIMACION))
+
+    def _alternar_animacion(self, activa: bool) -> None:
+        if not activa:
+            self._detener_animacion()
+            return
+        self.mostrar_esfuerzos()  # asegura que la deformada está dibujada
+        if not self.visor.hay_deformada:
+            self.panel_esfuerzos.boton_animar.setChecked(False)
+            QMessageBox.information(self, "Animar", "Este resultado no tiene desplazamientos que animar.")
+            return
+        self._paso_animacion = 0
+        self._timer_animacion.start()
+
+    def _detener_animacion(self) -> None:
+        self._timer_animacion.stop()
+        if self.panel_esfuerzos.boton_animar.isChecked():
+            self.panel_esfuerzos.boton_animar.blockSignals(True)
+            self.panel_esfuerzos.boton_animar.setChecked(False)
+            self.panel_esfuerzos.boton_animar.setText("▶ Animar")
+            self.panel_esfuerzos.boton_animar.blockSignals(False)
+        self.visor.actualizar_deformada(1.0)
+
+    def _paso_de_animacion(self) -> None:
+        self._paso_animacion = (self._paso_animacion + 1) % PASOS_DE_ANIMACION
+        self.visor.actualizar_deformada(self._factor_animacion())
+
+    def _guardar_video(self) -> None:
+        if self.resultado is None:
+            return
+        self._timer_animacion.stop()
+        self.panel_esfuerzos.check_deformada.setChecked(True)
+        self.mostrar_esfuerzos()
+        if not self.visor.hay_deformada:
+            QMessageBox.information(self, "Guardar video", "Este resultado no tiene desplazamientos que grabar.")
+            return
+        ruta, filtro = QFileDialog.getSaveFileName(
+            self, "Guardar video de la deformada", "deformada.mp4", "Video MP4 (*.mp4);;GIF animado (*.gif)")
+        if not ruta:
+            return
+        if not ruta.lower().endswith((".mp4", ".gif")):
+            ruta += ".gif" if "gif" in filtro.lower() else ".mp4"
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.visor.guardar_video(
+                ruta, fotogramas=PASOS_DE_ANIMACION, fps=24,
+                al_avanzar=lambda k, n: (self.statusBar().showMessage(f"Grabando el video: {k} de {n} fotogramas..."),
+                                         QApplication.processEvents()),
+            )
+        except Exception as exc:  # falta el codificador, ruta sin permisos, etc.
+            logger.exception("No se pudo guardar el video")
+            QMessageBox.critical(self, "No se pudo guardar el video", f"{exc}\n\nPruebe a guardarlo como GIF.")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.statusBar().showMessage(f"Video guardado en {ruta}")
 
     # ------------------------------------------------------------------
     def closeEvent(self, evento) -> None:

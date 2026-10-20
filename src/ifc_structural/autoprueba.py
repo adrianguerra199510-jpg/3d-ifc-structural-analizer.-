@@ -71,6 +71,21 @@ def ejecutar_autoprueba() -> int:
         error3 = abs(obtenido3 - esperado) / esperado
         lineas.append(f"Analisis solido 3D, esfuerzo en x = 2 m: {obtenido3:.1f} kPa (error {error3:.2%})")
         ok = ok and error3 < 0.08
+
+        # Video de la deformada: el codificador MP4 (ffmpeg) viaja dentro de la carpeta portable
+        try:
+            import imageio_ffmpeg
+
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+            lineas.append(f"Video MP4 (ffmpeg): {'disponible' if Path(ffmpeg).exists() else 'NO ENCONTRADO (se usara GIF)'}")
+        except Exception as exc:  # noqa: BLE001 - no es crítico: se puede guardar como GIF
+            lineas.append(f"Video MP4 no disponible ({exc}); se usara GIF")
+        try:
+            import imageio.v2  # noqa: F401
+
+            lineas.append("Video GIF: disponible")
+        except Exception as exc:  # noqa: BLE001
+            lineas.append(f"Video GIF no disponible ({exc})")
         lineas.append("RESULTADO: CORRECTO" if ok else "RESULTADO: FALLO (esfuerzo fuera de tolerancia)")
     except Exception:  # noqa: BLE001 - se informa cualquier fallo
         lineas.append(traceback.format_exc())

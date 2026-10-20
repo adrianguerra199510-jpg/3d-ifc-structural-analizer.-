@@ -247,3 +247,28 @@ def test_peso_propio_del_modelo_solido_en_el_caso_de_carga_muerta(tmp_path: Path
     esperado = 24.0 * b * h * (L - 1.5) ** 2 / 2 * (h / 2) / (b * h**3 / 12)
     assert np.abs(t[en_estacion, 0]).max() == pytest.approx(esperado, rel=0.04)
     assert np.abs(r.tensiones_por_caso["L"]).max() < 1e-6  # sin cargas, el caso L no tiene esfuerzos
+
+
+@requiere_ccx
+def test_desplazamientos_de_los_dos_analisis_y_su_superposicion(tmp_path: Path):
+    """La flecha de la punta de un voladizo (PL³/3EI) sale del .frd en ambos análisis y se combina linealmente."""
+
+    from ifc_structural.solver.analisis import ejecutar_analisis
+    from .test_perfiles_i import E
+
+    P, L = 25.0, 2.5
+    casos = {"L": CasoCarga("L", "Viva", TipoCaso.L)}
+    comb = {"C": Combinacion("C", "L", {"L": 2.0})}
+    cp = CargaPuntual(id="P", caso_id="L", nodo_id="N1", fz=-P)
+    teoria = P * L**3 / (3 * E * I_FUERTE)
+    for nombre, funcion, extra, tolerancia in (("barras", ejecutar_analisis, {}, 0.06),
+                                               ("sólido", ejecutar_analisis_solido, {"tamano": 0.03}, 0.10)):
+        r = funcion(_voladizo(), casos, comb, [Apoyo(id="A", nodo_id="N0")], {}, {"L": []}, {"L": [cp]},
+                    tmp_path / nombre, **extra)
+        u = r.desplazamientos_por_caso["L"]
+        x = r.malla_tensiones.coordenadas
+        assert u.shape == (len(x), 3)
+        punta = np.argmax(x[:, 0])
+        assert u[punta, 2] == pytest.approx(-teoria, rel=tolerancia), nombre  # la cortante suma algo a la flexión
+        assert np.abs(u[np.isclose(x[:, 0], 0.0, atol=1e-6)]).max() < 1e-6  # el empotramiento (1 µm) no se mueve
+        assert r.desplazamientos_por_combinacion["C"][punta, 2] == pytest.approx(2.0 * u[punta, 2])

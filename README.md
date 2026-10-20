@@ -14,7 +14,7 @@ una experiencia de uso inspirada en Autodesk Inventor Nastran.
 - Asignar **apoyos y cargas sobre lo seleccionado** (ver «Cómo se usa»).
 - Casos de carga D y L y combinaciones ACI 318 creados por defecto (editables).
 - Generar el `.inp` de CalculiX con elementos **B31** y ejecutar `ccx`.
-- Mostrar **solo esfuerzos** (von Mises, σ1, σ3, τmax) en MPa como mapa de
+- Mostrar esfuerzos (von Mises, σ1, σ3, τmax) en MPa como mapa de
   colores sobre el sólido de cada barra, por caso, por combinación o como
   envolvente de combinaciones. No se muestran fuerzas, desplazamientos ni
   reacciones.
@@ -74,6 +74,9 @@ vigas y columnas.
 - **Barra de herramientas agrupada** con iconos propios: archivo, modo de selección
   (elemento / cara), caso activo, asignaciones (apoyo, carga, material, conexión),
   materiales y casos, y el botón verde **ANALIZAR** (F5).
+- **Símbolos de apoyo** según los grados de libertad: bloque (empotrado), pirámide (articulado), pirámide
+  con ruedas orientada según la traslación (rodillo, uno por cada traslación restringida) y un anillo
+  por cada giro restringido, con su etiqueta.
 - **Barra de vista** sobre el visor: isométrica, planta, frontal, lateral, inferior,
   encuadrar, visibilidad por tipo de elemento (los iconos llevan el color del elemento)
   y el cambio Modelo / Esfuerzos.
@@ -109,6 +112,23 @@ Para losas en dos direcciones se usa el **método de líneas de reparto a 45°
 El resultado de la transferencia se muestra en el visor como cargas
 lineales equivalentes sobre cada viga (uniformes o trapezoidales simplificadas
 a un valor promedio en Fase 1).
+
+## Deformada y video
+
+Además de los esfuerzos, el panel **Resultados** tiene el grupo **Deformada** (en el análisis de barras
+y en el 3D). CalculiX entrega los desplazamientos de cada nodo (`*NODE FILE, U`), que se combinan igual
+que los esfuerzos (la envolvente usa la combinación que más desplaza):
+
+- **Mostrar deformada**: la malla coloreada por el esfuerzo elegido se dibuja desplazada, con el contorno
+  sin deformar en gris. Apoyos y cargas se ocultan mientras tanto.
+- **Escala ×N**: ampliación de los desplazamientos; **Auto** la ajusta para que el mayor mida ~8 % del
+  tamaño del modelo.
+- **▶ Animar**: la deformada va de 0 a 100 % y vuelve, en bucle, con el visor libre para girar y acercar.
+- **Guardar video…**: graba un ciclo con la vista actual en **MP4** (H.264, con `imageio-ffmpeg`, que viaja
+  dentro de la carpeta portable) o **GIF**.
+
+La flecha de un voladizo coincide con `PL³/3EI` (barras: +1,7 %; sólido: +6 %, que incluye la deformación
+por cortante), ver `tests/test_solido.py`.
 
 ## Análisis 3D (modelo sólido)
 

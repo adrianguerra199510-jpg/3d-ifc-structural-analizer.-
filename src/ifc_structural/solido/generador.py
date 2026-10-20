@@ -123,7 +123,7 @@ def escribir_caso(comun: List[str], cargas: CargasCaso, caso_id: str) -> List[st
                     lineas.append(f"{n + 1},{g},{valor:.8g}")
     if cargas.peso_propio:
         lineas += ["*DLOAD", "EALL,GRAV,1.0,0.0,0.0,-1.0"]
-    lineas += ["*EL FILE", "S", "*END STEP"]
+    lineas += ["*NODE FILE", "U", "*EL FILE", "S", "*END STEP"]
     return lineas
 
 

@@ -177,6 +177,38 @@ def main(salida: Path) -> None:
     m = n[np.isclose(x3[n, 0], 1.3, atol=0.03)]
     esperado = (25.0 * 1.3 + ipe.area * 77.0 * 1.3**2 / 2) * (ipe.altura / 2) / ipe.inercia_z
     verificar(abs(np.abs(t3[m, 0]).max() - esperado) < 0.05 * esperado, f"σ en B1 (3D): {np.abs(t3[m, 0]).max()} vs {esperado}")
+
+    # Deformada: se muestra, se anima y se graba en video (MP4 si hay codificador, y GIF)
+    from PySide6.QtWidgets import QFileDialog
+
+    panel = ventana.panel_esfuerzos
+    escala_auto = panel.spin_escala_deformada.value()
+    verificar(escala_auto >= 1.0, f"escala automática de la deformada: {escala_auto}")
+    panel.combo_resultado.setCurrentIndex(panel.combo_resultado.findData("L"))
+    panel.check_deformada.setChecked(True)
+    bombear(30)
+    verificar(ventana.visor.hay_deformada, "se dibuja la deformada del modelo sólido")
+    panel.boton_animar.setChecked(True)
+    for _ in range(12):
+        bombear(3)
+        time.sleep(0.05)
+    verificar(ventana._timer_animacion.isActive() and ventana._paso_animacion > 0, "la animación avanza")
+    panel.boton_animar.setChecked(False)
+    verificar(not ventana._timer_animacion.isActive(), "la animación se detiene")
+    formatos = ["gif"]
+    try:
+        import imageio_ffmpeg  # noqa: F401
+
+        formatos.insert(0, "mp4")
+    except ImportError:
+        pass
+    for formato in formatos:
+        ruta_video = salida / f"deformada.{formato}"
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, _r=str(ruta_video), **k: (_r, ""))
+        mensajes.clear()
+        ventana._guardar_video()
+        bombear(10)
+        verificar(ruta_video.exists() and ruta_video.stat().st_size > 5000, f"video {formato} guardado ({mensajes})")
     print("OK")
 
 

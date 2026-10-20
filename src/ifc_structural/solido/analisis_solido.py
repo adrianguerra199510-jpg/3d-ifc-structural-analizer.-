@@ -24,7 +24,7 @@ from ..solver.analisis import (
 )
 from ..solver.ejecutor_ccx import ejecutar_ccx_todos_los_casos
 from ..solver.generador_inp import ElementoMalla, MallaAnalisis
-from ..solver.lector_resultados import leer_malla_frd, leer_tensiones_frd
+from ..solver.lector_resultados import leer_desplazamientos_frd, leer_malla_frd, leer_tensiones_frd
 from .contactos import detectar_uniones, partes_sin_conexion
 from .generador import Apoyo3D, CargasCaso, ModeloSolido, escribir, escribir_caso, escribir_comun, etiqueta
 from .malla import ErrorMalla, MallaSolida, ParteMalla, construir_malla_solida, estimar_hexaedros
@@ -348,15 +348,18 @@ def ejecutar_analisis_solido(
     primer = next(iter(ejecuciones))
     malla_tensiones = leer_malla_frd(ejecuciones[primer].ruta_frd)
     tensiones_por_caso: Dict[str, np.ndarray] = {}
+    desplazamientos_por_caso: Dict[str, np.ndarray] = {}
     for caso_id, ejecucion in ejecuciones.items():
         m_caso = leer_malla_frd(ejecucion.ruta_frd)
         if not np.array_equal(m_caso.ids_nodos, malla_tensiones.ids_nodos):
             raise ErrorAnalisis(f"La malla de resultados del caso {caso_id} no coincide con la de los demás casos.")
         tensiones_por_caso[caso_id] = leer_tensiones_frd(ejecucion.ruta_frd, malla_tensiones)
+        desplazamientos_por_caso[caso_id] = leer_desplazamientos_frd(ejecucion.ruta_frd, malla_tensiones)
 
     # Solo los hexaedros del modelo (CalculiX no añade otros, pero los nodos de apoyo rígido no se dibujan)
     avanzar("Combinando casos de carga...")
     tensiones_por_combinacion = superponer_todas_las_combinaciones(tensiones_por_caso, list(combinaciones.values()))
+    desplazamientos_por_combinacion = superponer_todas_las_combinaciones(desplazamientos_por_caso, list(combinaciones.values()))
     maximo = max((float(np.nanmax(esfuerzos.von_mises(t))) for t in tensiones_por_caso.values()), default=0.0)
     if not np.isfinite(maximo) or maximo > LIMITE_ESFUERZO_RAZONABLE_KPA:
         advertencias.append("Los esfuerzos obtenidos no son físicamente razonables: revise los apoyos y las uniones entre piezas.")
@@ -371,4 +374,5 @@ def ejecutar_analisis_solido(
     return ResultadoAnalisis(
         malla=equivalente, malla_tensiones=malla_tensiones, tensiones_por_caso=tensiones_por_caso,
         tensiones_por_combinacion=tensiones_por_combinacion, advertencias=advertencias, es_solido=True,
+        desplazamientos_por_caso=desplazamientos_por_caso, desplazamientos_por_combinacion=desplazamientos_por_combinacion,
     )

@@ -20,6 +20,8 @@ elemento es una malla aparte cuya celda número ``i`` es su cara ``i``
 from __future__ import annotations
 
 import logging
+import math
+import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -92,6 +94,9 @@ class Visor3D(QtInteractor):
         self._barra_de_celda: List[str] = []
         self._actor_esfuerzos = None
         self._titulo_esfuerzos = ""
+        self._puntos_sin_deformar: Optional[np.ndarray] = None
+        self._desplazamientos: Optional[np.ndarray] = None
+        self._escala_deformada = 1.0
 
         self._picker = vtkCellPicker()
         self._picker.SetTolerance(0.0005)
@@ -487,9 +492,17 @@ class Visor3D(QtInteractor):
         cmap: str = "turbo",
         texto: str = "",
         ocultar_planos: bool = False,
+        desplazamientos: Optional[np.ndarray] = None,
+        escala_deformada: float = 1.0,
+        factor_deformada: float = 1.0,
+        mostrar_original: bool = True,
     ) -> None:
         """Mapa de contorno de ``valores`` (uno por nodo de ``malla``). Con ``ocultar_planos``
-        (análisis sólido) las losas y los muros tampoco se dibujan: ya están en la malla."""
+        (análisis sólido) las losas y los muros tampoco se dibujan: ya están en la malla.
+
+        Con ``desplazamientos`` (uno por nodo, en m) se dibuja la forma deformada: los
+        puntos se mueven ``escala_deformada × factor_deformada × desplazamiento`` (el
+        factor, de 0 a 1, es el de la animación) y, si se pide, se deja el contorno sin deformar."""
 
         self._vista = "ESFUERZOS"
         for visual in self._visuales.values():
@@ -504,8 +517,23 @@ class Visor3D(QtInteractor):
         n_celdas = len(malla.ids_elementos)
         celdas = np.hstack([np.full((n_celdas, 1), 8, dtype=np.int64), malla.conectividad.astype(np.int64)]).ravel()
         tipos = np.full(n_celdas, pv.CellType.HEXAHEDRON, dtype=np.uint8)
-        grid = pv.UnstructuredGrid(celdas, tipos, np.asarray(malla.coordenadas, dtype=float))
+        coordenadas = np.asarray(malla.coordenadas, dtype=float)
+        grid = pv.UnstructuredGrid(celdas, tipos, coordenadas.copy())
         grid.point_data["esfuerzo"] = np.asarray(valores, dtype=float)
+        self._puntos_sin_deformar = coordenadas
+        self._desplazamientos = None if desplazamientos is None else np.asarray(desplazamientos, dtype=float)
+        self._escala_deformada = escala_deformada
+        self.remove_actor("SIN_DEFORMAR", render=False)
+        if self._desplazamientos is not None:
+            grid.points = coordenadas + escala_deformada * factor_deformada * self._desplazamientos
+            if mostrar_original:
+                with warnings.catch_warnings():  # pyvista cambiará el algoritmo por defecto de extract_surface
+                    warnings.simplefilter("ignore")
+                    original = pv.UnstructuredGrid(celdas, tipos, coordenadas.copy()).extract_surface()
+                self.add_mesh(original.extract_feature_edges(feature_angle=35, boundary_edges=True, manifold_edges=False),
+                              color="#7a8794", line_width=1.2, opacity=0.7, name="SIN_DEFORMAR", pickable=False,
+                              show_scalar_bar=False)
+        self._mostrar_asignaciones(self._desplazamientos is None)
 
         self.remove_actor("ESFUERZOS", render=False)
         self.remove_scalar_bar_si_existe()
@@ -529,6 +557,50 @@ class Visor3D(QtInteractor):
             self.add_text(texto, position="upper_left", font_size=11, color="black", name="TEXTO_ESFUERZOS")
         self.render()
 
+    def _mostrar_asignaciones(self, visibles: bool) -> None:
+        """Apoyos y cargas no acompañan a la deformada: se ocultan mientras se ve."""
+
+        for nombre, actor in list(self.actors.items()):
+            if nombre.startswith("ASIG_"):
+                actor.SetVisibility(visibles)
+
+    def actualizar_deformada(self, factor: float) -> None:
+        """Mueve la malla de esfuerzos a ``factor`` (0 = sin deformar, 1 = deformada completa)."""
+
+        if self._grid_esfuerzos is None or self._desplazamientos is None or self._puntos_sin_deformar is None:
+            return
+        self._grid_esfuerzos.points = self._puntos_sin_deformar + self._escala_deformada * factor * self._desplazamientos
+        self._grid_esfuerzos.Modified()
+        self.render()
+
+    @property
+    def hay_deformada(self) -> bool:
+        return self._grid_esfuerzos is not None and self._desplazamientos is not None
+
+    def guardar_video(self, ruta: str, fotogramas: int = 60, fps: int = 24, al_avanzar=None) -> None:
+        """Graba un ciclo de la deformada (0 → 1 → 0) con la vista actual: MP4 (necesita
+        ``imageio-ffmpeg``) o GIF según la extensión de ``ruta``."""
+
+        if not self.hay_deformada:
+            raise RuntimeError("No hay una deformada que grabar.")
+        import imageio.v2 as imageio
+
+        es_gif = str(ruta).lower().endswith(".gif")
+        escritor = (imageio.get_writer(ruta, mode="I", duration=1000.0 / fps, loop=0) if es_gif
+                    else imageio.get_writer(ruta, fps=fps, codec="libx264", quality=8, macro_block_size=None,
+                                            pixelformat="yuv420p"))
+        try:
+            for k in range(fotogramas):
+                self.actualizar_deformada(0.5 * (1.0 - math.cos(2.0 * math.pi * k / fotogramas)))
+                imagen = np.asarray(self.screenshot(return_img=True))[:, :, :3]
+                alto, ancho = (imagen.shape[0] // 2) * 2, (imagen.shape[1] // 2) * 2  # H.264 pide dimensiones pares
+                escritor.append_data(imagen[:alto, :ancho])
+                if al_avanzar is not None:
+                    al_avanzar(k + 1, fotogramas)
+        finally:
+            escritor.close()
+            self.actualizar_deformada(1.0)
+
     def remove_scalar_bar_si_existe(self) -> None:
         for titulo in list(self.scalar_bars.keys()):
             self.remove_scalar_bar(titulo, render=False)
@@ -545,6 +617,8 @@ class Visor3D(QtInteractor):
         else:
             self.remove_actor("ESFUERZOS", render=False)
             self.remove_actor("TEXTO_ESFUERZOS", render=False)
+            self.remove_actor("SIN_DEFORMAR", render=False)
+            self._mostrar_asignaciones(True)
             self.remove_scalar_bar_si_existe()
             for visual in self._visuales.values():
                 visual.actor.GetProperty().SetOpacity(OPACIDAD_PLANOS if visual.tipo in ("LOSA", "MURO") else 1.0)

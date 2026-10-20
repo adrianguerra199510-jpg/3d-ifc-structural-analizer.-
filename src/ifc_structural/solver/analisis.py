@@ -30,7 +30,7 @@ from ..core.transferencia import (
 from .ejecutor_ccx import ejecutar_ccx_todos_los_casos
 from .generador_inp import MallaAnalisis, construir_malla, es_elemento_auxiliar, generar_inp_todos_los_casos
 from .recuperacion_perfiles import hay_perfiles_compuestos, recuperar_perfiles
-from .lector_resultados import MallaTensiones, leer_malla_frd, leer_tensiones_frd, recortar_malla
+from .lector_resultados import MallaTensiones, leer_desplazamientos_frd, leer_malla_frd, leer_tensiones_frd, recortar_malla
 
 #: Esfuerzo (kPa) a partir del cual se considera que el resultado no es
 #: físicamente razonable (100 GPa): señal típica de una estructura inestable.
@@ -49,6 +49,8 @@ class ResultadoAnalisis:
     tensiones_por_combinacion: Dict[str, np.ndarray]
     advertencias: List[str] = field(default_factory=list)
     es_solido: bool = False  # True si viene del análisis como modelo sólido (3D)
+    desplazamientos_por_caso: Dict[str, np.ndarray] = field(default_factory=dict)  # (N, 3), en m
+    desplazamientos_por_combinacion: Dict[str, np.ndarray] = field(default_factory=dict)
 
     def resultados_disponibles(self) -> Dict[str, np.ndarray]:
         """Casos y combinaciones, por id, listos para mostrar."""
@@ -376,11 +378,13 @@ def ejecutar_analisis(
     primer_caso = next(iter(ejecuciones))
     malla_tensiones = leer_malla_frd(ejecuciones[primer_caso].ruta_frd)
     tensiones_por_caso: Dict[str, np.ndarray] = {}
+    desplazamientos_por_caso: Dict[str, np.ndarray] = {}
     for caso_id, ejecucion in ejecuciones.items():
         malla_caso = leer_malla_frd(ejecucion.ruta_frd)
         if not np.array_equal(malla_caso.ids_nodos, malla_tensiones.ids_nodos):
             raise ErrorAnalisis(f"La malla de resultados del caso {caso_id} no coincide con la de los demás casos.")
         tensiones_por_caso[caso_id] = leer_tensiones_frd(ejecucion.ruta_frd, malla_tensiones)
+        desplazamientos_por_caso[caso_id] = leer_desplazamientos_frd(ejecucion.ruta_frd, malla_tensiones)
 
     # Extremos de barra y cortante de perfiles en I: se rehacen (ver recuperacion_perfiles)
     tensiones_por_caso = {
@@ -400,9 +404,11 @@ def ejecutar_analisis(
     if not mantener.all():
         malla_tensiones, conservados = recortar_malla(malla_tensiones, mantener)
         tensiones_por_caso = {caso: t[conservados] for caso, t in tensiones_por_caso.items()}
+        desplazamientos_por_caso = {caso: u[conservados] for caso, u in desplazamientos_por_caso.items()}
 
     avanzar("Combinando casos de carga...")
     tensiones_por_combinacion = superponer_todas_las_combinaciones(tensiones_por_caso, list(combinaciones.values()))
+    desplazamientos_por_combinacion = superponer_todas_las_combinaciones(desplazamientos_por_caso, list(combinaciones.values()))
 
     maximo = max(
         (float(np.nanmax(esfuerzos.von_mises(t))) for t in tensiones_por_caso.values()),
@@ -420,4 +426,6 @@ def ejecutar_analisis(
         tensiones_por_caso=tensiones_por_caso,
         tensiones_por_combinacion=tensiones_por_combinacion,
         advertencias=advertencias,
+        desplazamientos_por_caso=desplazamientos_por_caso,
+        desplazamientos_por_combinacion=desplazamientos_por_combinacion,
     )
