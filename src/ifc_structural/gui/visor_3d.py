@@ -55,6 +55,13 @@ COLOR_MOMENTO = "darkorchid"
 COLOR_APOYO_AREA = "seagreen"
 COLOR_CONEXION = "deeppink"
 OPACIDAD_PLANOS = 0.6
+
+#: Estilos de vista del modelo: sólido, transparente (se ve a través de las piezas) y alambre (solo aristas).
+ESTILO_SOLIDO = "SOLIDO"
+ESTILO_TRANSPARENTE = "TRANSPARENTE"
+ESTILO_ALAMBRE = "ALAMBRE"
+OPACIDAD_TRANSPARENTE = 0.25
+OPACIDAD_ALAMBRE = 0.04  # casi invisible pero sigue recibiendo los clics de selección
 OPACIDAD_PLANOS_EN_ESFUERZOS = 0.12
 #: Un clic es una pulsación que se mueve menos que esto (píxeles).
 UMBRAL_ARRASTRE_PX = 4
@@ -93,6 +100,7 @@ class Visor3D(QtInteractor):
     seleccion_cambiada = Signal(list)  # list[Objetivo]
     punto_sondeado = Signal(str)  # texto para mostrar al hacer clic en la vista de esfuerzos
     menu_contextual = Signal()  # clic derecho sobre el modelo (la selección ya está actualizada)
+    menu_fondo = Signal()  # clic derecho sobre el fondo (sin ningún elemento debajo)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -113,6 +121,7 @@ class Visor3D(QtInteractor):
         self._temporizador_escala.timeout.connect(self._redibujar_asignaciones)
         self._apoyos_visibles = True
         self._uniones_visibles = True
+        self._estilo = ESTILO_SOLIDO
         self._argumentos_asignaciones = None
 
         self._grid_esfuerzos: Optional[pv.UnstructuredGrid] = None
@@ -146,6 +155,42 @@ class Visor3D(QtInteractor):
         self.reset_camera()
         self.view_isometric()
         self.render()
+
+    @property
+    def estilo(self) -> str:
+        return self._estilo
+
+    def set_estilo(self, estilo: str) -> None:
+        """Cambia el estilo de dibujo del modelo: ``ESTILO_SOLIDO``, ``ESTILO_TRANSPARENTE`` o ``ESTILO_ALAMBRE``."""
+
+        if estilo not in (ESTILO_SOLIDO, ESTILO_TRANSPARENTE, ESTILO_ALAMBRE):
+            raise ValueError(estilo)
+        self._estilo = estilo
+        if self._vista == "MODELO":
+            self._aplicar_estilo()
+            self.render()
+
+    def _aplicar_estilo(self) -> None:
+        """Opacidad, representación y aristas de cada elemento según el estilo. En todos se pueden seguir eligiendo."""
+
+        for visual in self._visuales.values():
+            propiedad = visual.actor.GetProperty()
+            plano = visual.tipo in ("LOSA", "MURO")
+            if self._estilo == ESTILO_TRANSPARENTE:
+                propiedad.SetRepresentationToSurface()
+                propiedad.SetOpacity(OPACIDAD_TRANSPARENTE * (0.7 if plano else 1.0))
+            elif self._estilo == ESTILO_ALAMBRE:
+                if visual.solido is not None:  # barras, losas y muros: sus aristas son las de las caras
+                    propiedad.SetRepresentationToWireframe()
+                    propiedad.SetOpacity(1.0)
+                else:  # sólido libre: triángulos casi invisibles y solo las aristas vivas de sus superficies
+                    propiedad.SetRepresentationToSurface()
+                    propiedad.SetOpacity(OPACIDAD_ALAMBRE)
+            else:
+                propiedad.SetRepresentationToSurface()
+                propiedad.SetOpacity(OPACIDAD_PLANOS if plano else 1.0)
+            if visual.actor_bordes is not None:
+                visual.actor_bordes.GetProperty().SetLineWidth(2.2 if self._estilo == ESTILO_ALAMBRE else 1.2)
 
     def reemplazar_modelo(self, proyecto: Proyecto) -> None:
         """Dibuja otro estado del proyecto (deshacer, rehacer o eliminar) sin mover la cámara."""
@@ -199,6 +244,7 @@ class Visor3D(QtInteractor):
 
         for id_, solido_libre in proyecto.solidos.items():
             self._agregar_solido_libre(id_, solido_libre)
+        self._aplicar_estilo()
 
     def _agregar_solido_libre(self, id_: str, s) -> None:
         """Geometría real de un elemento cualquiera: malla de triángulos con una celda por triángulo
@@ -338,8 +384,11 @@ class Visor3D(QtInteractor):
                 self.seleccionar_zona(inicio, (x, y), sumar=a["sumar"])
         elif accion == "CLIC" and fue_clic:
             self._sondear(int(x), int(y))
-        elif accion == "DERECHO" and fue_clic and self._vista == "MODELO":
-            self.clic_derecho_en(int(x), int(y))
+        elif accion == "DERECHO" and fue_clic:
+            if self._vista == "MODELO":
+                self.clic_derecho_en(int(x), int(y))
+            else:
+                self.menu_fondo.emit()
         elif accion in ("MOVER", "ROTAR") and fue_clic and a["boton"] == Qt.LeftButton:
             # con la mano o el giro activos, un clic sin arrastrar también selecciona
             if self._vista == "ESFUERZOS":
@@ -347,14 +396,53 @@ class Visor3D(QtInteractor):
             else:
                 self._clic_en_modelo(int(x), int(y), a["sumar"])
 
+    def _punto_bajo_cursor(self, x: float, y: float) -> np.ndarray:
+        """Punto del mundo bajo el píxel: el de la superficie que se ve ahí o, si no hay nada, el del plano de enfoque."""
+
+        if self._picker.Pick(x, y, 0, self.renderer):
+            return np.array(self._picker.GetPickPosition())
+        cam = self.renderer.GetActiveCamera()
+        ancho, alto = self.renderer.GetSize()
+        m = cam.GetCompositeProjectionTransformMatrix(ancho / max(alto, 1), -1, 1)
+        inversa = np.linalg.inv(np.array([[m.GetElement(i, j) for j in range(4)] for i in range(4)]))
+
+        def mundo(z: float) -> np.ndarray:
+            p = inversa @ np.array([2.0 * x / ancho - 1.0, 2.0 * y / alto - 1.0, z, 1.0])
+            return p[:3] / p[3]
+
+        cerca, lejos = mundo(-1.0), mundo(1.0)
+        foco, normal = np.array(cam.GetFocalPoint()), np.array(cam.GetDirectionOfProjection())
+        direccion = lejos - cerca
+        denominador = float(np.dot(normal, direccion))
+        if abs(denominador) < 1e-12:
+            return foco
+        return cerca + direccion * (float(np.dot(normal, foco - cerca)) / denominador)
+
     def wheelEvent(self, ev) -> None:
+        """Zoom hacia el cursor moviendo la cámara (sin cambiar el ángulo de visión, que deformaría la perspectiva):
+        el punto que está bajo el cursor se queda donde está."""
+
         pasos = ev.angleDelta().y() / 120.0
-        if pasos:
-            self.renderer.GetActiveCamera().Zoom(1.15 ** pasos)
-            self.renderer.ResetCameraClippingRange()
-            self.render()
-            if self._hay_tamanos_en_pixeles():  # los símbolos con tamaño en píxeles se recalculan al cambiar el zoom
-                self._temporizador_escala.start()
+        if not pasos:
+            return
+        x, y = self._pixel_vtk(ev)
+        cam = self.renderer.GetActiveCamera()
+        pos, foco = np.array(cam.GetPosition()), np.array(cam.GetFocalPoint())
+        distancia = float(np.linalg.norm(foco - pos))
+        factor = 1.15 ** pasos  # > 1 acerca
+        # límites: ni dentro de una pieza ni tan lejos que el modelo sea un punto
+        minima, maxima = 0.003 * self._escala, 30.0 * self._escala
+        factor = float(np.clip(factor, distancia / maxima, distancia / minima))
+        punto = self._punto_bajo_cursor(x, y)
+        escala = 1.0 / factor
+        cam.SetPosition(*(punto + (pos - punto) * escala))
+        cam.SetFocalPoint(*(punto + (foco - punto) * escala))
+        if cam.GetParallelProjection():
+            cam.SetParallelScale(cam.GetParallelScale() * escala)
+        self.renderer.ResetCameraClippingRange()
+        self.render()
+        if self._hay_tamanos_en_pixeles():  # los símbolos con tamaño en píxeles se recalculan al cambiar el zoom
+            self._temporizador_escala.start()
 
     def keyPressEvent(self, ev) -> None:
         ev.ignore()  # las teclas de VTK (w, s, f...) cambian la representación: las atajos son los de la ventana
@@ -558,11 +646,13 @@ class Visor3D(QtInteractor):
         está en la selección pasa a ser la selección; luego pide el menú."""
 
         clave, celda = self._elegir(x, y)
-        if clave is not None:
-            tipo, id_ = clave
-            ya_elegido = any((o.tipo, o.id) == (tipo, id_) for o in self._seleccion)
-            if not ya_elegido:
-                self.seleccionar([Objetivo(tipo, id_, self._cara_en_celda(clave, celda) if self._modo == MODO_CARA else None)])
+        if clave is None:  # sobre el fondo: opciones de la vista (estilo, vistas, apoyos, cargas...)
+            self.menu_fondo.emit()
+            return
+        tipo, id_ = clave
+        ya_elegido = any((o.tipo, o.id) == (tipo, id_) for o in self._seleccion)
+        if not ya_elegido:
+            self.seleccionar([Objetivo(tipo, id_, self._cara_en_celda(clave, celda) if self._modo == MODO_CARA else None)])
         if self._seleccion:
             self.menu_contextual.emit()
 
@@ -1137,8 +1227,7 @@ class Visor3D(QtInteractor):
             self.remove_actor("SIN_DEFORMAR", render=False)
             self._mostrar_asignaciones(True)
             self.remove_scalar_bar_si_existe()
-            for visual in self._visuales.values():
-                visual.actor.GetProperty().SetOpacity(OPACIDAD_PLANOS if visual.tipo in ("LOSA", "MURO") else 1.0)
+            self._aplicar_estilo()
         self._aplicar_visibilidad()
         self._grid_esfuerzos = None
         self._pintar_seleccion()

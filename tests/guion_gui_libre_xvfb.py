@@ -200,6 +200,36 @@ def main(salida: Path) -> None:
         QTest.mouseRelease(visor, boton, modificador, QPoint(x1, alto - y1))
         bombear()
 
+    # Estilos de vista (Ver → Estilo de vista) y menú del clic derecho sobre el fondo
+    from PySide6.QtWidgets import QMenu
+
+    from ifc_structural.gui.visor_3d import ESTILO_ALAMBRE, ESTILO_SOLIDO, ESTILO_TRANSPARENTE
+
+    ventana.accion_modo_elemento.trigger()
+    clave_poste = ("SOLIDO", ids["POSTE"])
+    actor_poste = visor._visuales[clave_poste].actor
+    visor.seleccionar([])
+    ventana._acciones_estilo[ESTILO_TRANSPARENTE].trigger()
+    bombear()
+    verificar(visor.estilo == ESTILO_TRANSPARENTE and actor_poste.GetProperty().GetOpacity() < 0.5, "el estilo transparente baja la opacidad")
+    px, py = a_pantalla(0.2, 0.15, 0.3)
+    clic(px, py)
+    verificar(Objetivo("SOLIDO", ids["POSTE"]) in visor.seleccion or len(visor.seleccion) == 1, f"en transparente se sigue pudiendo elegir: {visor.seleccion}")
+    ventana.grab().save(str(salida / "07_transparente.png"))
+    ventana._acciones_estilo[ESTILO_ALAMBRE].trigger()
+    bombear()
+    verificar(visor.estilo == ESTILO_ALAMBRE and actor_poste.GetProperty().GetOpacity() < 0.1, "el estilo alambre deja solo las aristas")
+    ventana.grab().save(str(salida / "07b_alambre.png"))
+    ventana._acciones_estilo[ESTILO_SOLIDO].trigger()
+    bombear()
+    verificar(visor.estilo == ESTILO_SOLIDO and actor_poste.GetProperty().GetOpacity() == 1.0, "y el sólido lo restablece")
+    visor.seleccionar([])
+    menus = []
+    QMenu.exec = lambda self, *a, **k: menus.append(self)
+    arrastrar_boton(Qt.RightButton, 60, 60, 60, 60)  # clic derecho en una esquina vacía del visor
+    verificar(menus and any(a.text() == "Estilo de vista" for a in menus[-1].actions()), "el clic derecho sobre el fondo ofrece el estilo de vista")
+    ventana._acciones_estilo[ESTILO_SOLIDO].setChecked(True)
+
     cx0, cy0 = a_pantalla(0.2, 0.15, 0.2)
     antes = estado()
     arrastrar_boton(Qt.LeftButton, cx0 - 60, cy0 - 40, cx0 + 80, cy0 + 50)
@@ -216,13 +246,30 @@ def main(salida: Path) -> None:
     verificar(abs(np.array(camara.GetViewUp())[2]) > 0.5, "el giro mantiene el eje Z vertical")
     distancia = np.linalg.norm(np.array(camara.GetPosition()) - np.array(camara.GetFocalPoint()))
     angulo = camara.GetViewAngle()
-    visor_centro = QPointF(visor.width() / 2, visor.height() / 2)
     from PySide6.QtCore import QPoint as _P
 
-    QApplication.sendEvent(visor, QWheelEvent(visor_centro, visor.mapToGlobal(visor_centro), _P(0, 0), _P(0, 120), Qt.NoButton,
-                                              Qt.NoModifier, Qt.NoScrollPhase, False))
-    bombear()
-    verificar(camara.GetViewAngle() < angulo - 1e-6, "la rueda hace zoom")
+    def rueda(pasos, px, py):  # px, py: píxel de VTK (origen abajo a la izquierda)
+        posicion = QPointF(px, visor.height() - 1 - py)
+        QApplication.sendEvent(visor, QWheelEvent(posicion, visor.mapToGlobal(posicion), _P(0, 0), _P(0, int(120 * pasos)), Qt.NoButton,
+                                                  Qt.NoModifier, Qt.NoScrollPhase, False))
+        bombear()
+
+    # zoom hacia el cursor: la cámara se acerca sin cambiar el ángulo de visión y el punto bajo el cursor no se mueve
+    objetivo = visor._punto_bajo_cursor(cx0 + 40, cy0 - 30)
+    pan_antes = visor._proyectar(np.array([objetivo]))[0][0]
+    rueda(4, cx0 + 40, cy0 - 30)
+    pan_despues = visor._proyectar(np.array([objetivo]))[0][0]
+    nueva = np.linalg.norm(np.array(camara.GetPosition()) - np.array(camara.GetFocalPoint()))
+    verificar(nueva < 0.7 * distancia, f"la rueda acerca la cámara: {distancia} -> {nueva}")
+    verificar(abs(camara.GetViewAngle() - angulo) < 1e-9, "sin cambiar el ángulo de visión (no deforma la perspectiva)")
+    verificar(np.allclose(pan_antes, pan_despues, atol=1.0), f"el punto bajo el cursor no se mueve: {pan_antes} {pan_despues}")
+    rueda(-300, cx0, cy0)
+    verificar(abs(camara.GetViewAngle() - angulo) < 1e-9 and np.linalg.norm(np.array(camara.GetPosition()) - np.array(camara.GetFocalPoint())) <= 30.0 * visor._escala * 1.001,
+              "alejar tiene un límite y tampoco cambia el ángulo")
+    rueda(300, cx0, cy0)
+    verificar(np.linalg.norm(np.array(camara.GetPosition()) - np.array(camara.GetFocalPoint())) >= 0.003 * visor._escala * 0.999, "acercar tiene un límite")
+    visor.reset_camera()
+    vista("view_isometric")
     # con «Rotar» activo, arrastrar con el botón izquierdo gira la vista
     ventana.barra_vista.botones_navegacion["ROTAR"].setChecked(True)
     antes = estado()

@@ -79,7 +79,7 @@ from .pagina_bienvenida import PaginaBienvenida
 from .panel_arbol import PanelArbol
 from .panel_resultados import ENVOLVENTE, PanelEsfuerzos
 from .trabajador_analisis import TrabajadorAnalisis
-from .visor_3d import MODO_CARA, MODO_ELEMENTO, Visor3D
+from .visor_3d import ESTILO_ALAMBRE, ESTILO_SOLIDO, ESTILO_TRANSPARENTE, MODO_CARA, MODO_ELEMENTO, Visor3D
 
 logger = logging.getLogger(__name__)
 
@@ -291,15 +291,28 @@ class VentanaPrincipal(QMainWindow):
         self.menuBar().addMenu(self.menu_ver)
         self.menu_ver.addActions([self.accion_ver_modelo, self.accion_ver_esfuerzos])
         self.menu_ver.addSeparator()
+        # Estilo de vista: sólido, transparente o alambre (las mismas acciones salen al hacer clic derecho sobre el fondo)
+        self._acciones_estilo = {}
+        grupo_estilo = QActionGroup(self)
+        for texto, estilo in (("Sólido", ESTILO_SOLIDO), ("Transparente", ESTILO_TRANSPARENTE), ("Alambre (solo aristas)", ESTILO_ALAMBRE)):
+            accion_estilo = QAction(texto, self, checkable=True, checked=estilo == ESTILO_SOLIDO)
+            accion_estilo.triggered.connect(lambda _=False, e=estilo: self._cambiar_estilo(e))
+            grupo_estilo.addAction(accion_estilo)
+            self._acciones_estilo[estilo] = accion_estilo
+        submenu_estilo = self.menu_ver.addMenu("Estilo de vista")
+        submenu_estilo.addActions(list(self._acciones_estilo.values()))
+        self.menu_ver.addSeparator()
         for dock in self._docks:  # reabrir los paneles si se cerraron
             self.menu_ver.addAction(dock.toggleViewAction())
         self.menu_ver.addSeparator()
+        self._acciones_mostrar = []
         for texto, boton in (("Mostrar apoyos", self.barra_vista.boton_apoyos), ("Mostrar cargas", self.barra_vista.boton_flechas),
                              ("Mostrar constraints", self.barra_vista.boton_uniones)):
             accion_vista = QAction(texto, self, checkable=True, checked=True)
             accion_vista.toggled.connect(boton.setChecked)
             boton.toggled.connect(accion_vista.setChecked)
             self.menu_ver.addAction(accion_vista)
+            self._acciones_mostrar.append(accion_vista)
         self.menu_ver.addAction("Escala de símbolos…", self.cambiar_escalas)
         self.menu_ver.addSeparator()
         self._acciones_visibilidad = {}
@@ -404,6 +417,7 @@ class VentanaPrincipal(QMainWindow):
         self.barra_vista.visibilidad_cambiada.connect(lambda t, v: self._cambiar_visibilidad(t, v, desde_menu=False))
         self.visor.seleccion_cambiada.connect(self._al_cambiar_seleccion)
         self.visor.menu_contextual.connect(self._mostrar_menu_contextual)
+        self.visor.menu_fondo.connect(self._mostrar_menu_fondo)
         self.visor.punto_sondeado.connect(lambda texto: self.statusBar().showMessage(texto))
         self.panel_arbol.elementos_seleccionados.connect(self._seleccion_desde_arbol)
         self.panel_arbol.eliminar_solicitado.connect(self.eliminar_asignaciones)
@@ -848,6 +862,9 @@ class VentanaPrincipal(QMainWindow):
                     escalas[parametro] = (str(modo), float(valor))
             if escalas:
                 self.visor.set_escalas(escalas)
+            estilo = ajustes.value("vista/estilo")
+            if estilo in self._acciones_estilo:
+                self._cambiar_estilo(str(estilo))
         except Exception:  # preferencias ilegibles: se usa el tamaño automático
             logger.exception("No se pudieron leer las escalas guardadas")
 
@@ -1019,6 +1036,35 @@ class VentanaPrincipal(QMainWindow):
         menu.addAction("Propiedades…", self.mostrar_propiedades)
         menu.addAction("Quitar la selección", lambda: self.visor.seleccionar([]))
         return menu
+
+    def _cambiar_estilo(self, estilo: str) -> None:
+        self.visor.set_estilo(estilo)
+        self._acciones_estilo[estilo].setChecked(True)
+        try:
+            QSettings("AnalizadorEstructural", "Visor").setValue("vista/estilo", estilo)
+        except Exception:
+            logger.exception("No se pudo guardar el estilo de vista")
+
+    def construir_menu_fondo(self) -> QMenu:
+        """Menú del clic derecho sobre el fondo: estilo de vista, vistas de cámara y qué se muestra."""
+
+        menu = QMenu(self)
+        estilo = menu.addMenu("Estilo de vista")
+        estilo.addActions(list(self._acciones_estilo.values()))
+        vistas = menu.addMenu("Vista")
+        for clave, texto in (("vista_iso", "Isométrica"), ("vista_planta", "Planta"), ("vista_frontal", "Frontal"),
+                             ("vista_lateral", "Lateral"), ("vista_inferior", "Inferior"), ("ajustar", "Encuadrar todo")):
+            vistas.addAction(texto, lambda c=clave: self._cambiar_vista(c))
+        menu.addSeparator()
+        menu.addActions(self._acciones_mostrar)
+        menu.addAction("Escala de símbolos…", self.cambiar_escalas)
+        if self.visor.seleccion:
+            menu.addSeparator()
+            menu.addAction("Quitar la selección", lambda: self.visor.seleccionar([]))
+        return menu
+
+    def _mostrar_menu_fondo(self) -> None:
+        self.construir_menu_fondo().exec(QCursor.pos())
 
     def _mostrar_menu_contextual(self) -> None:
         if not self.visor.seleccion:
