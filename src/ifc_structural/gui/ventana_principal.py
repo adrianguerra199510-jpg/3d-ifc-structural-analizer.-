@@ -87,7 +87,8 @@ AYUDA = (
     "(uniforme, triangular, trapezoidal) y la dirección de aplicación.</li>"
     "<li><b>Materiales</b>: cree los suyos (o use las plantillas) y asígnelos a los elementos.</li>"
     "<li><b>Conectar elementos</b>: articulación o enlace rígido entre dos elementos seleccionados.</li>"
-    "<li>Pulse <b>▶ ANALIZAR</b> (F5) y revise los esfuerzos en el panel <b>Esfuerzos</b>.</li></ol>"
+    "<li>Pulse <b>▶ ANALIZAR</b> (F5) y revise los esfuerzos en el panel <b>Esfuerzos</b>. "
+    "<b>ANALIZAR 3D</b> (F6) lo resuelve como modelo sólido, con la geometría real de cada pieza.</li></ol>"
     "Con el botón central del mouse se desplaza la vista; con la rueda se acerca o aleja; arrastrando con "
     "el botón izquierdo se gira."
 )
