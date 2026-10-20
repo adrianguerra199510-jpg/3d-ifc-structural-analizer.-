@@ -19,6 +19,7 @@ from .config import carpeta_aplicacion, cargar_configuracion
 from .core.cargas import Apoyo, CargaPuntual
 from .core.casos_carga import CasoCarga, Combinacion, TipoCaso
 from .core.modelo import Material, PerfilSeccion, Proyecto
+from .solido.analisis_solido import ejecutar_analisis_solido
 from .solver.analisis import ejecutar_analisis
 
 
@@ -55,6 +56,21 @@ def ejecutar_autoprueba() -> int:
         error = abs(obtenido - esperado) / esperado
         lineas.append(f"Esfuerzo en x = 2 m: {obtenido:.1f} kPa (teoria de vigas: {esperado:.1f} kPa, error {error:.2%})")
         ok = error < 0.05
+
+        with tempfile.TemporaryDirectory(prefix="autoprueba3d_") as carpeta:
+            solido = ejecutar_analisis_solido(
+                _voladizo(),
+                {"L": CasoCarga("L", "Carga viva", TipoCaso.L)},
+                {"C1": Combinacion("C1", "1.0L", {"L": 1.0})},
+                [Apoyo(id="AP1", nodo_id="N1")], {}, {},
+                {"L": [CargaPuntual(id="CP1", caso_id="L", nodo_id="N2", fz=-10.0)]},
+                Path(carpeta), configuracion.ruta_ccx_efectiva, tamano=0.1,
+            )
+        x3 = solido.malla_tensiones.coordenadas[:, 0]
+        obtenido3 = float(np.abs(solido.tensiones_por_caso["L"][:, 0])[np.isclose(x3, 2.0, atol=0.06)].max())
+        error3 = abs(obtenido3 - esperado) / esperado
+        lineas.append(f"Analisis solido 3D, esfuerzo en x = 2 m: {obtenido3:.1f} kPa (error {error3:.2%})")
+        ok = ok and error3 < 0.08
         lineas.append("RESULTADO: CORRECTO" if ok else "RESULTADO: FALLO (esfuerzo fuera de tolerancia)")
     except Exception:  # noqa: BLE001 - se informa cualquier fallo
         lineas.append(traceback.format_exc())

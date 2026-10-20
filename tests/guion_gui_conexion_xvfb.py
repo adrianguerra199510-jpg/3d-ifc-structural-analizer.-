@@ -145,6 +145,38 @@ def main(salida: Path) -> None:
     n = nodos("C2")
     medio = n[np.isclose(x[n, 2], 3.5, atol=0.01)]
     verificar(abs(t[medio, 2].mean() + 100.0 / heb.area - 0) < 0.03 * 100.0 / heb.area, "axial en la cabeza de la columna")
+
+    # Análisis sólido (3D) del mismo modelo: botón ANALIZAR 3D
+    from ifc_structural.gui.dialogo_analisis_3d import DialogoAnalisis3D
+
+    class Dialogo3D(DialogoAnalisis3D):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            verificar("hexaedros" in self.estimacion.text(), "el diálogo 3D estima el número de hexaedros")
+            self.spin_tamano.setValue(25)
+
+    vp.DialogoAnalisis3D = Dialogo3D
+    verificar(ventana.accion_analizar_3d.isEnabled(), "el botón ANALIZAR 3D está habilitado")
+    ventana.volver_al_modelo()
+    mensajes.clear()
+    ventana.accion_analizar_3d.trigger()
+    inicio = time.time()
+    while ventana._worker.isRunning() and time.time() - inicio < 200:
+        bombear(5)
+        time.sleep(0.05)
+    bombear(30)
+    solido = ventana.resultado
+    verificar(solido is not None and solido.es_solido, f"el análisis 3D terminó ({mensajes})")
+    verificar(not [m for m in mensajes if m[0] == "critical"], f"sin errores en 3D: {mensajes}")
+    verificar(ventana.visor.vista == "ESFUERZOS", "el visor muestra los esfuerzos del modelo sólido")
+    ventana.grab().save(str(salida / "conexion_solido.png"))
+    t3 = solido.tensiones_por_caso["D"]
+    x3 = solido.malla_tensiones.coordenadas
+    b3 = np.array(solido.barra_de_cada_celda())
+    n = np.unique(solido.malla_tensiones.conectividad[b3 == "B1"])
+    m = n[np.isclose(x3[n, 0], 1.3, atol=0.03)]
+    esperado = (25.0 * 1.3 + ipe.area * 77.0 * 1.3**2 / 2) * (ipe.altura / 2) / ipe.inercia_z
+    verificar(abs(np.abs(t3[m, 0]).max() - esperado) < 0.05 * esperado, f"σ en B1 (3D): {np.abs(t3[m, 0]).max()} vs {esperado}")
     print("OK")
 
 

@@ -92,6 +92,11 @@ QToolButton#botonAnalizar {{ background: {VERDE}; color: white; font-weight: 700
 QToolButton#botonAnalizar:hover {{ background: {VERDE_CLARO}; }}
 QToolButton#botonAnalizar:pressed {{ background: #25744a; }}
 QToolButton#botonAnalizar:disabled {{ background: #b9c4cf; border-color: #b9c4cf; color: #eef1f5; }}
+QToolButton#botonAnalizar3D {{ background: {ACENTO_CLARO}; color: {ACENTO_OSCURO}; font-weight: 700; font-size: 13px;
+                              padding: 7px 18px; border: 1px solid {ACENTO}; border-radius: 9px; }}
+QToolButton#botonAnalizar3D:hover {{ background: {ACENTO_MEDIO}; }}
+QToolButton#botonAnalizar3D:pressed {{ background: {ACENTO_MEDIO}; border-color: {ACENTO_OSCURO}; }}
+QToolButton#botonAnalizar3D:disabled {{ background: #eef1f5; border-color: #cdd5de; color: #a3aebb; }}
 
 /* ---- barra de vista sobre el visor ---- */
 QWidget#barraVista {{ background: {SUPERFICIE}; border-bottom: 1px solid {BORDE}; }}

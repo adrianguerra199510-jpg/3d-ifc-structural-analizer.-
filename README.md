@@ -19,8 +19,11 @@ una experiencia de uso inspirada en Autodesk Inventor Nastran.
   envolvente de combinaciones. No se muestran fuerzas, desplazamientos ni
   reacciones.
 
+- **ANALIZAR 3D**: analiza todo el modelo como **sólido** (ver más abajo), con la geometría
+  real de cada pieza, sin instalar nada más.
+
 Fuera de alcance en esta fase: modo shell para losas (placas S4/S3), no
-linealidad, sismo, mallado de sólidos, reportes PDF.
+linealidad, sismo, reportes PDF.
 
 ## Cómo se usa
 
@@ -106,6 +109,36 @@ Para losas en dos direcciones se usa el **método de líneas de reparto a 45°
 El resultado de la transferencia se muestra en el visor como cargas
 lineales equivalentes sobre cada viga (uniformes o trapezoidales simplificadas
 a un valor promedio en Fase 1).
+
+## Análisis 3D (modelo sólido)
+
+El botón **ANALIZAR 3D** (F6) malla cada viga, columna, losa y muro con su geometría real
+en **hexaedros** (CalculiX `C3D8I`) y resuelve el modelo completo como un sólido. Es la
+misma idea que la versión portable: el mallador es propio (barrido de la sección de cada
+barra, sin Gmsh ni otras dependencias), así que no hay nada que instalar.
+
+- **Geometría.** Un perfil en I se malla con sus alas y su alma; un rectángulo, con
+  su sección. Las barras alineadas con el mismo perfil (la columna partida por una unión)
+  se funden en una sola pieza y el extremo de una viga se **recorta hasta la superficie**
+  de la columna que atraviesa, de modo que su cara extrema queda apoyada en ella. A las
+  losas y muros se les quitan los hexaedros que solapan con vigas y columnas.
+- **Uniones.** Las piezas se unen con `*TIE` por las caras que se miran y se tocan (cara
+  extrema de la viga contra el ala, losa sobre viga, tramos de columna): equivale a una
+  soldadura continua. Una losa que el IFC coloca con holgura o solapada se une a las caras
+  cercanas y se avisa. No hay pernos, contacto con separación ni fricción.
+- **Apoyos y cargas.** Se aplican sobre la **sección o la cara** elegida: un apoyo
+  empotrado fija todos los nodos de la cara; uno con giros libres (pasador, rodillo)
+  mueve la cara como cuerpo rígido con un nodo de referencia. Las fuerzas y momentos puntuales
+  se reparten por el área de la sección, las cargas lineales a lo largo de ella y las presiones
+  sobre las caras de la losa. El peso propio es `*DLOAD,GRAV` con el peso específico del
+  material (caso de tipo D). Las conexiones manuales (articulaciones) no se aplican.
+- **Tamaño de elemento.** El diálogo propone el más fino que da unos 40 000 hexaedros y
+  estima la cantidad (máximo 400 000). Con 1 elemento en el espesor de un ala, `C3D8I`
+  flexiona bien; las concentraciones junto a apoyos, cargas puntuales y esquinas
+  interiores dependen del tamaño y no convergen del todo (son singularidades).
+- **Resultados.** Los mismos de siempre (von Mises, σ1, σ3, τmax, casos, combinaciones y
+  envolvente), pero sobre el sólido: se ven las alas, el alma y las uniones. Comprobado
+  contra `M·c/I`, `wL²/8` y el equilibrio (`tests/test_solido.py`): error < 3 %.
 
 ## Estructuras de acero: perfiles en I y uniones
 
@@ -211,7 +244,16 @@ src/ifc_structural/
 │   ├── generador_inp.py           # escritura del .inp de CalculiX (perfiles en I como alas + alma)
 │   ├── recuperacion_perfiles.py   # cortante de perfiles en I y esfuerzos en los extremos de barra
 │   ├── ejecutor_ccx.py            # ejecución de ccx vía subprocess
-│XX
+│   ├── lector_resultados.py       # malla expandida y tensor de esfuerzos del .frd
+│   ├── analisis.py                # validación, análisis y combinaciones
+│   └── mecanismos.py              # detección de mecanismos
+├── solido/                        # análisis 3D como modelo sólido
+│   ├── seccion2d.py               # malla de cuadriláteros de la sección (rectángulo, doble T)
+│   ├── miembros.py                # barras fundidas y recortadas en las uniones
+│   ├── malla.py                   # hexaedros de barras, losas y muros; caras frontera
+│   ├── contactos.py               # *TIE entre caras coplanares enfrentadas
+│   ├── generador.py               # .inp (C3D8I, TIE, apoyos, cargas)
+│   └── analisis_solido.py         # orquestación y resultados
 ├── combinaciones/
 │   ├── motor_superposicion.py     # superposición lineal de tensores → combinaciones
 │   └── esfuerzos.py               # von Mises, principales, cortante máximo
@@ -221,6 +263,7 @@ src/ifc_structural/
     ├── dialogo_cargas.py
     ├── dialogo_apoyos.py
     ├── dialogo_casos.py
+    ├── dialogo_analisis_3d.py      # tamaño de elemento del análisis 3D
     ├── panel_resultados.py         # panel de esfuerzos
     ├── trabajador_analisis.py      # hilo del análisis
     ├── iconos.py                   # logo e iconos SVG

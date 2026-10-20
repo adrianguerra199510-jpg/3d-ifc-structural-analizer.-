@@ -48,6 +48,7 @@ class ResultadoAnalisis:
     tensiones_por_caso: Dict[str, np.ndarray]
     tensiones_por_combinacion: Dict[str, np.ndarray]
     advertencias: List[str] = field(default_factory=list)
+    es_solido: bool = False  # True si viene del análisis como modelo sólido (3D)
 
     def resultados_disponibles(self) -> Dict[str, np.ndarray]:
         """Casos y combinaciones, por id, listos para mostrar."""

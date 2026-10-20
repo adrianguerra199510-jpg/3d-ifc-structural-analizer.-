@@ -55,8 +55,10 @@ from ..core.materiales import descripcion_material
 from ..core.modelo import Proyecto
 from ..core.persistencia import cargar_proyecto, guardar_proyecto
 from ..ifc.importador import importar_ifc
+from ..solido.analisis_solido import ejecutar_analisis_solido
 from ..solver.analisis import ResultadoAnalisis, ejecutar_analisis, validar_modelo
 from .barra_vista import BarraVista
+from .dialogo_analisis_3d import DialogoAnalisis3D
 from .dialogo_acerca import DialogoAcerca
 from .dialogo_apoyos import DialogoApoyo
 from .dialogo_cargas import DialogoCargas
@@ -208,6 +210,8 @@ class VentanaPrincipal(QMainWindow):
         self.accion_casos = accion("Casos", self._gestionar_casos, "casos", ayuda="Casos de carga y combinaciones")
         self.accion_analizar = accion("ANALIZAR", self.analizar, None, "F5", "Resolver todos los casos con CalculiX y mostrar los esfuerzos (F5)")
         self.accion_analizar.setIcon(icono_blanco("analizar"))
+        self.accion_analizar_3d = accion("ANALIZAR 3D", self.analizar_3d, "solido", "F6",
+                                         "Analizar todo como modelo sólido: malla de hexaedros con la geometría real (F6)")
 
         self.accion_ver_modelo = accion("Modelo", lambda: self.volver_al_modelo(), "modelo",
                                         ayuda="Volver a la vista del modelo", checkable=True, checked=True)
@@ -234,6 +238,7 @@ class VentanaPrincipal(QMainWindow):
 
         menu = self.menuBar().addMenu("A&nalizar")
         menu.addAction(self.accion_analizar)
+        menu.addAction(self.accion_analizar_3d)
 
         self.menu_ver = QMenu("&Ver", self)
         self.menuBar().addMenu(self.menu_ver)
@@ -316,6 +321,14 @@ class VentanaPrincipal(QMainWindow):
         espacio.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         barra.addWidget(espacio)
 
+        self.boton_analizar_3d = QToolButton()
+        self.boton_analizar_3d.setObjectName("botonAnalizar3D")
+        self.boton_analizar_3d.setDefaultAction(self.accion_analizar_3d)
+        self.boton_analizar_3d.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.boton_analizar_3d.setIconSize(QSize(18, 18))
+        self.boton_analizar_3d.setCursor(Qt.PointingHandCursor)
+        barra.addWidget(self.boton_analizar_3d)
+
         self.boton_analizar = QToolButton()
         self.boton_analizar.setObjectName("botonAnalizar")
         self.boton_analizar.setDefaultAction(self.accion_analizar)
@@ -367,6 +380,7 @@ class VentanaPrincipal(QMainWindow):
         hay_modelo = bool(self.proyecto.todas_las_barras())
         ocupado = self._worker is not None and self._worker.isRunning()
         self.accion_analizar.setEnabled(hay_modelo and not ocupado)
+        self.accion_analizar_3d.setEnabled(hay_modelo and not ocupado)
         self.accion_apoyo.setEnabled(hay_modelo)
         self.accion_material.setEnabled(hay_modelo or bool(self.proyecto.losas))
         self.accion_conexion.setEnabled(len(self.proyecto.todas_las_barras()) >= 2)
@@ -851,7 +865,22 @@ class VentanaPrincipal(QMainWindow):
                 return
         self._iniciar_hilo()
 
-    def _iniciar_hilo(self) -> None:
+    def analizar_3d(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+        if not self.proyecto.todas_las_barras() and not self.proyecto.losas and not self.proyecto.muros:
+            QMessageBox.information(self, "Analizar 3D", "El modelo no tiene elementos que analizar.")
+            return
+        if not self.apoyos:
+            QMessageBox.warning(self, "Todavía no se puede analizar",
+                                "• No hay apoyos asignados: seleccione la cara extrema de una columna o viga y asigne un apoyo.")
+            return
+        dialogo = DialogoAnalisis3D(self.proyecto, self)
+        if not dialogo.exec():
+            return
+        self._iniciar_hilo(solido=True, tamano=dialogo.tamano())
+
+    def _iniciar_hilo(self, solido: bool = False, tamano: float = 0.05) -> None:
         proyecto, casos, combinaciones, apoyos = self.proyecto, dict(self.casos), dict(self.combinaciones), list(self.apoyos)
         conexiones = list(self.conexiones)
         area = {k: list(v) for k, v in self.cargas_area_por_caso.items()}
@@ -860,6 +889,12 @@ class VentanaPrincipal(QMainWindow):
         configuracion = self.configuracion
 
         def trabajo(avanzar):
+            if solido:
+                return ejecutar_analisis_solido(
+                    proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,
+                    configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx_efectiva, avanzar,
+                    tamano=tamano, conexiones=conexiones,
+                )
             return ejecutar_analisis(
                 proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,
                 configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx_efectiva, avanzar,
@@ -871,7 +906,7 @@ class VentanaPrincipal(QMainWindow):
         self._worker.fallido.connect(self._al_fallar_analisis)
         self._worker.finished.connect(self._al_finalizar_hilo)
 
-        self._dialogo_progreso = QProgressDialog("Preparando el análisis...", "", 0, 0, self)
+        self._dialogo_progreso = QProgressDialog("Preparando el análisis 3D..." if solido else "Preparando el análisis...", "", 0, 0, self)
         self._dialogo_progreso.setWindowTitle("Analizando")
         self._dialogo_progreso.setCancelButton(None)
         self._dialogo_progreso.setWindowModality(Qt.WindowModal)
@@ -963,7 +998,8 @@ class VentanaPrincipal(QMainWindow):
         self.visor.mostrar_esfuerzos(
             resultado.malla_tensiones, valores, resultado.barra_de_cada_celda(),
             titulo=f"{magnitud.nombre} [MPa]", rango=(minimo, maximo), cmap=parametros.colormap,
-            texto=f"{origen}\n{magnitud.nombre}",
+            texto=f"{origen}\n{magnitud.nombre}" + (" (modelo sólido 3D)" if resultado.es_solido else ""),
+            ocultar_planos=resultado.es_solido,
         )
         self.panel_esfuerzos.mostrar_resumen(resumen, resultado.resumen_por_barra(valores))
 

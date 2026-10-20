@@ -482,8 +482,10 @@ class Visor3D(QtInteractor):
         rango: Optional[Tuple[float, float]] = None,
         cmap: str = "turbo",
         texto: str = "",
+        ocultar_planos: bool = False,
     ) -> None:
-        """Mapa de contorno de ``valores`` (uno por nodo de ``malla``)."""
+        """Mapa de contorno de ``valores`` (uno por nodo de ``malla``). Con ``ocultar_planos``
+        (análisis sólido) las losas y los muros tampoco se dibujan: ya están en la malla."""
 
         self._vista = "ESFUERZOS"
         for visual in self._visuales.values():
@@ -491,7 +493,7 @@ class Visor3D(QtInteractor):
                 visual.actor.SetVisibility(False)
                 visual.actor.SetPickable(False)
             else:
-                visual.actor.SetVisibility(self._visibles[visual.tipo])
+                visual.actor.SetVisibility(self._visibles[visual.tipo] and not ocultar_planos)
                 visual.actor.SetPickable(False)
                 visual.actor.GetProperty().SetOpacity(OPACIDAD_PLANOS_EN_ESFUERZOS)
 
