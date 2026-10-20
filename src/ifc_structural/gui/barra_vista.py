@@ -4,7 +4,7 @@ elemento y leyenda de colores."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QLabel, QSlider, QToolButton, QWidget
+from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QLabel, QToolButton, QWidget
 
 from .iconos import icono
 from .visor_3d import COLORES_BASE
@@ -29,8 +29,6 @@ class BarraVista(QWidget):
     vista_solicitada = Signal(str)  # "vista_iso", "vista_planta", ..., "ajustar"
     visibilidad_cambiada = Signal(str, bool)  # tipo, visible
     flechas_visibles = Signal(bool)  # mostrar u ocultar las flechas de las cargas
-    escala_flechas = Signal(float)  # tamaño de las flechas (1 = automático)
-    escala_apoyos = Signal(float)  # tamaño de los símbolos de apoyo (1 = automático)
     apoyos_visibles = Signal(bool)  # mostrar u ocultar los apoyos
     uniones_visibles = Signal(bool)  # mostrar u ocultar los constraints
     navegacion_cambiada = Signal(str)  # qué hace arrastrar con el botón izquierdo: SELECCION, MOVER o ROTAR
@@ -96,12 +94,11 @@ class BarraVista(QWidget):
             ("ROTAR", "Rotar", "rotar", "Arrastrar con el botón izquierdo gira la vista (también: Ctrl o Mayús + botón central)."),
         ):
             boton = QToolButton()
-            boton.setText(texto)
             boton.setIcon(icono(nombre_icono))
             boton.setCheckable(True)
             boton.setChecked(modo == "SELECCION")
-            boton.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-            boton.setToolTip(ayuda + "\nRueda del ratón: zoom.")
+            boton.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            boton.setToolTip(f"{texto}: {ayuda}\nRueda del ratón: zoom.")
             boton.toggled.connect(lambda activo, m=modo: activo and self.navegacion_cambiada.emit(m))
             self.grupo_navegacion.addButton(boton)
             fila.addWidget(boton)
@@ -112,57 +109,23 @@ class BarraVista(QWidget):
         fila.addSpacing(6)
         fila.addWidget(separador)
         fila.addSpacing(6)
-        self.boton_apoyos = QToolButton()
-        self.boton_apoyos.setText("Apoyos")
-        self.boton_apoyos.setIcon(icono("apoyo"))
-        self.boton_apoyos.setCheckable(True)
-        self.boton_apoyos.setChecked(True)
-        self.boton_apoyos.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.boton_apoyos.setToolTip("Mostrar u ocultar los símbolos de apoyo")
-        self.boton_apoyos.toggled.connect(self._al_cambiar_apoyos)
-        fila.addWidget(self.boton_apoyos)
-        self.deslizador_apoyos = QSlider(Qt.Horizontal)
-        self.deslizador_apoyos.setRange(20, 400)  # % del tamaño automático
-        self.deslizador_apoyos.setValue(100)
-        self.deslizador_apoyos.setFixedWidth(90)
-        self.deslizador_apoyos.setToolTip("Tamaño de los símbolos de apoyo (100 % = automático)")
-        self.deslizador_apoyos.valueChanged.connect(lambda v: self.escala_apoyos.emit(v / 100.0))
-        fila.addWidget(self.deslizador_apoyos)
-        self.boton_flechas = QToolButton()
-        self.boton_flechas.setText("Cargas")
-        self.boton_flechas.setIcon(icono("carga"))
-        self.boton_flechas.setCheckable(True)
-        self.boton_flechas.setChecked(True)
-        self.boton_flechas.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.boton_flechas.setToolTip("Mostrar u ocultar las flechas de las cargas")
-        self.boton_flechas.toggled.connect(self._al_cambiar_flechas)
-        fila.addWidget(self.boton_flechas)
-        self.deslizador_flechas = QSlider(Qt.Horizontal)
-        self.deslizador_flechas.setRange(20, 400)  # % del tamaño automático
-        self.deslizador_flechas.setValue(100)
-        self.deslizador_flechas.setFixedWidth(90)
-        self.deslizador_flechas.setToolTip("Tamaño de las flechas de las cargas (100 % = automático)")
-        self.deslizador_flechas.valueChanged.connect(lambda v: self.escala_flechas.emit(v / 100.0))
-        fila.addWidget(self.deslizador_flechas)
-        self.boton_uniones = QToolButton()
-        self.boton_uniones.setText("Constraints")
-        self.boton_uniones.setIcon(icono("conectar"))
-        self.boton_uniones.setCheckable(True)
-        self.boton_uniones.setChecked(True)
-        self.boton_uniones.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.boton_uniones.setToolTip("Mostrar u ocultar los constraints (superficies unidas, enlaces y etiquetas)")
-        self.boton_uniones.toggled.connect(self.uniones_visibles.emit)
-        fila.addWidget(self.boton_uniones)
+        # Interruptores solo con el símbolo (el nombre va en la ayuda); el tamaño se cambia en Ver → Escala de símbolos
+        def interruptor(nombre_icono: str, ayuda: str, senal) -> QToolButton:
+            boton = QToolButton()
+            boton.setIcon(icono(nombre_icono))
+            boton.setCheckable(True)
+            boton.setChecked(True)
+            boton.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            boton.setToolTip(ayuda)
+            boton.toggled.connect(senal.emit)
+            fila.addWidget(boton)
+            return boton
+
+        self.boton_apoyos = interruptor("apoyo", "Mostrar u ocultar los apoyos", self.apoyos_visibles)
+        self.boton_flechas = interruptor("carga", "Mostrar u ocultar las cargas", self.flechas_visibles)
+        self.boton_uniones = interruptor("conectar", "Mostrar u ocultar los constraints", self.uniones_visibles)
         fila.addStretch(1)
         self._fila = fila
-
-    def _al_cambiar_apoyos(self, visibles: bool) -> None:
-        self.deslizador_apoyos.setEnabled(visibles)
-        self.apoyos_visibles.emit(visibles)
-
-    def _al_cambiar_flechas(self, visibles: bool) -> None:
-        self.deslizador_flechas.setEnabled(visibles)
-        self.flechas_visibles.emit(visibles)
 
     def agregar_accion(self, accion) -> None:
         """Añade, al extremo derecho, un botón ligado a una acción (p. ej. Modelo / Esfuerzos)."""

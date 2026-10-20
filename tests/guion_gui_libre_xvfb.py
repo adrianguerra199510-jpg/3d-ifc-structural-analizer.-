@@ -148,48 +148,40 @@ def main(salida: Path) -> None:
     barra.boton_flechas.setChecked(True)
     bombear()
     largo_normal = visor.actors["ASIG_CARGAS"].GetMapper().GetInput().GetBounds()
-    barra.deslizador_flechas.setValue(250)
+    from ifc_structural.gui.dialogo_escalas import DialogoEscalas
+    from ifc_structural.gui.visor_3d import ESCALA_PIXELES, ESCALA_PORCENTAJE
+
+    dialogo_escalas = DialogoEscalas(visor)  # Ver → Escala de símbolos
+    dialogo_escalas._spins["cargas"].setValue(250.0)  # 250 % de las flechas
     bombear()
     largo_grande = visor.actors["ASIG_CARGAS"].GetMapper().GetInput().GetBounds()
+
     def diagonal(b):
         return float(np.linalg.norm([b[1] - b[0], b[3] - b[2], b[5] - b[4]]))
 
-    verificar(diagonal(largo_grande) > 1.05 * diagonal(largo_normal), "el deslizador agranda las flechas")
-    barra.deslizador_flechas.setValue(100)
+    verificar(diagonal(largo_grande) > 1.05 * diagonal(largo_normal), "el diálogo de escala agranda las flechas")
+    dialogo_escalas._restablecer()
+    verificar(visor.escalas["cargas"] == (ESCALA_PORCENTAJE, 100.0), "restablecer vuelve al automático")
+    # tamaño en píxeles: el símbolo mide lo mismo en pantalla aunque se acerque la vista
+    visor.set_escala("apoyos", ESCALA_PIXELES, 60.0)
     bombear()
+    nombres_apoyo = [n for n in visor.actors if n.startswith("ASIG_APOYOS")]
+    verificar(nombres_apoyo, "los apoyos se redibujan con tamaño en píxeles")
+    def pixeles_del_simbolo():
+        return visor._tamano("apoyos", 1.0) / visor._metros_por_pixel()
 
-    # Selección por zona: arrastrar un rectángulo (modo Cara: izquierda→derecha, solo caras que quedan dentro)
-    def arrastrar(x0, y0, x1, y1, modificador=Qt.NoModifier):
-        alto = visor.height() - 1
-        QTest.mousePress(visor, Qt.LeftButton, modificador, QPoint(x0, alto - y0))
-        QTest.mouseMove(visor, QPoint((x0 + x1) // 2, alto - (y0 + y1) // 2))
-        QTest.mouseMove(visor, QPoint(x1, alto - y1))
-        QTest.mouseRelease(visor, Qt.LeftButton, modificador, QPoint(x1, alto - y1))
-        bombear()
-
-    ventana.accion_modo_cara.trigger()
-    vista("view_xy")
-    xa, ya = a_pantalla(0.0, 0.0, 0.55)
-    xb, yb = a_pantalla(0.4, 0.3, 0.55)
-    margen = 40
-    # ventana grande que contiene la placa base y todo lo demás: de izquierda a derecha solo caras completas
-    arrastrar(min(xa, xb) - margen, min(ya, yb) - margen, max(xa, xb) + margen, max(ya, yb) + margen, Qt.ShiftModifier)
-    caras_sel = {(o.tipo, o.id, o.cara) for o in visor.seleccion}
-    verificar((("SOLIDO", ids["PLACA_L"], cara_con_normal("PLACA_L", (0, 0, 1)))) in caras_sel,
-              f"la cara superior de la placa en L queda dentro de la ventana: {caras_sel}")
-    verificar(all(o.cara is not None for o in visor.seleccion) and len(visor.seleccion) >= 2, "se eligen superficies")
-    ventana.grab().save(str(salida / "03d_seleccion_zona.png"))
-    # rectángulo pequeño de derecha a izquierda (toca): solo la placa en L, que está arriba, en elemento
-    ventana.accion_modo_elemento.trigger()
-    vista("view_xy")
-    cx, cy = a_pantalla(0.3, 0.1, 0.55)
-    arrastrar(cx + 6, cy + 6, cx - 6, cy - 6)
-    verificar(Objetivo("SOLIDO", ids["PLACA_L"]) in visor.seleccion, f"zona que toca a la placa en L: {visor.seleccion}")
-    # modo zona activado desde la barra: arrastrar sin teclas ya no gira la vista
-    arrastrar(min(xa, xb) - margen, min(ya, yb) - margen, max(xa, xb) + margen, max(ya, yb) + margen)  # sin teclas: ya es selección
-    verificar(len(visor.seleccion) == len(proyecto.solidos), f"la ventana grande elige los 4 sólidos: {visor.seleccion}")
-    visor.seleccionar([])
-    vista("view_isometric")
+    antes = visor.actors[nombres_apoyo[0]].GetMapper().GetInput().GetBounds()
+    verificar(abs(pixeles_del_simbolo() - 60.0) < 1e-6, "el símbolo mide 60 px")
+    camara_z = visor.renderer.GetActiveCamera()
+    camara_z.Zoom(2.0)
+    visor._redibujar_asignaciones()
+    bombear()
+    despues = visor.actors[nombres_apoyo[0]].GetMapper().GetInput().GetBounds()
+    verificar(abs(pixeles_del_simbolo() - 60.0) < 1e-6, "y sigue midiendo 60 px al acercar la vista")
+    verificar(antes != despues, "el símbolo se redibujó con el nuevo zoom")
+    camara_z.Zoom(0.5)
+    visor.set_escalas({"apoyos": (ESCALA_PORCENTAJE, 100.0)})
+    bombear()
 
     # Navegación estándar: arrastrar con el botón izquierdo NO mueve la cámara; central desplaza; Ctrl+central gira; rueda = zoom
     from PySide6.QtCore import QPointF

@@ -98,8 +98,11 @@ vigas y columnas.
   (asignaciones, materiales, casos, constraints y eliminaciones; los últimos 60). *Eliminar* (**Supr** con el
   visor activo, o clic derecho → «Eliminar del modelo») quita los elementos seleccionados con sus apoyos,
   cargas, conexiones y constraints, y los nodos que quedan sin uso; Ctrl+Z lo recupera.
-- **Tamaño de los símbolos:** los apoyos y las flechas de las cargas se dimensionan según el modelo (y, si hay
-  barras, la longitud típica); los deslizadores **Apoyos** y **Cargas** de la barra de vista los agrandan o achican.
+- **Tamaño de los símbolos:** los apoyos, las flechas de las cargas, los constraints y las etiquetas se dimensionan
+  según el modelo (y, si hay barras, la longitud típica). *Ver → Escala de símbolos…* cambia cada parámetro al instante,
+  como **porcentaje** del tamaño automático o como **tamaño en píxeles** de pantalla (que se mantiene al acercar o
+  alejar la vista), y se recuerda entre sesiones. Los interruptores de la barra de vista (solo el símbolo; el nombre
+  sale al pasar el cursor) muestran u ocultan apoyos, cargas y constraints.
 - **Clic derecho** sobre un elemento: carga, apoyo, material, conexión, propiedades.
 - Barra de estado con el modo de selección, el caso activo y la selección actual.
 
@@ -230,8 +233,8 @@ y la conserva como **sólido de forma libre**:
   se eligen solo los elementos —o superficies, en modo Cara— que quedan por completo dentro; de derecha
   a izquierda (verde, discontinuo), todo lo que toca. En modo Cara solo cuentan las caras que miran a
   la cámara. Con Ctrl/Mayús se suma a la selección actual.
-- **Apoyos y cargas.** Los botones **Apoyos** y **Cargas** de la barra de vista (y *Ver → Mostrar apoyos / cargas*)
-  los ocultan o muestran y los deslizadores cambian su tamaño; en las cargas sobre una superficie la flecha nunca es mayor que ella.
+- **Apoyos y cargas.** Los interruptores de apoyos, cargas y constraints de la barra de vista (y *Ver → Mostrar…*)
+  los ocultan o muestran; el tamaño se cambia en *Ver → Escala de símbolos…*; en las cargas sobre una superficie la flecha nunca es mayor que ella.
 - **Qué no hace.** Los sólidos no participan en el análisis de barras (se avisa) y no se modelan
   pernos con pretensión, contacto con separación ni fricción. Comprobado con CalculiX contra la
   teoría (voladizo `PL³/3EI`, compresión `σ = p`, perno en tracción `FL/EA`) en

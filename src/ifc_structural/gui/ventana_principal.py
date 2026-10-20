@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -71,6 +71,7 @@ from .dialogo_superficie import DialogoApoyoSuperficie, DialogoCargaSuperficie, 
 from .dialogo_casos import DialogoCasos
 from .dialogo_conexion import DialogoConexion
 from .dialogo_conexion_automatica import DialogoConexionAutomatica
+from .dialogo_escalas import DialogoEscalas
 from .dialogo_materiales import DialogoAsignarMaterial, DialogoMateriales
 from .estilo import etiqueta_logo
 from .iconos import icono, icono_aplicacion, icono_blanco
@@ -183,6 +184,7 @@ class VentanaPrincipal(QMainWindow):
         self._crear_menus()
         self._crear_barra_de_herramientas()
         self._conectar_senales()
+        self._cargar_escalas()
 
         self._actualizar_combo_caso()
         self._actualizar_estado_de_acciones()
@@ -298,6 +300,7 @@ class VentanaPrincipal(QMainWindow):
             accion_vista.toggled.connect(boton.setChecked)
             boton.toggled.connect(accion_vista.setChecked)
             self.menu_ver.addAction(accion_vista)
+        self.menu_ver.addAction("Escala de símbolos…", self.cambiar_escalas)
         self.menu_ver.addSeparator()
         self._acciones_visibilidad = {}
         for tipo, texto, nombre_icono in (
@@ -395,10 +398,8 @@ class VentanaPrincipal(QMainWindow):
         self.pagina_bienvenida.abrir_solicitado.connect(self._abrir_proyecto)
         self.barra_vista.vista_solicitada.connect(self._cambiar_vista)
         self.barra_vista.navegacion_cambiada.connect(self.visor.set_navegacion)
-        self.barra_vista.flechas_visibles.connect(lambda v: self.visor.configurar_flechas(visibles=v))
-        self.barra_vista.escala_flechas.connect(lambda e: self.visor.configurar_flechas(escala=e))
-        self.barra_vista.escala_apoyos.connect(lambda e: self.visor.configurar_apoyos(escala=e))
-        self.barra_vista.apoyos_visibles.connect(lambda v: self.visor.configurar_apoyos(visibles=v))
+        self.barra_vista.flechas_visibles.connect(self.visor.configurar_flechas)
+        self.barra_vista.apoyos_visibles.connect(self.visor.configurar_apoyos)
         self.barra_vista.uniones_visibles.connect(self.visor.configurar_uniones)
         self.barra_vista.visibilidad_cambiada.connect(lambda t, v: self._cambiar_visibilidad(t, v, desde_menu=False))
         self.visor.seleccion_cambiada.connect(self._al_cambiar_seleccion)
@@ -833,6 +834,36 @@ class VentanaPrincipal(QMainWindow):
             self._refrescar_arbol()
             self._marcar_resultados_desactualizados()
             self.statusBar().showMessage(f"{len(self.proyecto.materiales)} material(es) definidos.")
+
+    def _cargar_escalas(self) -> None:
+        """Recupera el tamaño de los símbolos de la sesión anterior."""
+
+        try:
+            ajustes = QSettings("AnalizadorEstructural", "Visor")
+            escalas = {}
+            for parametro in self.visor.escalas:
+                modo = ajustes.value(f"escala/{parametro}/modo")
+                valor = ajustes.value(f"escala/{parametro}/valor")
+                if modo and valor is not None:
+                    escalas[parametro] = (str(modo), float(valor))
+            if escalas:
+                self.visor.set_escalas(escalas)
+        except Exception:  # preferencias ilegibles: se usa el tamaño automático
+            logger.exception("No se pudieron leer las escalas guardadas")
+
+    def cambiar_escalas(self) -> None:
+        """Ver → Escala de símbolos: tamaño de apoyos, cargas, constraints y etiquetas (porcentaje o píxeles)."""
+
+        dialogo = DialogoEscalas(self.visor, self)
+        if not dialogo.exec():
+            return
+        try:
+            ajustes = QSettings("AnalizadorEstructural", "Visor")
+            for parametro, (modo, valor) in dialogo.escalas().items():
+                ajustes.setValue(f"escala/{parametro}/modo", modo)
+                ajustes.setValue(f"escala/{parametro}/valor", valor)
+        except Exception:
+            logger.exception("No se pudieron guardar las escalas")
 
     def _mostrar_menu_conectar(self) -> None:
         """El botón Conectar ofrece las dos formas: manual (lo seleccionado) y automática (lo que está unido)."""

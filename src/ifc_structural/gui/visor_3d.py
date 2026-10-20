@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pyvista as pv
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from pyvistaqt import QtInteractor
 from vtkmodules.vtkRenderingCore import vtkCellPicker
 
@@ -64,6 +64,12 @@ MODO_CARA = "CARA"
 
 #: Qué hace el arrastre con el botón izquierdo: seleccionar (por defecto, como en SAP2000, AutoCAD o Revit),
 #: desplazar la vista o girarla. La rueda hace zoom; el botón central desplaza, y con Ctrl o Mayús gira.
+#: Parámetros de tamaño de los símbolos y sus modos (porcentaje del tamaño automático o píxeles en pantalla).
+PARAMETROS_ESCALA = ("apoyos", "cargas", "constraints", "etiquetas")
+ESCALA_PORCENTAJE = "PORCENTAJE"
+ESCALA_PIXELES = "PIXELES"
+TAMANO_ETIQUETA_AUTOMATICO = 14
+
 NAV_SELECCION = "SELECCION"
 NAV_MOVER = "MOVER"
 NAV_ROTAR = "ROTAR"
@@ -99,8 +105,12 @@ class Visor3D(QtInteractor):
         self._visibles = {"VIGA": True, "COLUMNA": True, "LOSA": True, "MURO": True, "SOLIDO": True}
         self._escala = 1.0
         self._flechas_visibles = True
-        self._escala_flechas = 1.0
-        self._escala_apoyos = 1.0
+        #: Tamaño de los símbolos: por parámetro, (modo, valor); ``PORCENTAJE`` (100 = automático) o ``PIXELES``.
+        self._escalas = {p: (ESCALA_PORCENTAJE, 100.0) for p in PARAMETROS_ESCALA}
+        self._temporizador_escala = QTimer(self)
+        self._temporizador_escala.setSingleShot(True)
+        self._temporizador_escala.setInterval(150)
+        self._temporizador_escala.timeout.connect(self._redibujar_asignaciones)
         self._apoyos_visibles = True
         self._uniones_visibles = True
         self._argumentos_asignaciones = None
@@ -343,6 +353,8 @@ class Visor3D(QtInteractor):
             self.renderer.GetActiveCamera().Zoom(1.15 ** pasos)
             self.renderer.ResetCameraClippingRange()
             self.render()
+            if self._hay_tamanos_en_pixeles():  # los símbolos con tamaño en píxeles se recalculan al cambiar el zoom
+                self._temporizador_escala.start()
 
     def keyPressEvent(self, ev) -> None:
         ev.ignore()  # las teclas de VTK (w, s, f...) cambian la representación: las atajos son los de la ventana
@@ -632,7 +644,9 @@ class Visor3D(QtInteractor):
         longitudes = [proyecto.longitud_barra(i) for i in barras]
         if longitudes:
             largo = min(largo, 0.12 * float(np.median(longitudes)))
-        largo_apoyo = largo * self._escala_apoyos
+        largo_base = largo
+        largo_apoyo = self._tamano("apoyos", largo_base)
+        largo_union = self._tamano("constraints", largo_base)
 
         def punto_de(barra_id: str, s: float) -> np.ndarray:
             barra = proyecto.elemento_barra(barra_id)
@@ -700,7 +714,8 @@ class Visor3D(QtInteractor):
             self.add_mesh(pv.merge(marcas), color=COLOR_CONEXION, name="ASIG_CONEXIONES", pickable=False, show_scalar_bar=False)
 
         # -- cargas ------------------------------------------------------------------------------
-        largo = largo * self._escala_flechas  # las flechas se pueden agrandar o achicar desde la barra de vista
+        largo = self._tamano("cargas", largo_base)  # tamaño de las flechas: Ver → Escala de símbolos
+        factor_cargas = largo / max(largo_base, 1e-12)
         flechas: List[pv.PolyData] = []
         momentos: List[pv.PolyData] = []
         puntos_etiqueta: List[np.ndarray] = []
@@ -810,7 +825,7 @@ class Visor3D(QtInteractor):
             caras_carga.append(malla)
             # la flecha nunca es mayor que la superficie que carga: así no tapa el modelo en piezas pequeñas
             tamano_cara = float(np.sqrt(max(malla.area, 1e-12)))
-            l_flecha = min(largo, 0.6 * tamano_cara * self._escala_flechas)
+            l_flecha = min(largo, 0.6 * tamano_cara * factor_cargas)
             if carga.tipo == "MOMENTO":
                 d = np.asarray(carga.direccion, dtype=float) * (1.0 if carga.valor > 0 else -1.0)
                 momentos.append(flecha(centro + d * l_flecha * 0.2, d, l_flecha))
@@ -838,9 +853,9 @@ class Visor3D(QtInteractor):
             if ga is None or gb is None:
                 continue
             caras_union += [ga[0], gb[0]]
-            enlaces += [pv.Sphere(radius=largo_apoyo * 0.25, center=ga[1]), pv.Sphere(radius=largo_apoyo * 0.25, center=gb[1])]
+            enlaces += [pv.Sphere(radius=largo_union * 0.25, center=ga[1]), pv.Sphere(radius=largo_union * 0.25, center=gb[1])]
             if np.linalg.norm(gb[1] - ga[1]) > 1e-9:
-                enlaces.append(pv.Line(ga[1], gb[1]).tube(radius=largo_apoyo * 0.07))
+                enlaces.append(pv.Line(ga[1], gb[1]).tube(radius=largo_union * 0.07))
         if caras_union:
             self.add_mesh(pv.merge(caras_union), color=COLOR_CONEXION, opacity=0.5, name="ASIG_UNIONES_CARAS",
                           pickable=False, show_scalar_bar=False)
@@ -862,7 +877,7 @@ class Visor3D(QtInteractor):
         textos += textos_apoyo
         if puntos_etiqueta:
             self.add_point_labels(
-                np.array(puntos_etiqueta), textos, name="ASIG_ETIQUETAS", font_size=14, text_color="darkred",
+                np.array(puntos_etiqueta), textos, name="ASIG_ETIQUETAS", font_size=self._tamano_etiqueta(), text_color="darkred",
                 shape=None, show_points=False, always_visible=True, pickable=False,
             )
         self.render()
@@ -947,17 +962,56 @@ class Visor3D(QtInteractor):
             self.add_text(texto, position="upper_left", font_size=11, color="black", name="TEXTO_ESFUERZOS")
         self.render()
 
-    def configurar_apoyos(self, escala: Optional[float] = None, visibles: Optional[bool] = None) -> None:
-        """Muestra u oculta los símbolos de apoyo y cambia su tamaño (1 = automático)."""
+    # ------------------------------------------------------------------
+    # Tamaño de los símbolos
+    # ------------------------------------------------------------------
+    @property
+    def escalas(self) -> dict:
+        return dict(self._escalas)
 
-        if escala is not None:
-            self._escala_apoyos = float(escala)
-        if visibles is not None:
-            self._apoyos_visibles = bool(visibles)
+    def set_escalas(self, escalas: dict) -> None:
+        """Fija el tamaño de los símbolos: ``{parámetro: (modo, valor)}`` con el modo ``PORCENTAJE`` (100 = automático)
+        o ``PIXELES`` (tamaño en pantalla, que se mantiene al acercar o alejar)."""
+
+        for parametro, (modo, valor) in escalas.items():
+            if parametro in self._escalas and modo in (ESCALA_PORCENTAJE, ESCALA_PIXELES) and valor > 0:
+                self._escalas[parametro] = (modo, float(valor))
+        self._redibujar_asignaciones()
+
+    def set_escala(self, parametro: str, modo: str, valor: float) -> None:
+        self.set_escalas({parametro: (modo, valor)})
+
+    def _metros_por_pixel(self) -> float:
+        cam = self.renderer.GetActiveCamera()
+        alto = max(self.renderer.GetSize()[1], 1)
+        if cam.GetParallelProjection():
+            return 2.0 * cam.GetParallelScale() / alto
+        distancia = float(np.linalg.norm(np.array(cam.GetPosition()) - np.array(cam.GetFocalPoint())))
+        return 2.0 * distancia * math.tan(math.radians(cam.GetViewAngle()) / 2.0) / alto
+
+    def _tamano(self, parametro: str, automatico: float) -> float:
+        modo, valor = self._escalas[parametro]
+        return valor * self._metros_por_pixel() if modo == ESCALA_PIXELES else automatico * valor / 100.0
+
+    def _tamano_etiqueta(self) -> int:
+        modo, valor = self._escalas["etiquetas"]
+        puntos = valor * 0.75 if modo == ESCALA_PIXELES else TAMANO_ETIQUETA_AUTOMATICO * valor / 100.0
+        return int(np.clip(round(puntos), 5, 72))
+
+    def _hay_tamanos_en_pixeles(self) -> bool:
+        return any(modo == ESCALA_PIXELES for modo, _ in self._escalas.values())
+
+    def _redibujar_asignaciones(self) -> None:
         if self._argumentos_asignaciones is not None:
             self.mostrar_asignaciones(*self._argumentos_asignaciones)
             if self._vista == "ESFUERZOS":
                 self._mostrar_asignaciones(self._desplazamientos is None)
+
+    def configurar_apoyos(self, visibles: bool) -> None:
+        """Muestra u oculta los símbolos de apoyo."""
+
+        self._apoyos_visibles = bool(visibles)
+        self._redibujar_asignaciones()
 
     def configurar_uniones(self, visibles: bool) -> None:
         """Muestra u oculta los constraints (superficies resaltadas, enlaces y etiquetas)."""
@@ -968,17 +1022,11 @@ class Visor3D(QtInteractor):
             if self._vista == "ESFUERZOS":
                 self._mostrar_asignaciones(self._desplazamientos is None)
 
-    def configurar_flechas(self, visibles: Optional[bool] = None, escala: Optional[float] = None) -> None:
-        """Muestra u oculta las flechas de las cargas y cambia su tamaño (1 = automático)."""
+    def configurar_flechas(self, visibles: bool) -> None:
+        """Muestra u oculta las flechas de las cargas."""
 
-        if visibles is not None:
-            self._flechas_visibles = bool(visibles)
-        if escala is not None:
-            self._escala_flechas = float(escala)
-        if self._argumentos_asignaciones is not None:
-            self.mostrar_asignaciones(*self._argumentos_asignaciones)
-            if self._vista == "ESFUERZOS":
-                self._mostrar_asignaciones(self._desplazamientos is None)
+        self._flechas_visibles = bool(visibles)
+        self._redibujar_asignaciones()
 
     def _geometria_de_cara(self, tipo: str, id_: str, cara: int):
         """(malla de la cara, centro, normal hacia fuera, puntos de muestra) o None si ya no existe."""
