@@ -609,3 +609,56 @@ def test_dos_solidos_de_tetraedros_en_contacto_se_comportan_como_una_pieza(tmp_p
     x, u = r.malla_tensiones.coordenadas, r.desplazamientos_por_caso["L"]
     flecha = -u[np.isclose(x[:, 0], 1.0), 2].mean()
     assert flecha == pytest.approx(F * 1.0**3 / (3 * E * b * h**3 / 12), rel=0.08)
+
+
+# ---------------------------------------------------------------------------
+# Láminas (cáscaras S6) para sólidos de pared delgada
+# ---------------------------------------------------------------------------
+
+
+def test_la_lamina_esta_en_la_superficie_media_con_su_espesor():
+    from ifc_structural.solido.laminas import es_pared_delgada, mallar_lamina
+
+    s = caja("S1", 0, 0, 0.5, 1.0, 0.4, 0.01)  # chapa de 1 cm
+    assert es_pared_delgada(s, 0.1)
+    m = mallar_lamina(s, 0.1)
+    assert m.coordenadas.shape[1] == 3 and m.elementos.shape[1] == 6
+    assert np.allclose(m.coordenadas[:, 2], 0.505, atol=1e-6)  # a medio espesor
+    assert np.allclose(m.espesores, 0.01, atol=1e-6)
+    assert m.volumen == pytest.approx(s.volumen, rel=0.02)
+    assert len(m.superficies) == len(s.caras) and len(m.nodos_superficie) == len(s.caras)
+    assert (m.normales[:, 2] > 0.9).all() or (m.normales[:, 2] < -0.9).all()
+
+
+def test_un_bloque_compacto_no_es_pared_delgada():
+    from ifc_structural.solido.laminas import es_pared_delgada
+
+    assert not es_pared_delgada(caja("S1", 0, 0, 0, 0.3, 0.3, 0.3), 0.05)
+
+
+@requiere_ccx
+def test_voladizo_de_una_chapa_como_lamina_coincide_con_la_teoria(tmp_path: Path):
+    """Chapa de 1 × 0.2 × 0.01 m empotrada en un canto y cargada en el opuesto: δ = 4 F L³ / (E b t³)."""
+
+    L, b, t, F = 1.0, 0.2, 0.01, 0.05
+    s = caja("S1", 0, 0, 0, L, b, t)
+    p = proyecto_con(s)
+    apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="S1", cara=cara_hacia(s, (-1, 0, 0)),
+                            ux=True, uy=True, uz=True, rx=True, ry=True, rz=True)
+    carga = _carga(s, (1, 0, 0), "FUERZA", F, (0, 0, -1))
+    r = _analizar_con("HEXA", p, [apoyo], [carga], tmp_path, tamano=0.05)
+    assert any("láminas" in a for a in r.advertencias)
+    x, u = r.malla_tensiones.coordenadas, r.desplazamientos_por_caso["L"]
+    flecha = -u[np.isclose(x[:, 0], L, atol=1e-6), 2].mean()
+    assert flecha == pytest.approx(4 * F * L**3 / (E * b * t**3), rel=0.12)
+
+
+@requiere_ccx
+def test_lamina_apoyada_sobre_un_bloque_se_acopla_y_se_analiza(tmp_path: Path):
+    bloque, chapa = caja("B", 0, 0, 0, 0.3, 0.3, 0.2), caja("C", 0, 0, 0.2, 0.3, 0.3, 0.005)
+    p = proyecto_con(bloque, chapa)
+    apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="B", cara=cara_hacia(bloque, (0, 0, -1)), ux=True, uy=True, uz=True)
+    carga = _carga(chapa, (0, 0, 1), "PRESION", 10.0, None)
+    r = _analizar_con("HEXA", p, [apoyo], [carga], tmp_path, tamano=0.05)
+    u = r.desplazamientos_por_caso["L"]
+    assert np.isfinite(u).all() and np.abs(u).max() > 0

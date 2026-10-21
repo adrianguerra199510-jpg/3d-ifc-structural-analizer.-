@@ -221,6 +221,15 @@ y la conserva como **sólido de forma libre**:
   con apoyo se detectan antes de resolver. Los sólidos deben ser superficies cerradas (se avisa si no lo son;
   se admiten aristas compartidas por 4 triángulos, típicas de Revit). Un elemento IFC con varias piezas sin
   conexión (un equipo exportado como un solo `IfcBuildingElementProxy`) se importa como un sólido por pieza.
+- **Paredes delgadas como láminas.** Un sólido cuyo espesor medio (2·V/A) es pequeño frente a su tamaño (un depósito, una
+  tolva, una chapa curva) que Gmsh no puede mallar se modela como **lámina** (cáscara `S6` de CalculiX, triángulo
+  cuadrático con 6 grados de libertad por nodo): se obtiene su superficie media lanzando un rayo desde cada triángulo de una
+  piel hasta la piel opuesta (el espesor es la distancia), se refina la malla hasta el tamaño de elemento y cada
+  elemento lleva su espesor (`*SHELL SECTION`). Funciona con las superficies que se tocan por aristas, que Gmsh rechaza.
+  Los apoyos sobre una lámina restringen directamente los 6 grados (un empotramiento de verdad); las cargas de superficie
+  van a los nodos medios. Las láminas se acoplan a las piezas vecinas con `*EQUATION` entre los nodos que están a menos de
+  0,6 veces el tamaño de elemento más medio espesor (traslaciones; también giros entre dos láminas): la unión con un sólido
+  transmite fuerza pero no momento. Un voladizo de chapa da ~95 % de la flecha de la teoría (`tests/test_solidos_libres.py`).
 - **Conectar** (botón de la barra, menú *Asignar → Conectar elementos* o clic derecho) ofrece dos formas:
   **manualmente** (los dos elementos o superficies seleccionados) y **automáticamente** (detecta los
   elementos que se tocan o están a menos de una separación elegida, los lista para marcar y crea un
@@ -371,6 +380,7 @@ src/ifc_structural/
 │   ├── malla.py                   # hexaedros de barras, losas, muros y sólidos libres; caras frontera
 │   ├── libres.py                  # voxelización de un sólido de forma libre (celdas dentro + superficies)
 │   ├── tetraedros.py              # tetraedros cuadráticos C3D10 de un sólido libre (Gmsh en proceso aparte)
+│   ├── laminas.py                 # láminas S6: superficie media de una pared delgada, refinamiento, espesor
 │   ├── proceso_gmsh.py            # proceso hijo que malla con Gmsh (límite de tiempo)
 │   ├── superficies.py             # caras de hexaedro de una superficie; reparto de presión, fuerza y momento
 │   ├── contactos.py               # *TIE entre caras coplanares enfrentadas

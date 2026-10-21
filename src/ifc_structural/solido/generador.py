@@ -28,6 +28,7 @@ class Apoyo3D:
     grados: Set[int]  # 1..6
     rigido: bool = False  # True: la cara se mueve como cuerpo rígido (con giros libres o restringidos aparte)
     nombre: str = ""
+    directo: bool = False  # True: nodos de láminas, que tienen giros propios: se restringen los 6 grados directamente
 
 
 @dataclass
@@ -42,12 +43,25 @@ class Enlace3D:
 
 
 @dataclass
+class Acople:
+    """Láminas acopladas a otra pieza: cada nodo ``a`` (de la lámina) sigue al nodo ``b`` (``*EQUATION``)."""
+
+    nombre: str
+    parte_a: int
+    parte_b: int
+    nodos_a: np.ndarray  # índices 0-based, uno por pareja
+    nodos_b: np.ndarray
+    giros: bool = False  # True si las dos piezas son láminas: también se igualan los giros
+
+
+@dataclass
 class ModeloSolido:
     malla: MallaSolida
     uniones: List[Union]
     apoyos: List[Apoyo3D]
     materiales: Dict[str, str]  # material del proyecto -> etiqueta ccx
     enlaces: List[Enlace3D] = field(default_factory=list)
+    acoples: List[Acople] = field(default_factory=list)
 
     @property
     def n_nodos(self) -> int:
@@ -76,6 +90,11 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         por_material.setdefault(parte.material, []).extend(range(parte.primer_hexaedro, parte.ultimo_hexaedro))
         if parte.tetra:
             por_material_tetra.setdefault(parte.material, []).extend(range(parte.primer_tetraedro, parte.ultimo_tetraedro))
+    por_lamina: Dict[Tuple[str, int], List[int]] = {}  # (material, espesor en 0,1 mm) -> láminas
+    for parte in malla.partes:
+        if parte.lamina:
+            for k in range(parte.primer_lamina, parte.ultimo_lamina):
+                por_lamina.setdefault((parte.material, int(round(float(malla.espesor_de_lamina[k]) * 1e4))), []).append(k)
     n_hex = len(malla.hexaedros)
     for material, hexas in por_material.items():
         if not hexas:
@@ -87,6 +106,11 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         elset = f"T_{modelo.materiales[material]}"
         lineas.append(f"*ELEMENT,TYPE=C3D10,ELSET={elset}")
         lineas += [f"{n_hex + t + 1}," + ",".join(str(int(n) + 1) for n in malla.tetraedros[t]) for t in tetras]
+    n_tetra = len(malla.tetraedros)
+    for (material, decimas), laminas in por_lamina.items():
+        elset = f"L_{modelo.materiales[material]}_{decimas}"
+        lineas.append(f"*ELEMENT,TYPE=S6,ELSET={elset}")
+        lineas += [f"{n_hex + n_tetra + k + 1}," + ",".join(str(int(n) + 1) for n in malla.laminas[k]) for k in laminas]
     for material in por_material:
         m = proyecto.materiales[material]
         etq = modelo.materiales[material]
@@ -96,6 +120,9 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
             lineas.append(f"*SOLID SECTION,ELSET=E_{etq},MATERIAL={etq}")
         if material in por_material_tetra:
             lineas.append(f"*SOLID SECTION,ELSET=T_{etq},MATERIAL={etq}")
+        for (m_lam, decimas) in por_lamina:
+            if m_lam == material:
+                lineas += [f"*SHELL SECTION,ELSET=L_{etq}_{decimas},MATERIAL={etq}", f"{decimas / 1e4:.6g}"]
     lineas += ["*ELSET,ELSET=EALL,GENERATE", f"1,{malla.n_elementos},1"]
 
     for u in modelo.uniones:
@@ -110,6 +137,10 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         nodos = [int(n) + 1 for n in apoyo.nodos]
         traslaciones = sorted(g for g in apoyo.grados if g <= 3)
         giros = sorted(g - 3 for g in apoyo.grados if g > 3)
+        if apoyo.directo:  # láminas: los 6 grados de libertad existen en cada nodo
+            for g in sorted(apoyo.grados):
+                condiciones += [f"{n},{g},{g}" for n in nodos]
+            continue
         if not apoyo.rigido:
             for g in traslaciones:
                 condiciones += [f"{n},{g},{g}" for n in nodos]
@@ -132,6 +163,12 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         if len(enlace.nodos_a) == 0 or len(enlace.nodos_b) == 0:
             continue
         siguiente = _escribir_enlace(enlace, k, c, siguiente, lineas, ecuaciones)
+    for acople in modelo.acoples:
+        # un nodo con apoyo propio no puede además depender de otro: se deja fuera
+        libres = ~np.isin(acople.nodos_a, apoyados)
+        for g in (1, 2, 3, 4, 5, 6) if acople.giros else (1, 2, 3):
+            for n, m in zip(acople.nodos_a[libres], acople.nodos_b[libres]):
+                ecuaciones += ["2", f"{int(n) + 1},{g},1.,{int(m) + 1},{g},-1."]
     if ecuaciones:
         lineas.append("*EQUATION")
         lineas += ecuaciones

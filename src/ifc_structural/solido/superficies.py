@@ -32,6 +32,7 @@ class SuperficieMallada:
     hexaedro: np.ndarray = None  # (n,) índice global (0-based, numeración de CalculiX) del elemento de cada cara
     cara: np.ndarray = None  # (n,) número de cara de CalculiX (1..6 hexaedro, 1..4 tetraedro)
     pesos_nodo: np.ndarray = None  # (k,) fracción del área de cada cara que lleva cada nodo (None = 1/k)
+    nodos_solo: np.ndarray = None  # láminas: nodos que están sobre la superficie (en un canto, solo los del borde)
 
     @property
     def area_total(self) -> float:
@@ -39,6 +40,8 @@ class SuperficieMallada:
 
     @property
     def nodos_unicos(self) -> np.ndarray:
+        if self.nodos_solo is not None and len(self.nodos_solo):
+            return np.unique(self.nodos_solo)
         return np.unique(self.nodos)
 
 
@@ -57,7 +60,24 @@ def _geometria_tetra(malla: MallaSolida, parte: ParteMalla, local: np.ndarray, c
                              pesos_nodo=np.array([0, 0, 0, 1 / 3, 1 / 3, 1 / 3]))
 
 
+def _geometria_lamina(malla: MallaSolida, parte: ParteMalla, local: np.ndarray, lado: np.ndarray) -> SuperficieMallada:
+    """Elementos de lámina cargados por un lado: ``lado`` 1 = el de la normal de la lámina, 2 = el opuesto."""
+
+    k = parte.primer_lamina + np.asarray(local)
+    nodos = malla.laminas[k]
+    p = malla.coordenadas[nodos[:, :3]]
+    area = 0.5 * np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+    normal = malla.normal_de_lamina[k] * np.where(np.asarray(lado) == 1, 1.0, -1.0)[:, None]
+    espesor = malla.espesor_de_lamina[k]
+    return SuperficieMallada(parte=malla.partes.index(parte), nodos=nodos, centro=p.mean(axis=1) + 0.5 * espesor[:, None] * normal,
+                             normal=normal, area=area,
+                             hexaedro=len(malla.hexaedros) + len(malla.tetraedros) + k, cara=np.asarray(lado),
+                             pesos_nodo=np.array([0, 0, 0, 1 / 3, 1 / 3, 1 / 3]))
+
+
 def _geometria(malla: MallaSolida, parte: ParteMalla, hexaedro_local: np.ndarray, cara: np.ndarray) -> SuperficieMallada:
+    if parte.lamina:
+        return _geometria_lamina(malla, parte, hexaedro_local, cara)
     if parte.tetra:
         return _geometria_tetra(malla, parte, hexaedro_local, cara)
     hexa = malla.hexaedros[parte.primer_hexaedro + hexaedro_local]
@@ -94,7 +114,10 @@ def superficie_en_malla(proyecto: Proyecto, malla: MallaSolida, tipo: str, id_: 
         pares = parte.superficies.get(cara)
         if pares is None or len(pares) == 0:
             return None
-        return _geometria(malla, parte, pares[:, 0], pares[:, 1])
+        sup = _geometria(malla, parte, pares[:, 0], pares[:, 1])
+        if parte.lamina:
+            sup.nodos_solo = parte.nodos_superficie.get(cara)
+        return sup
 
     try:
         cara_geom = solido_elemento(proyecto, tipo, id_).caras[cara]

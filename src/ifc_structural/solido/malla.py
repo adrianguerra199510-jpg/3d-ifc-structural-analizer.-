@@ -19,6 +19,7 @@ from ..core.geometria import normal_losa
 from ..core.modelo import Proyecto
 from .miembros import MiembroBarra
 from .libres import estimar_hexaedros_solido, mallar_solido
+from .laminas import ErrorLamina, MallaLamina, es_pared_delgada, mallar_lamina
 from .tetraedros import (CARAS_TETRAEDRO, ErrorTetraedros, MEDIOS_CARA, MallaTetra, _es_variedad, estimar_tetraedros_solido,
                          mallar_solido_tetra)
 from .seccion2d import malla_seccion, pesos_nodales
@@ -59,6 +60,10 @@ class ParteMalla:
     tetra: bool = False  # True: la parte son tetraedros ``C3D10`` (``MallaSolida.tetraedros``), no hexaedros
     primer_tetraedro: int = 0
     ultimo_tetraedro: int = 0  # exclusivo
+    lamina: bool = False  # True: la parte son láminas ``S6`` (``MallaSolida.laminas``): sólido de pared delgada
+    primer_lamina: int = 0
+    ultimo_lamina: int = 0  # exclusivo
+    nodos_superficie: Dict[int, np.ndarray] = field(default_factory=dict)  # láminas: superficie -> nodos globales sobre ella
     _fronteras: Optional[CarasFrontera] = None
 
     @property
@@ -77,25 +82,37 @@ class MallaSolida:
     tetraedros: np.ndarray = field(default_factory=lambda: np.zeros((0, 10), dtype=np.int64))  # (K, 10) orden de CalculiX
     parte_de_tetraedro: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     elemento_de_tetraedro: List[str] = field(default_factory=list)
+    laminas: np.ndarray = field(default_factory=lambda: np.zeros((0, 6), dtype=np.int64))  # (L, 6) ``S6`` de CalculiX
+    espesor_de_lamina: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    normal_de_lamina: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    parte_de_lamina: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    elemento_de_lamina: List[str] = field(default_factory=list)
 
     def fronteras(self, parte: ParteMalla) -> CarasFrontera:
         if parte._fronteras is None:
-            parte._fronteras = _caras_frontera_tetra(self, parte) if parte.tetra else _caras_frontera(self, parte)
+            if parte.lamina:
+                parte._fronteras = _caras_frontera_lamina(self, parte)
+            elif parte.tetra:
+                parte._fronteras = _caras_frontera_tetra(self, parte)
+            else:
+                parte._fronteras = _caras_frontera(self, parte)
         return parte._fronteras
 
     @property
     def n_elementos(self) -> int:
-        """Elementos de CalculiX: primero los hexaedros y después los tetraedros."""
+        """Elementos de CalculiX: primero los hexaedros, después los tetraedros y al final las láminas."""
 
-        return len(self.hexaedros) + len(self.tetraedros)
+        return len(self.hexaedros) + len(self.tetraedros) + len(self.laminas)
 
     @property
     def elementos_en_orden(self) -> List[str]:
         """Id del elemento del modelo al que pertenece cada elemento finito, en el orden de numeración de CalculiX."""
 
-        return list(self.elemento_de_hexaedro) + list(self.elemento_de_tetraedro)
+        return list(self.elemento_de_hexaedro) + list(self.elemento_de_tetraedro) + list(self.elemento_de_lamina)
 
     def nodos_de_parte(self, parte: ParteMalla) -> np.ndarray:
+        if parte.lamina:
+            return np.unique(self.laminas[parte.primer_lamina: parte.ultimo_lamina])
         if parte.tetra:
             return np.unique(self.tetraedros[parte.primer_tetraedro: parte.ultimo_tetraedro])
         return np.unique(self.hexaedros[parte.primer_hexaedro: parte.ultimo_hexaedro])
@@ -229,11 +246,12 @@ def _malla_plano(proyecto: Proyecto, elemento, tamano: float, nodos: List[np.nda
 
 def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra], tamano: float,
                            especiales: Optional[Dict[str, Sequence[float]]] = None,
-                           elemento_solido: str = "HEXA") -> MallaSolida:
+                           elemento_solido: str = "HEXA", lamina_si_delgado: bool = False) -> MallaSolida:
     """Malla de todos los miembros y sólidos libres; ``especiales`` da, por miembro, coordenadas axiales donde debe
     haber una estación (cargas y apoyos). Las barras, losas y muros llevan hexaedros ``C3D8I``; los sólidos libres
     hexaedros (``elemento_solido="HEXA"``, por voxelización) o tetraedros cuadráticos ``C3D10`` de Gmsh
-    (``"TETRA"``; si Gmsh no puede mallar una pieza se usan hexaedros para ella y se avisa)."""
+    (``"TETRA"``; si Gmsh no puede mallar una pieza se usan hexaedros para ella y se avisa). Con
+    ``lamina_si_delgado`` los sólidos de pared delgada que no se mallan con tetraedros pasan a láminas ``S6``."""
 
     especiales = especiales or {}
     bloques_nodos: List[np.ndarray] = []
@@ -270,6 +288,8 @@ def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra],
     recortados = 0
     delgados: List[str] = []
     tetras: List[Tuple[ParteMalla, MallaTetra]] = []
+    laminas: List[Tuple[ParteMalla, MallaLamina]] = []
+    sin_laminas: List[str] = []
     sin_tetraedros: List[str] = []
     motivo_sin_tetraedros = ""
     for k, solido in enumerate(ordenados):
@@ -293,6 +313,18 @@ def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra],
                 partes.append(parte)
                 tetras.append((parte, tetra))
                 continue
+        if lamina_si_delgado and es_pared_delgada(solido, tamano):
+            # pared delgada que no se puede mallar con tetraedros: lámina (cáscara) en la superficie media
+            try:
+                lamina = mallar_lamina(solido, tamano)
+            except ErrorLamina:
+                sin_laminas.append(solido.id)
+            else:
+                parte = ParteMalla(id=solido.id, tipo="SOLIDO", material=solido.material, primer_hexaedro=n_hex,
+                                   ultimo_hexaedro=n_hex, superficies=lamina.superficies, lamina=True)
+                partes.append(parte)
+                laminas.append((parte, lamina))
+                continue
         try:
             libre = mallar_solido(solido, tamano, ordenados[:k], lambda p: _dentro_de_barras(proyecto, miembros, p))
         except ValueError as exc:  # coordenadas no válidas
@@ -314,6 +346,14 @@ def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra],
         n_nodos += len(libre.coordenadas)
         n_hex += len(libre.hexaedros)
 
+    if laminas:
+        lista = ", ".join(p.id for p, _ in laminas[:8]) + (f" y {len(laminas) - 8} más" if len(laminas) > 8 else "")
+        avisos.append(f"{len(laminas)} sólido(s) de pared delgada se modelaron como láminas (cáscaras S6 en la superficie media, con "
+                      f"su espesor): {lista}.")
+    if sin_laminas:
+        avisos.append(f"No se pudo obtener la superficie media de {', '.join(sin_laminas[:8])}; se mallaron con hexaedros.")
+    en_laminas = {p.id for p, _ in laminas}
+    sin_tetraedros = [i for i in sin_tetraedros if i not in en_laminas]
     if sin_tetraedros:
         avisos.append(f"{', '.join(sin_tetraedros[:8])}{' y más' if len(sin_tetraedros) > 8 else ''}: Gmsh no pudo mallar "
                       f"{'esa pieza' if len(sin_tetraedros) == 1 else 'esas piezas'} con tetraedros ({motivo_sin_tetraedros}); "
@@ -337,6 +377,8 @@ def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra],
     _recortar_planos(proyecto, malla, miembros, n_nodos_barras)
     if tetras:
         _agregar_tetraedros(malla, tetras)
+    if laminas:
+        _agregar_laminas(malla, laminas)
     return malla
 
 
@@ -357,6 +399,30 @@ def _agregar_tetraedros(malla: MallaSolida, tetras: Sequence[Tuple[ParteMalla, M
     malla.tetraedros = np.vstack(conectividad).astype(np.int64)
     malla.parte_de_tetraedro = np.array(partes, dtype=np.int64)
     malla.elemento_de_tetraedro = elementos
+
+
+def _agregar_laminas(malla: MallaSolida, laminas: Sequence[Tuple[ParteMalla, MallaLamina]]) -> None:
+    """Añade las láminas ``S6`` de los sólidos de pared delgada (después de los tetraedros: son los últimos elementos)."""
+
+    bloques, conectividad, espesores, normales, partes, elementos = [], [], [], [], [], []
+    n_nodos, n_lamina = len(malla.coordenadas), 0
+    for parte, lamina in laminas:
+        bloques.append(lamina.coordenadas)
+        conectividad.append(lamina.elementos + n_nodos)
+        espesores.append(lamina.espesores)
+        normales.append(lamina.normales)
+        parte.primer_lamina, parte.ultimo_lamina = n_lamina, n_lamina + len(lamina.elementos)
+        parte.nodos_superficie = {k: v + n_nodos for k, v in lamina.nodos_superficie.items()}
+        partes.extend([malla.partes.index(parte)] * len(lamina.elementos))
+        elementos.extend([parte.id] * len(lamina.elementos))
+        n_nodos += len(lamina.coordenadas)
+        n_lamina += len(lamina.elementos)
+    malla.coordenadas = np.vstack([malla.coordenadas] + bloques)
+    malla.laminas = np.vstack(conectividad).astype(np.int64)
+    malla.espesor_de_lamina = np.concatenate(espesores)
+    malla.normal_de_lamina = np.vstack(normales)
+    malla.parte_de_lamina = np.array(partes, dtype=np.int64)
+    malla.elemento_de_lamina = elementos
 
 
 def _dentro_de_barras(proyecto: Proyecto, miembros: Sequence[MiembroBarra], puntos: np.ndarray) -> np.ndarray:
@@ -405,8 +471,8 @@ def _recortar_planos(proyecto: Proyecto, malla: MallaSolida, miembros: Sequence[
         cuenta = int((malla.parte_de_hexaedro == i).sum())
         parte.primer_hexaedro, parte.ultimo_hexaedro, parte._fronteras = inicio, inicio + cuenta, None
         inicio += cuenta
-    if any(p.ultimo_hexaedro == p.primer_hexaedro and not p.tetra for p in malla.partes):
-        vacias = [p.id for p in malla.partes if p.ultimo_hexaedro == p.primer_hexaedro and not p.tetra]
+    if any(p.ultimo_hexaedro == p.primer_hexaedro and not (p.tetra or p.lamina) for p in malla.partes):
+        vacias = [p.id for p in malla.partes if p.ultimo_hexaedro == p.primer_hexaedro and not (p.tetra or p.lamina)]
         raise ErrorMalla(f"Las piezas {', '.join(vacias)} quedan totalmente dentro de otras: revise la geometría.")
 
 
@@ -475,3 +541,21 @@ def _caras_frontera_tetra(malla: MallaSolida, parte: ParteMalla) -> CarasFronter
     normal[np.einsum("ij,ij->i", normal, centro - centro_tetra) < 0] *= -1.0
     return CarasFrontera(hexaedro=len(malla.hexaedros) + parte.primer_tetraedro + t, cara=c + 1, nodos=nodos, centro=centro,
                          normal=normal, area=area, pesos_nodo=np.array([0, 0, 0, 1 / 3, 1 / 3, 1 / 3]))
+
+
+def _caras_frontera_lamina(malla: MallaSolida, parte: ParteMalla) -> CarasFrontera:
+    """Dos caras por lámina: la del lado de la normal (cara 1) y la opuesta (cara 2), en las pieles del sólido."""
+
+    elementos = malla.laminas[parte.primer_lamina: parte.ultimo_lamina]
+    normal = malla.normal_de_lamina[parte.primer_lamina: parte.ultimo_lamina]
+    espesor = malla.espesor_de_lamina[parte.primer_lamina: parte.ultimo_lamina]
+    p = malla.coordenadas[elementos[:, :3]]
+    centro = p.mean(axis=1)
+    area = 0.5 * np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+    local = np.arange(len(elementos))
+    base = len(malla.hexaedros) + len(malla.tetraedros) + parte.primer_lamina
+    return CarasFrontera(
+        hexaedro=np.concatenate([base + local, base + local]), cara=np.concatenate([np.full(len(local), 1), np.full(len(local), 2)]),
+        nodos=np.vstack([elementos, elementos]),
+        centro=np.vstack([centro + 0.5 * espesor[:, None] * normal, centro - 0.5 * espesor[:, None] * normal]),
+        normal=np.vstack([normal, -normal]), area=np.concatenate([area, area]), pesos_nodo=np.array([0, 0, 0, 1 / 3, 1 / 3, 1 / 3]))

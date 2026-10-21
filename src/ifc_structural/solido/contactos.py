@@ -54,6 +54,8 @@ def detectar_uniones(malla: MallaSolida, tamano: float, espesores: Optional[Dict
     for i in range(len(malla.partes)):
         for j in range(i + 1, len(malla.partes)):
             pi, pj = malla.partes[i], malla.partes[j]
+            if pi.lamina or pj.lamina:  # las láminas se acoplan por nodos (``detectar_acoples``), no con *TIE
+                continue
             planos = [p for p in (pi, pj) if p.tipo in ("LOSA", "MURO")]
             # Con losas o muros, el IFC las coloca a veces solapadas con las vigas o con holgura:
             # si no se tocan exactamente se buscan caras que las miran a corta distancia.
@@ -138,3 +140,57 @@ def partes_sin_conexion(malla: MallaSolida, uniones: List[Union], partes_apoyada
         padre[buscar(a)] = buscar(b)
     raices_apoyadas = {buscar(p) for p in partes_apoyadas}
     return [i for i in range(len(malla.partes)) if buscar(i) not in raices_apoyadas]
+
+
+def _nodos_de_borde(malla: MallaSolida, indice: int) -> np.ndarray:
+    parte = malla.partes[indice]
+    if parte.lamina:
+        return malla.nodos_de_parte(parte)
+    return np.unique(malla.fronteras(parte).nodos)
+
+
+def detectar_acoples(malla: MallaSolida, tamano: float, ya_acopladas: Sequence[Tuple[int, int]] = (),
+                     prohibidos: Optional[Set[int]] = None,
+                     tolerancias: Optional[Dict[frozenset, float]] = None) -> Tuple[List["Acople"], List[str]]:
+    """Acoples de las láminas con las piezas vecinas: cada nodo de la lámina a menos de ``tol`` de un nodo del borde de
+    la otra pieza (``tol`` = 0,6 veces el tamaño de elemento más medio espesor) se une a él por ``*EQUATION``
+    (traslaciones; también giros si la otra pieza es una lámina). Un nodo solo depende de otro una vez.
+    ``prohibidos`` son nodos que no pueden depender de otro (los que tienen apoyo); ``tolerancias`` da, por pareja de
+    partes, una tolerancia mayor pedida por un constraint manual."""
+
+    from .generador import Acople
+
+    acoples: List[Acople] = []
+    avisos: List[str] = []
+    dependientes: Set[int] = set(prohibidos or ())
+    maestros: Set[int] = set()
+    saltadas = {frozenset(par) for par in ya_acopladas}
+    laminas = [i for i, p in enumerate(malla.partes) if p.lamina]
+    for i in laminas:
+        pi = malla.partes[i]
+        espesor_i = float(malla.espesor_de_lamina[pi.primer_lamina: pi.ultimo_lamina].max())
+        nodos_i = malla.nodos_de_parte(pi)
+        caja_i = (malla.coordenadas[nodos_i].min(axis=0), malla.coordenadas[nodos_i].max(axis=0))
+        for j, pj in enumerate(malla.partes):
+            if j == i or (pj.lamina and j < i) or frozenset((i, j)) in saltadas:
+                continue
+            espesor_j = float(malla.espesor_de_lamina[pj.primer_lamina: pj.ultimo_lamina].max()) if pj.lamina else 0.0
+            tol = max(0.6 * tamano + 0.5 * (espesor_i + espesor_j), (tolerancias or {}).get(frozenset((i, j)), 0.0))
+            nodos_j = _nodos_de_borde(malla, j)
+            cj = malla.coordenadas[nodos_j]
+            if np.any(caja_i[0] - tol > cj.max(axis=0)) or np.any(caja_i[1] + tol < cj.min(axis=0)):
+                continue
+            esclavos_posibles = np.array([n for n in nodos_i if int(n) not in dependientes and int(n) not in maestros], dtype=np.int64)
+            maestros_posibles = np.array([n for n in nodos_j if int(n) not in dependientes], dtype=np.int64)
+            if len(esclavos_posibles) == 0 or len(maestros_posibles) == 0:
+                continue
+            distancia, vecino = cKDTree(malla.coordenadas[maestros_posibles]).query(
+                malla.coordenadas[esclavos_posibles], distance_upper_bound=tol)
+            bien = np.isfinite(distancia)
+            if bien.sum() < 3:
+                continue
+            a, b = esclavos_posibles[bien], maestros_posibles[vecino[bien]]
+            dependientes.update(int(n) for n in a)
+            maestros.update(int(n) for n in b)
+            acoples.append(Acople(f"AC{len(acoples) + 1}", i, j, a, b, giros=pj.lamina))
+    return acoples, avisos

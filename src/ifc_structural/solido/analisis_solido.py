@@ -25,8 +25,8 @@ from ..solver.analisis import (
 from ..solver.ejecutor_ccx import ejecutar_ccx_todos_los_casos
 from ..solver.generador_inp import ElementoMalla, MallaAnalisis
 from ..solver.lector_resultados import leer_desplazamientos_frd, leer_malla_frd, leer_tensiones_frd
-from .contactos import Union, _caras_en_contacto, detectar_uniones, partes_sin_conexion
-from .generador import Apoyo3D, CargasCaso, Enlace3D, ModeloSolido, escribir, escribir_caso, escribir_comun, etiqueta
+from .contactos import Union, _caras_en_contacto, detectar_acoples, detectar_uniones, partes_sin_conexion
+from .generador import Acople, Apoyo3D, CargasCaso, Enlace3D, ModeloSolido, escribir, escribir_caso, escribir_comun, etiqueta
 from .malla import ErrorMalla, MallaSolida, ParteMalla, construir_malla_solida, estimar_hexaedros
 from .miembros import MiembroBarra, barras_de_longitud_cero, construir_miembros, recortar_uniones
 from .superficies import _parte_de, fuerzas_nodales, superficie_en_malla
@@ -158,7 +158,9 @@ def _apoyos_3d(proyecto: Proyecto, miembros: Sequence[MiembroBarra], malla: Mall
                 avisos.append(f"El apoyo {a.nombre} no encontró su superficie en la malla y se ignora.")
                 continue
             grados = set(a.grados_restringidos())
-            resultado.append(Apoyo3D(sup.nodos_unicos, grados, rigido=any(g > 3 for g in grados), nombre=a.nombre))
+            lamina = malla.partes[sup.parte].lamina
+            resultado.append(Apoyo3D(sup.nodos_unicos, grados, rigido=any(g > 3 for g in grados) and not lamina, nombre=a.nombre,
+                                     directo=lamina))
             partes_apoyadas.add(sup.parte)
             continue
         if isinstance(a, ApoyoArea):
@@ -283,7 +285,7 @@ def _cargas_del_caso(proyecto: Proyecto, miembros: Sequence[MiembroBarra], malla
 
 
 def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence[UnionSuperficie], tamano: float,
-                      avisos: List[str]) -> Tuple[List[Union], List[Enlace3D], List[Tuple[int, int]]]:
+                      avisos: List[str]) -> Tuple[List[Union], List[Enlace3D], List[Tuple[int, int]], Dict[frozenset, float]]:
     """Constraints manuales: soldaduras (``*TIE``), cuerpos rígidos, igualaciones y articulaciones."""
 
     from scipy.spatial import cKDTree
@@ -291,6 +293,7 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
     ties: List[Union] = []
     enlaces: List[Enlace3D] = []
     partes: List[Tuple[int, int]] = []
+    pedidos: Dict[frozenset, float] = {}  # soldaduras con láminas: se resuelven como acoples por nodos con esta tolerancia
     for u in manuales:
         if u.es_completa:  # constraint entre elementos 3D completos
             pa, pb = _parte_de(malla, u.a_tipo, u.a_id), _parte_de(malla, u.b_tipo, u.b_id)
@@ -300,6 +303,10 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
             ia, ib = malla.partes.index(pa), malla.partes.index(pb)
             if ia == ib:
                 avisos.append(f"El constraint «{u.nombre}» une un elemento consigo mismo y se ignora.")
+                continue
+            if u.tipo == "SOLDADURA" and (pa.lamina or pb.lamina):
+                pedidos[frozenset((ia, ib))] = max(u.tolerancia, 2e-3 + 0.25 * tamano)
+                partes.append((ia, ib))
                 continue
             if u.tipo == "SOLDADURA":
                 tol = max(u.tolerancia, 2e-3 + 0.25 * tamano)
@@ -327,6 +334,9 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
             avisos.append(f"El constraint «{u.nombre}» no encontró alguna de sus superficies en la malla y se ignora.")
             continue
         partes.append((sa.parte, sb.parte))
+        if u.tipo == "SOLDADURA" and (malla.partes[sa.parte].lamina or malla.partes[sb.parte].lamina) and sa.parte != sb.parte:
+            pedidos[frozenset((sa.parte, sb.parte))] = max(u.tolerancia, 2e-3 + 0.25 * tamano)
+            continue
         if u.tipo == "SOLDADURA":
             if sa.parte == sb.parte:
                 avisos.append(f"El constraint «{u.nombre}» une dos superficies de la misma pieza y se ignora.")
@@ -342,7 +352,7 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
                 1.5 * holgura + 2e-3 + 0.25 * tamano))
             continue
         enlaces.append(Enlace3D(u.tipo, sa.nodos_unicos, sb.nodos_unicos, set(u.grados()), u.nombre))
-    return ties, enlaces, partes
+    return ties, enlaces, partes, pedidos
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +407,7 @@ def ejecutar_analisis_solido(
     avanzar(f"Mallando (unos {estimados:,} elementos)...".replace(",", " "))
     especiales = puntos_especiales(proyecto, miembros, apoyos, cargas_puntuales_por_caso, cargas_lineales_por_caso)
     try:
-        malla = construir_malla_solida(proyecto, miembros, tamano, especiales, elemento_solido)
+        malla = construir_malla_solida(proyecto, miembros, tamano, especiales, elemento_solido, lamina_si_delgado=True)
     except ErrorMalla as exc:
         raise ErrorAnalisis(str(exc)) from exc
 
@@ -409,7 +419,11 @@ def ejecutar_analisis_solido(
     apoyos_3d, partes_apoyadas = _apoyos_3d(proyecto, miembros, malla, apoyos, advertencias, tamano)
     if not apoyos_3d:
         raise ErrorAnalisis("Ningún apoyo quedó sobre un elemento del modelo: asigne apoyos a una cara de un sólido, una columna, una viga o una losa.")
-    ties_manuales, enlaces, partes_enlazadas = _enlaces_manuales(proyecto, malla, uniones_manuales, tamano, advertencias)
+    ties_manuales, enlaces, partes_enlazadas, pedidos_acople = _enlaces_manuales(proyecto, malla, uniones_manuales, tamano, advertencias)
+    apoyados_nodos = set(int(n) for a in apoyos_3d for n in a.nodos)
+    acoples, avisos_acoples = detectar_acoples(malla, tamano, prohibidos=apoyados_nodos, tolerancias=pedidos_acople)
+    advertencias.extend(avisos_acoples)
+    partes_enlazadas = list(partes_enlazadas) + [(a.parte_a, a.parte_b) for a in acoples]
     pares_manuales = {frozenset(par) for par in partes_enlazadas}
     # un constraint manual sustituye a la unión automática entre las mismas dos piezas
     uniones = [u for u in uniones if frozenset((u.parte_esclava, u.parte_maestra)) not in pares_manuales] + ties_manuales
@@ -443,7 +457,7 @@ def ejecutar_analisis_solido(
             "también puede unirlas con un constraint (Conectar).")
 
     materiales = {m: etiqueta(m) for m in {p.material for p in malla.partes}}
-    modelo = ModeloSolido(malla=malla, uniones=uniones, apoyos=apoyos_3d, materiales=materiales, enlaces=enlaces)
+    modelo = ModeloSolido(malla=malla, uniones=uniones, apoyos=apoyos_3d, materiales=materiales, enlaces=enlaces, acoples=acoples)
 
     avanzar("Generando los archivos de CalculiX...")
     comun = escribir_comun(modelo, proyecto)
