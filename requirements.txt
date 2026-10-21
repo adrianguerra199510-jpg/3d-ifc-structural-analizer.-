@@ -6,6 +6,7 @@ numpy>=1.26
 scipy>=1.13
 matplotlib>=3.9
 shapely>=2.0
+gmsh>=4.12
 imageio>=2.31
 imageio-ffmpeg>=0.4.9
 pytest>=8.0

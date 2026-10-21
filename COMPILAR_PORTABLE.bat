@@ -73,6 +73,15 @@ if errorlevel 1 goto :error
 "%VPY%" -m pip install pyinstaller
 if errorlevel 1 goto :error
 
+rem Libreria nativa de Gmsh (tetraedros C3D10 de los solidos): debe ir en la raiz de la carpeta portable
+set "GMSHLIB="
+for /f "usebackq delims=" %%i in (`"%VPY%" -c "import gmsh; print(gmsh.libpath)"`) do set "GMSHLIB=%%i"
+if not defined GMSHLIB (
+    echo ERROR: no se encontro la libreria de Gmsh ^(pip install gmsh^).
+    goto :error
+)
+echo Libreria de Gmsh: %GMSHLIB%
+
 rem ---- 3. Compilar -----------------------------------------------------
 echo.
 echo [3/5] Compilando con PyInstaller ^(varios minutos^)...
@@ -88,6 +97,8 @@ if exist "%BUILD%\work" rmdir /s /q "%BUILD%\work"
     --collect-all shapely ^
     --collect-all imageio ^
     --collect-all imageio_ffmpeg ^
+    --hidden-import gmsh ^
+    --add-binary "%GMSHLIB%;." ^
     "%~dp0iniciar_app.py"
 if errorlevel 1 goto :error
 if not exist "%CARPETA%\AnalizadorEstructuralIFC.exe" goto :error

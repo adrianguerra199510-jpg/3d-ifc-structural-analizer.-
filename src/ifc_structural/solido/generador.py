@@ -1,7 +1,8 @@
 """Escritura del .inp de CalculiX del modelo sólido.
 
 Elementos ``C3D8I`` (hexaedros con modos incompatibles: flexionan bien con un
-solo elemento en el espesor de un ala o un alma), uniones ``*TIE`` entre
+solo elemento en el espesor de un ala o un alma) en barras, losas y muros, y
+``C3D10`` (tetraedros cuadráticos de Gmsh, como en Placa Base Pro) en los sólidos libres, uniones ``*TIE`` entre
 piezas, apoyos sobre las caras (cuerpo rígido con nodo de referencia cuando
 se dejan giros libres) y cargas repartidas sobre los nodos de la sección o de
 la cara cargada. El peso propio es ``*DLOAD,GRAV`` con ``*DENSITY`` igual al
@@ -70,18 +71,32 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
     lineas += [f"{i + 1},{x:.7g},{y:.7g},{z:.7g}" for i, (x, y, z) in enumerate(c)]
 
     por_material: Dict[str, List[int]] = {}
+    por_material_tetra: Dict[str, List[int]] = {}
     for parte_i, parte in enumerate(malla.partes):
         por_material.setdefault(parte.material, []).extend(range(parte.primer_hexaedro, parte.ultimo_hexaedro))
+        if parte.tetra:
+            por_material_tetra.setdefault(parte.material, []).extend(range(parte.primer_tetraedro, parte.ultimo_tetraedro))
+    n_hex = len(malla.hexaedros)
     for material, hexas in por_material.items():
+        if not hexas:
+            continue
         elset = f"E_{modelo.materiales[material]}"
         lineas.append(f"*ELEMENT,TYPE=C3D8I,ELSET={elset}")
         lineas += [f"{h + 1}," + ",".join(str(int(n) + 1) for n in malla.hexaedros[h]) for h in hexas]
+    for material, tetras in por_material_tetra.items():
+        elset = f"T_{modelo.materiales[material]}"
+        lineas.append(f"*ELEMENT,TYPE=C3D10,ELSET={elset}")
+        lineas += [f"{n_hex + t + 1}," + ",".join(str(int(n) + 1) for n in malla.tetraedros[t]) for t in tetras]
     for material in por_material:
         m = proyecto.materiales[material]
         etq = modelo.materiales[material]
         lineas += [f"*MATERIAL,NAME={etq}", "*ELASTIC", f"{m.modulo_elasticidad:.8g},{m.modulo_poisson:.5f}",
-                   "*DENSITY", f"{m.densidad:.8g}", f"*SOLID SECTION,ELSET=E_{etq},MATERIAL={etq}"]
-    lineas += ["*ELSET,ELSET=EALL,GENERATE", f"1,{len(malla.hexaedros)},1"]
+                   "*DENSITY", f"{m.densidad:.8g}"]
+        if por_material.get(material):
+            lineas.append(f"*SOLID SECTION,ELSET=E_{etq},MATERIAL={etq}")
+        if material in por_material_tetra:
+            lineas.append(f"*SOLID SECTION,ELSET=T_{etq},MATERIAL={etq}")
+    lineas += ["*ELSET,ELSET=EALL,GENERATE", f"1,{malla.n_elementos},1"]
 
     for u in modelo.uniones:
         for nombre, caras in ((f"{u.nombre}_E", u.esclava), (f"{u.nombre}_M", u.maestra)):

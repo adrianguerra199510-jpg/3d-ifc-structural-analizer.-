@@ -1309,9 +1309,9 @@ class VentanaPrincipal(QMainWindow):
         dialogo = DialogoAnalisis3D(self.proyecto, self, motivo)
         if not dialogo.exec():
             return
-        self._iniciar_hilo(solido=True, tamano=dialogo.tamano())
+        self._iniciar_hilo(solido=True, tamano=dialogo.tamano(), elemento_solido=dialogo.elemento())
 
-    def _iniciar_hilo(self, solido: bool = False, tamano: float = 0.05) -> None:
+    def _iniciar_hilo(self, solido: bool = False, tamano: float = 0.05, elemento_solido: Optional[str] = None) -> None:
         proyecto, casos, combinaciones, apoyos = self.proyecto, dict(self.casos), dict(self.combinaciones), list(self.apoyos)
         conexiones = list(self.conexiones)
         area = {k: list(v) for k, v in self.cargas_area_por_caso.items()}
@@ -1327,7 +1327,7 @@ class VentanaPrincipal(QMainWindow):
                     proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,
                     configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx_efectiva, avanzar,
                     tamano=tamano, conexiones=conexiones, cargas_superficie_por_caso=superficiales,
-                    uniones_manuales=uniones,
+                    uniones_manuales=uniones, elemento_solido=elemento_solido,
                 )
             return ejecutar_analisis(
                 proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,

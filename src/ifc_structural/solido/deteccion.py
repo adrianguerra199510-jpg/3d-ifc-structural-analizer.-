@@ -80,7 +80,7 @@ def detectar_contactos(proyecto: Proyecto, tolerancia: float, hexaedros_maximos:
     tol = max(tolerancia, 2e-3) + 0.1 * tamano
     cajas = []
     for parte in malla.partes:
-        pts = malla.coordenadas[np.unique(malla.hexaedros[parte.primer_hexaedro: parte.ultimo_hexaedro])]
+        pts = malla.coordenadas[malla.nodos_de_parte(parte)]
         cajas.append((pts.min(axis=0) - tol, pts.max(axis=0) + tol))
     resultado: List[Contacto] = []
     vistos = set()

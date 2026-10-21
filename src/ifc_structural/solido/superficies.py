@@ -19,17 +19,19 @@ from ..core.cargas import ApoyoSuperficie, CargaSuperficie
 from ..core.geometria import solido_elemento
 from ..core.modelo import Proyecto
 from .malla import CARAS_HEXAEDRO, MallaSolida, ParteMalla
+from .tetraedros import CARAS_TETRAEDRO, MEDIOS_CARA
 
 
 @dataclass
 class SuperficieMallada:
     parte: int  # índice en ``malla.partes``
-    nodos: np.ndarray  # (n, 4) índices de nodo
+    nodos: np.ndarray  # (n, 4) índices de nodo (hexaedros) o (n, 6) con los nodos medios (tetraedros)
     centro: np.ndarray  # (n, 3)
     normal: np.ndarray  # (n, 3) unitaria, hacia fuera
     area: np.ndarray  # (n,)
-    hexaedro: np.ndarray = None  # (n,) índice global del hexaedro de cada cara
-    cara: np.ndarray = None  # (n,) número de cara 1..6 de CalculiX
+    hexaedro: np.ndarray = None  # (n,) índice global (0-based, numeración de CalculiX) del elemento de cada cara
+    cara: np.ndarray = None  # (n,) número de cara de CalculiX (1..6 hexaedro, 1..4 tetraedro)
+    pesos_nodo: np.ndarray = None  # (k,) fracción del área de cada cara que lleva cada nodo (None = 1/k)
 
     @property
     def area_total(self) -> float:
@@ -40,7 +42,24 @@ class SuperficieMallada:
         return np.unique(self.nodos)
 
 
+def _geometria_tetra(malla: MallaSolida, parte: ParteMalla, local: np.ndarray, cara: np.ndarray) -> SuperficieMallada:
+    tetra = malla.tetraedros[parte.primer_tetraedro + local]
+    nodos = np.array([np.concatenate([tetra[k, list(CARAS_TETRAEDRO[int(c) - 1])], tetra[k, list(MEDIOS_CARA[int(c) - 1])]])
+                      for k, c in enumerate(cara)]).reshape(-1, 6)
+    p = malla.coordenadas[nodos[:, :3]]
+    centro = p.mean(axis=1)
+    normal = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+    area = 0.5 * np.linalg.norm(normal, axis=1)
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-30)
+    normal[np.einsum("ij,ij->i", normal, centro - malla.coordenadas[tetra[:, :4]].mean(axis=1)) < 0] *= -1.0
+    return SuperficieMallada(parte=malla.partes.index(parte), nodos=nodos, centro=centro, normal=normal, area=area,
+                             hexaedro=len(malla.hexaedros) + parte.primer_tetraedro + np.asarray(local), cara=np.asarray(cara),
+                             pesos_nodo=np.array([0, 0, 0, 1 / 3, 1 / 3, 1 / 3]))
+
+
 def _geometria(malla: MallaSolida, parte: ParteMalla, hexaedro_local: np.ndarray, cara: np.ndarray) -> SuperficieMallada:
+    if parte.tetra:
+        return _geometria_tetra(malla, parte, hexaedro_local, cara)
     hexa = malla.hexaedros[parte.primer_hexaedro + hexaedro_local]
     nodos = np.stack([hexa[k, list(CARAS_HEXAEDRO[int(c) - 1])] for k, c in enumerate(cara)]) if len(cara) else np.zeros((0, 4), int)
     p = malla.coordenadas[nodos]
@@ -114,7 +133,8 @@ def superficie_en_malla(proyecto: Proyecto, malla: MallaSolida, tipo: str, id_: 
     if not marca.any():
         return None
     return SuperficieMallada(parte=malla.partes.index(parte), nodos=f.nodos[marca], centro=f.centro[marca],
-                             normal=f.normal[marca], area=f.area[marca], hexaedro=f.hexaedro[marca], cara=f.cara[marca])
+                             normal=f.normal[marca], area=f.area[marca], hexaedro=f.hexaedro[marca], cara=f.cara[marca],
+                             pesos_nodo=f.pesos_nodo)
 
 
 # ---------------------------------------------------------------------------
@@ -126,9 +146,11 @@ def fuerzas_nodales(malla: MallaSolida, sup: SuperficieMallada, carga: CargaSupe
     """(nodos, fuerzas (n, 3) en kN) equivalentes a la carga sobre la superficie."""
 
     area_total = sup.area_total
+    k = sup.nodos.shape[1]
+    reparto = np.full(k, 1.0 / k) if sup.pesos_nodo is None else np.asarray(sup.pesos_nodo, dtype=float)  # fracción del área por nodo
     if carga.tipo == "MOMENTO":
         nodos = sup.nodos.ravel()
-        pesos = np.repeat(sup.area / 4.0, 4)
+        pesos = (sup.area[:, None] * reparto[None, :]).ravel()
         unicos, inverso = np.unique(nodos, return_inverse=True)
         w = np.bincount(inverso, weights=pesos)
         w /= w.sum()
@@ -150,7 +172,7 @@ def fuerzas_nodales(malla: MallaSolida, sup: SuperficieMallada, carga: CargaSupe
         total = carga.valor * np.asarray(carga.direccion, dtype=float)
         por_cara = (sup.area / area_total)[:, None] * total[None, :]
     nodos = sup.nodos.ravel()
-    fuerzas = np.repeat(por_cara / 4.0, 4, axis=0)
+    fuerzas = (por_cara[:, None, :] * reparto[None, :, None]).reshape(-1, 3)
     unicos, inverso = np.unique(nodos, return_inverse=True)
     acumuladas = np.zeros((len(unicos), 3))
     np.add.at(acumuladas, inverso, fuerzas)

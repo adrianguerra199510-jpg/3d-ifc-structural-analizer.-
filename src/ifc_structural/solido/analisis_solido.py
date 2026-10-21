@@ -30,6 +30,7 @@ from .generador import Apoyo3D, CargasCaso, Enlace3D, ModeloSolido, escribir, es
 from .malla import ErrorMalla, MallaSolida, ParteMalla, construir_malla_solida, estimar_hexaedros
 from .miembros import MiembroBarra, barras_de_longitud_cero, construir_miembros, recortar_uniones
 from .superficies import _parte_de, fuerzas_nodales, superficie_en_malla
+from .tetraedros import gmsh_disponible
 
 #: Tamaño de elemento por defecto (m) y máximo de hexaedros que se aceptan sin avisar.
 TAMANO_POR_DEFECTO = 0.05
@@ -37,21 +38,30 @@ MAXIMO_HEXAEDROS = 400_000
 TIEMPO_LIMITE_CCX = 3600.0
 
 
-def tamano_sugerido(proyecto: Proyecto, objetivo_hexaedros: int = 40_000) -> float:
+def elemento_solido_por_defecto() -> str:
+    """Elemento de los sólidos libres: tetraedros cuadráticos ``C3D10`` (Gmsh, como Placa Base Pro) si Gmsh está
+    disponible; si no, hexaedros ``C3D8I`` por voxelización."""
+
+    return "TETRA" if gmsh_disponible() else "HEXA"
+
+
+def tamano_sugerido(proyecto: Proyecto, objetivo_hexaedros: int = 40_000, elemento_solido: Optional[str] = None) -> float:
     """Tamaño de elemento (m) más fino, entre 1 cm y 25 cm, que no pasa de ``objetivo_hexaedros``."""
 
+    elemento_solido = elemento_solido or elemento_solido_por_defecto()
     miembros = construir_miembros(proyecto)
     recortar_uniones(proyecto, miembros)
     for tamano in (0.01, 0.012, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.15, 0.2, 0.25):
-        if estimar_hexaedros(proyecto, miembros, tamano) <= objetivo_hexaedros:
+        if estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA") <= objetivo_hexaedros:
             return tamano  # el más fino que no pasa del objetivo
     return 0.25
 
 
-def estimar(proyecto: Proyecto, tamano: float) -> int:
+def estimar(proyecto: Proyecto, tamano: float, elemento_solido: Optional[str] = None) -> int:
+    elemento_solido = elemento_solido or elemento_solido_por_defecto()
     miembros = construir_miembros(proyecto)
     recortar_uniones(proyecto, miembros)
-    return estimar_hexaedros(proyecto, miembros, tamano)
+    return estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA")
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +317,7 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
             partes.append((ia, ib))
 
             def nodos(parte):
-                return np.unique(malla.hexaedros[parte.primer_hexaedro:parte.ultimo_hexaedro])
+                return malla.nodos_de_parte(parte)
 
             enlaces.append(Enlace3D(u.tipo, nodos(pa), nodos(pb), set(u.grados()), u.nombre))
             continue
@@ -355,6 +365,7 @@ def ejecutar_analisis_solido(
     conexiones: Sequence = (),
     cargas_superficie_por_caso: Optional[Dict[str, List[CargaSuperficie]]] = None,
     uniones_manuales: Sequence[UnionSuperficie] = (),
+    elemento_solido: Optional[str] = None,
 ) -> ResultadoAnalisis:
     def avanzar(mensaje: str) -> None:
         if al_avanzar is not None:
@@ -376,16 +387,17 @@ def ejecutar_analisis_solido(
         advertencias.append(f"Las barras {', '.join(degeneradas)} tienen longitud cero (sus dos extremos coinciden) y se omiten.")
     miembros = construir_miembros(proyecto)
     advertencias.extend(recortar_uniones(proyecto, miembros))
-    estimados = estimar_hexaedros(proyecto, miembros, tamano)
+    elemento_solido = elemento_solido or elemento_solido_por_defecto()
+    estimados = estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA")
     if estimados > MAXIMO_HEXAEDROS:
         raise ErrorAnalisis(
-            f"Con elementos de {tamano * 1000:.0f} mm el modelo tendría unos {estimados:,} hexaedros (máximo "
+            f"Con elementos de {tamano * 1000:.0f} mm el modelo tendría unos {estimados:,} elementos (máximo "
             f"{MAXIMO_HEXAEDROS:,}). Aumente el tamaño de elemento.".replace(",", " "))
 
-    avanzar(f"Mallando (unos {estimados:,} hexaedros)...".replace(",", " "))
+    avanzar(f"Mallando (unos {estimados:,} elementos)...".replace(",", " "))
     especiales = puntos_especiales(proyecto, miembros, apoyos, cargas_puntuales_por_caso, cargas_lineales_por_caso)
     try:
-        malla = construir_malla_solida(proyecto, miembros, tamano, especiales)
+        malla = construir_malla_solida(proyecto, miembros, tamano, especiales, elemento_solido)
     except ErrorMalla as exc:
         raise ErrorAnalisis(str(exc)) from exc
 
@@ -416,7 +428,7 @@ def ejecutar_analisis_solido(
                    and (malla.partes[i].tipo, malla.partes[i].id) not in con_asignacion]
         for i in sueltos:
             parte = malla.partes[i]
-            nodos = np.unique(malla.hexaedros[parte.primer_hexaedro:parte.ultimo_hexaedro])
+            nodos = malla.nodos_de_parte(parte)
             apoyos_3d.append(Apoyo3D(nodos, {1, 2, 3}, rigido=False, nombre=f"pieza suelta {parte.id}"))
         if sueltos:
             advertencias.append(
@@ -482,8 +494,11 @@ def ejecutar_analisis_solido(
         "pernos, contacto con separación ni fricción. Los esfuerzos junto a apoyos y cargas puntuales son locales y "
         "dependen del tamaño de elemento.")
 
+    if elemento_solido == "TETRA" and len(malla.tetraedros):
+        advertencias.insert(0, f"Los sólidos libres se mallaron con {len(malla.tetraedros):,} tetraedros cuadráticos (C3D10, Gmsh)."
+                            .replace(",", " "))
     equivalente = MallaAnalisis()
-    for i, id_ in enumerate(malla.elemento_de_hexaedro, start=1):
+    for i, id_ in enumerate(malla.elementos_en_orden, start=1):
         equivalente.elementos[i] = ElementoMalla(id=i, barra_id=id_, nodo_i=0, nodo_f=0, s_inicio=0.0, s_fin=1.0)
     return ResultadoAnalisis(
         malla=equivalente, malla_tensiones=malla_tensiones, tensiones_por_caso=tensiones_por_caso,

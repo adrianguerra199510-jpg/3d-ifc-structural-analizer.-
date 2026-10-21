@@ -86,6 +86,16 @@ def ejecutar_autoprueba() -> int:
             lineas.append("Video GIF: disponible")
         except Exception as exc:  # noqa: BLE001
             lineas.append(f"Video GIF no disponible ({exc})")
+        try:  # Gmsh: tetraedros cuadráticos (C3D10) de los sólidos libres; sin él se usan hexaedros
+            from .solido.tetraedros import _gmsh_tetraedros
+
+            cubo = np.array([[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)], dtype=float)
+            caras = np.array([[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1],
+                              [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]])
+            _, tetraedros = _gmsh_tetraedros(cubo, caras, 0.5)
+            lineas.append(f"Gmsh (tetraedros C3D10): disponible ({len(tetraedros)} tetraedros de prueba)")
+        except Exception as exc:  # noqa: BLE001 - no es crítico: se usan hexaedros
+            lineas.append(f"Gmsh no disponible ({exc}); los solidos se mallaran con hexaedros")
         lineas.append("RESULTADO: CORRECTO" if ok else "RESULTADO: FALLO (esfuerzo fuera de tolerancia)")
     except Exception:  # noqa: BLE001 - se informa cualquier fallo
         lineas.append(traceback.format_exc())

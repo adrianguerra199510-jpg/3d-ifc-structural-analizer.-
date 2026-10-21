@@ -46,7 +46,7 @@ def detectar_uniones(malla: MallaSolida, tamano: float, espesores: Optional[Dict
     cajas = []
     tolerancias: Dict[Tuple[int, int], float] = {}
     for parte in malla.partes:
-        pts = malla.coordenadas[np.unique(malla.hexaedros[parte.primer_hexaedro: parte.ultimo_hexaedro])]
+        pts = malla.coordenadas[malla.nodos_de_parte(parte)]
         cajas.append((pts.min(axis=0) - tol, pts.max(axis=0) + tol))
 
     candidatas = []

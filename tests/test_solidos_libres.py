@@ -532,3 +532,80 @@ def test_placa_con_agujeros_lleva_una_sola_capa():
     s.volumen *= 0.7
     n = celdas_por_eje(s, 0.25)
     assert n.min() == 1 and int(np.prod(n)) < 100
+
+
+# ---------------------------------------------------------------------------
+# Tetraedros cuadráticos C3D10 (Gmsh), como en Placa Base Pro
+# ---------------------------------------------------------------------------
+
+requiere_gmsh = pytest.mark.skipif(not __import__("ifc_structural.solido.tetraedros", fromlist=["x"]).gmsh_disponible(),
+                                   reason="Gmsh no está disponible")
+
+
+def _analizar_con(elemento, p, apoyos, cargas, tmp_path, tamano=0.05, uniones=()):
+    casos, combinaciones = _casos()
+    return ejecutar_analisis_solido(p, casos, combinaciones, apoyos, {}, {}, {}, tmp_path, tamano=tamano,
+                                    cargas_superficie_por_caso={"L": cargas}, uniones_manuales=uniones, elemento_solido=elemento)
+
+
+@requiere_ccx
+@requiere_gmsh
+@pytest.mark.parametrize("elemento, tolerancia", [("TETRA", 0.05), ("HEXA", 0.08)])
+def test_voladizo_con_cada_tipo_de_elemento(tmp_path: Path, elemento, tolerancia):
+    L, b, h, F = 1.0, 0.1, 0.1, 10.0
+    s = caja("S1", 0, 0, 0, L, b, h)
+    p = proyecto_con(s)
+    apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="S1", cara=cara_hacia(s, (-1, 0, 0)), ux=True, uy=True, uz=True)
+    r = _analizar_con(elemento, p, [apoyo], [_carga(s, (1, 0, 0), "FUERZA", F, (0, 0, -1))], tmp_path, tamano=0.05)
+    x, u = r.malla_tensiones.coordenadas, r.desplazamientos_por_caso["L"]
+    flecha = -u[np.isclose(x[:, 0], L), 2].mean()
+    assert flecha == pytest.approx(F * L**3 / (3 * E * b * h**3 / 12), rel=tolerancia)
+    assert any(("C3D10" in a) == (elemento == "TETRA") for a in r.advertencias[:1]) or elemento == "HEXA"
+
+
+@requiere_gmsh
+def test_la_malla_de_tetraedros_cubre_el_volumen_y_asocia_las_superficies():
+    from ifc_structural.solido.tetraedros import mallar_solido_tetra, volumenes_firmados
+
+    c = cilindro("C", 0.5, 2.0)
+    m = mallar_solido_tetra(c, 0.2)
+    assert m.tetraedros.shape[1] == 10 and (volumenes_firmados(m.coordenadas, m.tetraedros) > 0).all()
+    assert m.volumen == pytest.approx(c.volumen, rel=0.02)
+    assert len(m.superficies) == 3  # dos tapas y la superficie curva
+    # los nodos medios están en el punto medio de las aristas
+    t, x = m.tetraedros, m.coordenadas
+    assert np.abs(x[t[:, 4]] - 0.5 * (x[t[:, 0]] + x[t[:, 1]])).max() < 1e-9
+    assert np.abs(x[t[:, 9]] - 0.5 * (x[t[:, 2]] + x[t[:, 3]])).max() < 1e-9
+
+
+@requiere_ccx
+@requiere_gmsh
+def test_cilindro_a_traccion_con_tetraedros_sigue_la_superficie_curva(tmp_path: Path):
+    """Con hexaedros la superficie curva queda escalonada; con tetraedros el área de la tapa es la real."""
+
+    r_, L, F = 0.05, 0.4, 20.0
+    s = cilindro("P", r_, L)
+    p = proyecto_con(s)
+    apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="P", cara=cara_hacia(s, (0, 0, -1)), ux=True, uy=True, uz=True)
+    carga = _carga(s, (0, 0, 1), "FUERZA", F, (0, 0, 1))
+    res = _analizar_con("TETRA", p, [apoyo], [carga], tmp_path, tamano=0.02)
+    x, u = res.malla_tensiones.coordenadas, res.desplazamientos_por_caso["L"]
+    area = np.pi * r_**2
+    esperado = F * L / (E * area)
+    assert u[np.isclose(x[:, 2], L, atol=1e-6), 2].mean() == pytest.approx(esperado, rel=0.03)
+
+
+@requiere_ccx
+@requiere_gmsh
+def test_dos_solidos_de_tetraedros_en_contacto_se_comportan_como_una_pieza(tmp_path: Path):
+    """Dos sólidos de tetraedros que se tocan se unen con *TIE y flexionan como una sola pieza."""
+
+    b, h, F = 0.1, 0.1, 10.0
+    a, c = caja("A", 0, 0, 0, 0.5, b, h), caja("B", 0.5, 0, 0, 0.5, b, h)
+    p = proyecto_con(a, c)
+    apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="A", cara=cara_hacia(a, (-1, 0, 0)), ux=True, uy=True, uz=True)
+    carga = _carga(c, (1, 0, 0), "FUERZA", F, (0, 0, -1))
+    r = _analizar_con("TETRA", p, [apoyo], [carga], tmp_path, tamano=0.05)
+    x, u = r.malla_tensiones.coordenadas, r.desplazamientos_por_caso["L"]
+    flecha = -u[np.isclose(x[:, 0], 1.0), 2].mean()
+    assert flecha == pytest.approx(F * 1.0**3 / (3 * E * b * h**3 / 12), rel=0.08)

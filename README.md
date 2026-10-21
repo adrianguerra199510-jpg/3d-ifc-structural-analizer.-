@@ -161,9 +161,9 @@ Un solo botón **ANALIZAR** (F5): el programa decide qué análisis corresponde.
 forma libre, apoyos o cargas sobre superficies, constraints o ninguna barra, lo resuelve como **sólido 3D**
 (el diálogo pregunta el tamaño de elemento y dice por qué); si son solo barras (con o sin losas), como barras.
 *Analizar → Modo de análisis* permite forzar uno de los dos. El análisis 3D malla cada viga, columna, losa y muro con su geometría real
-en **hexaedros** (CalculiX `C3D8I`) y resuelve el modelo completo como un sólido. Es la
-misma idea que la versión portable: el mallador es propio (barrido de la sección de cada
-barra, sin Gmsh ni otras dependencias), así que no hay nada que instalar.
+en **hexaedros** (CalculiX `C3D8I`; el mallador es propio, un barrido de la sección de cada barra) y los sólidos de
+forma libre en **tetraedros cuadráticos** (`C3D10`, con Gmsh), y resuelve el modelo completo como un sólido. La versión
+portable lleva CalculiX y Gmsh incluidos, así que no hay nada que instalar.
 
 - **Geometría.** Un perfil en I se malla con sus alas y su alma; un rectángulo, con
   su sección. Las barras alineadas con el mismo perfil (la columna partida por una unión)
@@ -206,15 +206,21 @@ y la conserva como **sólido de forma libre**:
   superficie y hacia dentro), **fuerza total** (kN repartida por área) o **momento total** (kN·m,
   repartido con fuerzas proporcionales a la distancia al centro), en la dirección elegida (normal,
   ejes globales o un vector).
-- **Análisis.** Solo con **ANALIZAR 3D**: cada sólido se malla en hexaedros rellenando su caja
-  envolvente con una cuadrícula y conservando las celdas cuyo centro está dentro (las celdas se
-  ajustan a la caja, de modo que una placa o un bloque con caras paralelas a los ejes queda mallado
-  exactamente; las caras inclinadas o curvas quedan escalonadas y mejoran con elementos más finos).
-  Cada cara de hexaedro de borde se asocia a la superficie más cercana, y de ahí salen los nodos
-  donde se aplican apoyos y cargas. Donde dos sólidos (o un sólido y una viga o columna) se
+- **Análisis.** Solo con **ANALIZAR 3D**. Los sólidos libres se mallan con **tetraedros cuadráticos
+  `C3D10`** generados por Gmsh a partir de su superficie triangulada (el mismo elemento del modelo sólido
+  de *Placa Base Pro*): siguen las superficies curvas e inclinadas sin escalonarlas. El diálogo permite elegir
+  en su lugar hexaedros `C3D8I` por voxelización (rellenando la caja envolvente con celdas ajustadas a ella y
+  conservando las de centro dentro). Gmsh corre en un proceso aparte con límite de tiempo (60 s por pieza); las
+  piezas que no puede mallar (superficies que se tocan por aristas, o que lo dejan colgado) se mallan con
+  hexaedros y se avisa. Las vigas, columnas, losas y muros siguen con hexaedros `C3D8I`, y los dos tipos se unen
+  con `*TIE`. Cada cara de borde (triángulo o cuadrilátero) se asocia a la superficie más cercana, y de ahí salen los
+  nodos donde se aplican apoyos y cargas (en un triángulo cuadrático la presión va a los nodos medios,
+  1/3 del área cada uno). Donde dos sólidos (o un sólido y una viga o columna) se
   solapan, la pieza menor cede el volumen común, para no contarlo dos veces; las piezas se unen
-  por las superficies que se tocan (`*TIE`) y las que no tocan a ninguna otra con apoyo se
-  detectan antes de resolver. Los sólidos deben ser superficies cerradas (se avisa si no lo son).
+  por las superficies que se tocan (`*TIE`, sin mover nodos: `ADJUST=NO`) y las que no tocan a ninguna otra
+  con apoyo se detectan antes de resolver. Los sólidos deben ser superficies cerradas (se avisa si no lo son;
+  se admiten aristas compartidas por 4 triángulos, típicas de Revit). Un elemento IFC con varias piezas sin
+  conexión (un equipo exportado como un solo `IfcBuildingElementProxy`) se importa como un sólido por pieza.
 - **Conectar** (botón de la barra, menú *Asignar → Conectar elementos* o clic derecho) ofrece dos formas:
   **manualmente** (los dos elementos o superficies seleccionados) y **automáticamente** (detecta los
   elementos que se tocan o están a menos de una separación elegida, los lista para marcar y crea un
@@ -364,9 +370,11 @@ src/ifc_structural/
 │   ├── miembros.py                # barras fundidas y recortadas en las uniones
 │   ├── malla.py                   # hexaedros de barras, losas, muros y sólidos libres; caras frontera
 │   ├── libres.py                  # voxelización de un sólido de forma libre (celdas dentro + superficies)
+│   ├── tetraedros.py              # tetraedros cuadráticos C3D10 de un sólido libre (Gmsh en proceso aparte)
+│   ├── proceso_gmsh.py            # proceso hijo que malla con Gmsh (límite de tiempo)
 │   ├── superficies.py             # caras de hexaedro de una superficie; reparto de presión, fuerza y momento
 │   ├── contactos.py               # *TIE entre caras coplanares enfrentadas
-│   ├── generador.py               # .inp (C3D8I, TIE, apoyos, cargas)
+│   ├── generador.py               # .inp (C3D8I y C3D10, TIE, apoyos, cargas)
 │   └── analisis_solido.py         # orquestación y resultados
 ├── combinaciones/
 │   ├── motor_superposicion.py     # superposición lineal de tensores → combinaciones

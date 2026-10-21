@@ -33,6 +33,7 @@ _ANCHO_CAMPO = 12
 _INICIO_VALORES = 13
 _LARGO_ID = 10
 _TIPO_HEXAEDRO_8 = 1
+_TIPO_TETRAEDRO_10 = 6
 
 
 class ErrorLecturaResultados(ValueError):
@@ -108,9 +109,9 @@ def leer_malla_frd(ruta_frd: Path) -> MallaTensiones:
             if linea.startswith(" -1"):
                 id_el = int(linea[3 : 3 + _LARGO_ID])
                 tipo = int(linea[13:18])
-                if tipo != _TIPO_HEXAEDRO_8:
+                if tipo not in (_TIPO_HEXAEDRO_8, _TIPO_TETRAEDRO_10):
                     raise ErrorLecturaResultados(
-                        f"Tipo de elemento no soportado en el .frd: {tipo} (se esperaba 1, hexaedro de 8 nodos)"
+                        f"Tipo de elemento no soportado en el .frd: {tipo} (se esperaba 1, hexaedro de 8 nodos, o 6, tetraedro de 10)"
                     )
                 elemento_actual = id_el
                 elementos[id_el] = []
@@ -129,7 +130,10 @@ def leer_malla_frd(ruta_frd: Path) -> MallaTensiones:
     coords = np.array(coordenadas, dtype=float)[orden]
 
     ids_el = np.array(sorted(elementos), dtype=np.int64)
-    conectividad = np.array([elementos[i] for i in ids_el], dtype=np.int64)
+    # Un tetraedro se dibuja como hexaedro degenerado con sus 4 vértices (a, b, c, c, d, d, d, d): así toda la
+    # malla tiene el mismo número de nodos por celda. Los nodos medios quedan como puntos con resultados.
+    conectividad = np.array([e if len(e) == 8 else [e[0], e[1], e[2], e[2], e[3], e[3], e[3], e[3]]
+                             for e in (elementos[i] for i in ids_el)], dtype=np.int64)
     indices = np.searchsorted(ids, conectividad)
     if not np.array_equal(ids[indices], conectividad):
         raise ErrorLecturaResultados("La conectividad del .frd referencia nodos inexistentes.")

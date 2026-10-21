@@ -10,14 +10,18 @@ from __future__ import annotations
 import logging
 import sys
 
-from PySide6.QtWidgets import QApplication
-
-from .gui.estilo import aplicar_estilo
-from .gui.iconos import icono_aplicacion
-from .gui.ventana_principal import VentanaPrincipal
-
 
 def main() -> int:
+    if "--malla-gmsh" in sys.argv:  # proceso hijo: malla un sólido con Gmsh (ver solido/proceso_gmsh.py)
+        from .solido.proceso_gmsh import main as malla_gmsh
+
+        return malla_gmsh(sys.argv[sys.argv.index("--malla-gmsh") + 1:])
+    from PySide6.QtWidgets import QApplication
+
+    from .gui.estilo import aplicar_estilo
+    from .gui.iconos import icono_aplicacion
+    from .gui.ventana_principal import VentanaPrincipal
+
     if "--autoprueba" in sys.argv:
         from .autoprueba import ejecutar_autoprueba
 

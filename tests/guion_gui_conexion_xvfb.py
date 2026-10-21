@@ -153,7 +153,7 @@ def main(salida: Path) -> None:
     class Dialogo3D(DialogoAnalisis3D):
         def __init__(self, *a, **k):
             super().__init__(*a, **k)
-            verificar("hexaedros" in self.estimacion.text(), "el diálogo 3D estima el número de hexaedros")
+            verificar("elementos" in self.estimacion.text(), "el diálogo 3D estima el número de elementos")
             self.spin_tamano.setValue(25)
 
     vp.DialogoAnalisis3D = Dialogo3D
