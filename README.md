@@ -160,16 +160,23 @@ por cortante), ver `tests/test_solido.py`.
 Un solo botón **ANALIZAR** (F5): el programa decide qué análisis corresponde. Si el modelo tiene sólidos de
 forma libre, apoyos o cargas sobre superficies, constraints o ninguna barra, lo resuelve como **sólido 3D**
 (el diálogo pregunta el tamaño de elemento y dice por qué); si son solo barras (con o sin losas), como barras.
-*Analizar → Modo de análisis* permite forzar uno de los dos. El análisis 3D malla cada viga, columna, losa y muro con su geometría real
-en **hexaedros** (CalculiX `C3D8I`; el mallador es propio, un barrido de la sección de cada barra) y los sólidos de
-forma libre en **tetraedros cuadráticos** (`C3D10`, con Gmsh), y resuelve el modelo completo como un sólido. La versión
-portable lleva CalculiX y Gmsh incluidos, así que no hay nada que instalar.
+*Analizar → Modo de análisis* permite forzar uno de los dos. El análisis 3D usa solo dos elementos de CalculiX:
+**tetraedros cuadráticos `C3D10`** (los de *Placa Base Pro*) en todas las piezas macizas y **láminas `S6`** en las piezas
+que son láminas. Las vigas, columnas, losas y muros se mallan con su geometría real (un barrido de la sección de cada
+barra) en hexaedros que al final se parten en 5 o 6 tetraedros cuadráticos conformes; los sólidos de forma libre, con
+Gmsh. La versión portable lleva CalculiX y Gmsh incluidos, así que no hay nada que instalar.
+
+- **¿Cuándo es lámina?** Cuando su espesor medio `t = 2·V/A` (V el volumen y A el área de toda su superficie) es como
+  mucho **1/20 de su tamaño en planta** `L = √(A/2)` (el criterio habitual de placa o cáscara delgada): el cuerpo y el
+  cono de un balde, el anillo inferior, una tolva, tubos de pared delgada, chapas. Una losa o un muro, si su espesor es
+  ≤ 1/20 de √(área de su contorno). Los bloques, ejes, pernos, engranajes y placas gruesas van con `C3D10`; una barra
+  redonda esbelta (que el cociente confundiría con una lámina) se reconoce como maciza al medir su espesor con rayos.
 
 - **Geometría.** Un perfil en I se malla con sus alas y su alma; un rectángulo, con
   su sección. Las barras alineadas con el mismo perfil (la columna partida por una unión)
   se funden en una sola pieza y el extremo de una viga se **recorta hasta la superficie**
   de la columna que atraviesa, de modo que su cara extrema queda apoyada en ella. A las
-  losas y muros se les quitan los hexaedros que solapan con vigas y columnas.
+  losas y muros se les quitan los elementos que solapan con vigas y columnas.
 - **Uniones.** Las piezas se unen con `*TIE` por las caras que se miran y se tocan (cara
   extrema de la viga contra el ala, losa sobre viga, tramos de columna): equivale a una
   soldadura continua. Una losa que el IFC coloca con holgura o solapada se une a las caras
@@ -180,10 +187,12 @@ portable lleva CalculiX y Gmsh incluidos, así que no hay nada que instalar.
   se reparten por el área de la sección, las cargas lineales a lo largo de ella y las presiones
   sobre las caras de la losa. El peso propio es `*DLOAD,GRAV` con el peso específico del
   material (caso de tipo D). Las conexiones manuales (articulaciones) no se aplican.
-- **Tamaño de elemento.** El diálogo propone el más fino que da unos 40 000 hexaedros y
-  estima la cantidad (máximo 400 000). Con 1 elemento en el espesor de un ala, `C3D8I`
-  flexiona bien; las concentraciones junto a apoyos, cargas puntuales y esquinas
-  interiores dependen del tamaño y no convergen del todo (son singularidades).
+- **Tamaño de elemento.** El diálogo propone el más fino que da unos 60 000 elementos (tetraedros + láminas) y
+  estima la cantidad (máximo 400 000). La estimación cuenta los triángulos de superficie que hará Gmsh (las piezas
+  pequeñas, como pernos y tuercas, no bajan de un mínimo aunque crezca el tamaño): si ni el tamaño más grueso cumple
+  el objetivo, propone el más fino que da casi lo mismo que el más grueso. Con 1 elemento en el espesor de un ala,
+  `C3D10` flexiona bien (IPE300 en voladizo: +0,15 % frente a la teoría); las concentraciones junto a apoyos, cargas
+  puntuales y esquinas interiores dependen del tamaño y no convergen del todo (son singularidades).
 - **Resultados.** Los mismos de siempre (von Mises, σ1, σ3, τmax, casos, combinaciones y
   envolvente), pero sobre el sólido: se ven las alas, el alma y las uniones. Comprobado
   contra `M·c/I`, `wL²/8` y el equilibrio (`tests/test_solido.py`): error < 3 %.
@@ -208,28 +217,32 @@ y la conserva como **sólido de forma libre**:
   ejes globales o un vector).
 - **Análisis.** Solo con **ANALIZAR 3D**. Los sólidos libres se mallan con **tetraedros cuadráticos
   `C3D10`** generados por Gmsh a partir de su superficie triangulada (el mismo elemento del modelo sólido
-  de *Placa Base Pro*): siguen las superficies curvas e inclinadas sin escalonarlas. El diálogo permite elegir
-  en su lugar hexaedros `C3D8I` por voxelización (rellenando la caja envolvente con celdas ajustadas a ella y
-  conservando las de centro dentro). Gmsh corre en un proceso aparte con límite de tiempo (60 s por pieza); las
-  piezas que no puede mallar (superficies que se tocan por aristas, o que lo dejan colgado) se mallan con
-  hexaedros y se avisa. Las vigas, columnas, losas y muros siguen con hexaedros `C3D8I`, y los dos tipos se unen
-  con `*TIE`. Cada cara de borde (triángulo o cuadrilátero) se asocia a la superficie más cercana, y de ahí salen los
+  de *Placa Base Pro*): siguen las superficies curvas e inclinadas sin escalonarlas. Gmsh corre en **un solo proceso
+  aparte para todas las piezas** (lanzar uno por pieza hacía saltar a los antivirus), con límite de tiempo por pieza
+  (60 s): si una pieza lo cuelga, se termina y se relanza desde la siguiente (como mucho 3 veces). Si falla con una
+  pieza, lo vuelve a intentar con la mitad y la cuarta parte del tamaño; las que aun así no puede mallar
+  (superficies que se tocan por aristas) se rellenan por vóxeles, que también se parten en `C3D10`, y se avisa.
+  Cada cara de borde se asocia a la superficie más cercana, y de ahí salen los
   nodos donde se aplican apoyos y cargas (en un triángulo cuadrático la presión va a los nodos medios,
   1/3 del área cada uno). Donde dos sólidos (o un sólido y una viga o columna) se
   solapan, la pieza menor cede el volumen común, para no contarlo dos veces; las piezas se unen
-  por las superficies que se tocan (`*TIE`, sin mover nodos: `ADJUST=NO`) y las que no tocan a ninguna otra
+  por las superficies que se tocan (`*TIE`, sin mover nodos: `ADJUST=NO`; si se solapaban, como una tuerca metida en
+  la placa, el borde cortado no tiene caras planas enfrentadas y se une por proximidad) y las que no tocan a ninguna otra
   con apoyo se detectan antes de resolver. Los sólidos deben ser superficies cerradas (se avisa si no lo son;
   se admiten aristas compartidas por 4 triángulos, típicas de Revit). Un elemento IFC con varias piezas sin
   conexión (un equipo exportado como un solo `IfcBuildingElementProxy`) se importa como un sólido por pieza.
-- **Paredes delgadas como láminas.** Un sólido cuyo espesor medio (2·V/A) es pequeño frente a su tamaño (un depósito, una
-  tolva, una chapa curva) que Gmsh no puede mallar se modela como **lámina** (cáscara `S6` de CalculiX, triángulo
-  cuadrático con 6 grados de libertad por nodo): se obtiene su superficie media lanzando un rayo desde cada triángulo de una
-  piel hasta la piel opuesta (el espesor es la distancia), se refina la malla hasta el tamaño de elemento y cada
-  elemento lleva su espesor (`*SHELL SECTION`). Funciona con las superficies que se tocan por aristas, que Gmsh rechaza.
+- **Láminas.** Las piezas que son láminas (ver arriba) se modelan con **cáscaras `S6`** de CalculiX (triángulo
+  cuadrático con 6 grados de libertad por nodo): se obtiene su superficie media lanzando un rayo desde cada triángulo de
+  una piel hasta la piel opuesta (el espesor es la distancia) y Gmsh la vuelve a mallar, en el mismo proceso que los
+  tetraedros, con triángulos casi equiláteros del tamaño de elemento (las superficies de Revit vienen en abanico, con
+  triángulos larguísimos); si no puede, se refina por bisección. Cada elemento lleva su espesor (`*SHELL SECTION`) y
+  las normales son coherentes entre vecinos. Funciona con las superficies que se tocan por aristas, que Gmsh rechaza.
   Los apoyos sobre una lámina restringen directamente los 6 grados (un empotramiento de verdad); las cargas de superficie
   van a los nodos medios. Las láminas se acoplan a las piezas vecinas con `*EQUATION` entre los nodos que están a menos de
-  0,6 veces el tamaño de elemento más medio espesor (traslaciones; también giros entre dos láminas): la unión con un sólido
-  transmite fuerza pero no momento. Un voladizo de chapa da ~95 % de la flecha de la teoría (`tests/test_solidos_libres.py`).
+  0,6 veces el tamaño de elemento más medio espesor (traslaciones; también giros entre dos láminas; con un sólido, el
+  giro de cada nodo de la lámina sigue al del parche de nodos del sólido que lo rodea, ajustado por mínimos cuadrados,
+  así que la unión transmite también momento). Un voladizo de chapa da ~95 % de la flecha de la teoría
+  (`tests/test_solidos_libres.py`, `tests/test_c3d10_laminas.py`).
 - **Conectar** (botón de la barra, menú *Asignar → Conectar elementos* o clic derecho) ofrece dos formas:
   **manualmente** (los dos elementos o superficies seleccionados) y **automáticamente** (detecta los
   elementos que se tocan o están a menos de una separación elegida, los lista para marcar y crea un
@@ -255,7 +268,7 @@ y la conserva como **sólido de forma libre**:
 - **Archivos reales (Revit y similares).** Se respeta la unidad del archivo (mm, cm, pies): la geometría se importa siempre
   en metros. Los materiales sin propiedades cuyo nombre (o el del elemento o su tipo) dice *acero* se importan como
   acero estructural y se avisa. Las placas delgadas clasificadas como viga, columna o miembro (rigidizadores) y los muros
-  o losas que son chapas se mallan con **una capa** de hexaedros en el espesor y celdas de hasta 12 veces el espesor en
+  o losas que son chapas se mallan con **una capa** de elementos en el espesor y celdas de hasta 12 veces el espesor en
   su plano (un alma de 10 mm y 6 m no se convierte en cientos de miles de celdas). Las piezas sueltas (sin tocar a
   nada, sin apoyos ni cargas) no abortan el análisis: se dejan fijas y se avisa. Probado con una viga armada en cajón
   exportada de Revit en milímetros (`Lifting Device`).
@@ -377,14 +390,15 @@ src/ifc_structural/
 ├── solido/                        # análisis 3D como modelo sólido
 │   ├── seccion2d.py               # malla de cuadriláteros de la sección (rectángulo, doble T)
 │   ├── miembros.py                # barras fundidas y recortadas en las uniones
-│   ├── malla.py                   # hexaedros de barras, losas, muros y sólidos libres; caras frontera
+│   ├── malla.py                   # malla de todo el modelo (C3D10 + S6); caras frontera; estimación
+│   ├── hex_a_tet.py               # hexaedros -> tetraedros cuadráticos C3D10 conformes
 │   ├── libres.py                  # voxelización de un sólido de forma libre (celdas dentro + superficies)
-│   ├── tetraedros.py              # tetraedros cuadráticos C3D10 de un sólido libre (Gmsh en proceso aparte)
-│   ├── laminas.py                 # láminas S6: superficie media de una pared delgada, refinamiento, espesor
+│   ├── tetraedros.py              # C3D10 de los sólidos libres: un solo proceso de Gmsh para todas las piezas
+│   ├── laminas.py                 # láminas S6: criterio, superficie media, remallado con Gmsh, espesor
 │   ├── proceso_gmsh.py            # proceso hijo que malla con Gmsh (límite de tiempo)
 │   ├── superficies.py             # caras de hexaedro de una superficie; reparto de presión, fuerza y momento
 │   ├── contactos.py               # *TIE entre caras coplanares enfrentadas
-│   ├── generador.py               # .inp (C3D8I y C3D10, TIE, apoyos, cargas)
+│   ├── generador.py               # .inp (C3D10 y S6, TIE, EQUATION, apoyos, cargas)
 │   └── analisis_solido.py         # orquestación y resultados
 ├── combinaciones/
 │   ├── motor_superposicion.py     # superposición lineal de tensores → combinaciones

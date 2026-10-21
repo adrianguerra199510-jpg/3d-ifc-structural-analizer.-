@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 import pyvista as pv
@@ -36,6 +36,7 @@ class MallaLibre:
     celda_minima: float = 0.0  # lado menor de las celdas (el espesor de una placa delgada lleva una sola capa)
     descartados: int = 0  # hexaedros quitados por solapar con otras piezas
     volumen: float = 0.0  # volumen de la malla más el de los hexaedros cedidos a otras piezas
+    cedido_a: List[str] = field(default_factory=list)  # sólidos mayores con los que solapa (les cedió volumen)
 
 
 def celdas_por_eje(solido: SolidoGeneral, tamano: float) -> np.ndarray:
@@ -115,6 +116,7 @@ def mallar_solido(solido: SolidoGeneral, tamano: float, mayores: Sequence[Solido
     centros = np.stack(np.meshgrid(*ejes, indexing="ij"), axis=-1).reshape(-1, 3)
     dentro = puntos_dentro(solido, centros)
     descartados = 0
+    cedido_a: List[str] = []
     for otro in mayores:
         if not dentro.any():
             break
@@ -124,6 +126,8 @@ def mallar_solido(solido: SolidoGeneral, tamano: float, mayores: Sequence[Solido
         solapa = puntos_dentro(otro, centros[indices])
         descartados += int(solapa.sum())
         dentro[indices[solapa]] = False
+        if solapa.any():
+            cedido_a.append(otro.id)
     if excluir is not None and dentro.any():
         indices = np.where(dentro)[0]
         solapa = excluir(centros[indices])
@@ -178,7 +182,7 @@ def mallar_solido(solido: SolidoGeneral, tamano: float, mayores: Sequence[Solido
         for s in np.unique(superficie[superficie >= 0]):
             marca = superficie == s
             superficies[int(s)] = np.stack([hexa[marca], cara[marca]], axis=1)
-    return MallaLibre(coordenadas=coordenadas, hexaedros=hexaedros, superficies=superficies, tamano=h, celda_minima=float(paso.min()), descartados=descartados,
+    return MallaLibre(coordenadas=coordenadas, hexaedros=hexaedros, superficies=superficies, tamano=h, celda_minima=float(paso.min()), descartados=descartados, cedido_a=cedido_a,
                       volumen=float(len(ii) + descartados) * float(np.prod(paso)))
 
 

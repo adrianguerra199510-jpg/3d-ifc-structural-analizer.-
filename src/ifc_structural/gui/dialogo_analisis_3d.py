@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel, QVBoxLayout
 
 from ..core.modelo import Proyecto
-from ..solido.analisis_solido import MAXIMO_HEXAEDROS, elemento_solido_por_defecto, estimar, tamano_sugerido
+from ..solido.analisis_solido import MAXIMO_HEXAEDROS, estimar, tamano_sugerido
 from .estilo import EncabezadoDialogo
 
 
@@ -25,24 +25,18 @@ class DialogoAnalisis3D(QDialog):
             aviso.setWordWrap(True)
             layout.addWidget(aviso)
         explicacion = QLabel(
-            "• Las vigas, columnas, losas y muros se mallan como <b>sólidos</b> con su forma real (un perfil en I "
-            "tiene alas y alma), y se unen por las superficies que se tocan, como una soldadura continua.<br>"
+            "• Elementos: <b>tetraedros cuadráticos C3D10</b> en todas las piezas macizas (también vigas, columnas, losas "
+            "y muros gruesos) y <b>láminas S6</b> (cáscaras en la superficie media, con su espesor) en las piezas que son "
+            "láminas: espesor ≤ 1/20 de su tamaño en planta (chapas, paredes de depósitos, losas y muros delgados).<br>"
+            "• Las vigas y columnas se mallan con su forma real (un perfil en I tiene alas y alma); las piezas se unen "
+            "por las superficies que se tocan, como una soldadura continua.<br>"
             "• Los apoyos y las cargas asignados se aplican sobre la <b>cara o la sección</b> elegida.<br>"
-            "• Las placas, pernos y demás piezas del IFC se mallan como sólidos con su geometría real.<br>"
-            "• Se ven esfuerzos locales (aletas, alma, uniones) que el modelo de barras no muestra. "
-            "No incluye pretensión de pernos ni contacto con separación o fricción."
+            "• No incluye pretensión de pernos ni contacto con separación o fricción."
         )
         explicacion.setWordWrap(True)
         layout.addWidget(explicacion)
 
         formulario = QFormLayout()
-        self.combo_elemento = QComboBox()
-        self.combo_elemento.addItem("Tetraedros cuadráticos C3D10 (Gmsh)", "TETRA")
-        self.combo_elemento.addItem("Hexaedros C3D8I (voxelización)", "HEXA")
-        self.combo_elemento.setCurrentIndex(self.combo_elemento.findData(elemento_solido_por_defecto()))
-        self.combo_elemento.setToolTip("Elemento finito de los sólidos libres (las barras, losas y muros llevan hexaedros C3D8I). "
-                                       "Los tetraedros cuadráticos siguen las superficies curvas e inclinadas.")
-        formulario.addRow("Elemento de los sólidos:", self.combo_elemento)
         self.spin_tamano = QDoubleSpinBox()
         self.spin_tamano.setRange(5.0, 500.0)
         self.spin_tamano.setDecimals(0)
@@ -62,13 +56,12 @@ class DialogoAnalisis3D(QDialog):
         layout.addWidget(self.botones)
 
         self.spin_tamano.valueChanged.connect(self._actualizar)
-        self.combo_elemento.currentIndexChanged.connect(self._actualizar)
         self._actualizar()
 
     def elemento(self) -> str:
-        """``"TETRA"`` (C3D10) o ``"HEXA"`` (C3D8I): elemento de los sólidos libres."""
+        """Elemento de los sólidos: siempre tetraedros C3D10 (las láminas, S6)."""
 
-        return self.combo_elemento.currentData()
+        return "TETRA"
 
     def tamano(self) -> float:
         """Tamaño de elemento en metros."""

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -41,14 +41,47 @@ class ErrorLecturaResultados(ValueError):
     pass
 
 
+#: Tipos de celda de ``MallaTensiones.tipos``.
+TIPO_HEXAEDRO, TIPO_TETRAEDRO, TIPO_CUNA = 1, 2, 3
+
+
 @dataclass
 class MallaTensiones:
-    """Malla expandida (hexaedros) sobre la que se evalúan los esfuerzos."""
+    """Malla expandida sobre la que se evalúan los esfuerzos.
+
+    ``conectividad`` tiene 8 columnas para todas las celdas: un hexaedro usa las 8; un tetraedro se guarda como
+    (a, b, c, c, d, d, d, d) y una cuña (lámina expandida) como (a, b, c, c, d, e, f, f). ``tipos`` dice cuál es cada
+    una, para dibujarlas con su forma real."""
 
     ids_nodos: np.ndarray  # (N,) etiquetas de nodo de ccx, ascendentes
     coordenadas: np.ndarray  # (N, 3)
     ids_elementos: np.ndarray  # (M,) coinciden con los ids de ElementoMalla
     conectividad: np.ndarray  # (M, 8) índices 0-based en ``ids_nodos``
+    tipos: Optional[np.ndarray] = None  # (M,) TIPO_HEXAEDRO, TIPO_TETRAEDRO o TIPO_CUNA; None = todo hexaedros
+
+    def tipos_de_celda(self) -> np.ndarray:
+        return np.full(len(self.ids_elementos), TIPO_HEXAEDRO, dtype=np.int64) if self.tipos is None else self.tipos
+
+    def celdas_vtk(self) -> Tuple[np.ndarray, np.ndarray]:
+        """(celdas, tipos) para ``pyvista.UnstructuredGrid``: hexaedros, tetraedros y cuñas con su forma."""
+
+        tipos = self.tipos_de_celda()
+        c = np.asarray(self.conectividad, dtype=np.int64)
+        formas = ((TIPO_HEXAEDRO, [0, 1, 2, 3, 4, 5, 6, 7], 12), (TIPO_TETRAEDRO, [0, 1, 2, 4], 10),
+                  (TIPO_CUNA, [0, 1, 2, 4, 5, 6], 13))
+        vtk = np.zeros(len(tipos), dtype=np.uint8)
+        largo = np.zeros(len(tipos), dtype=np.int64)
+        for tipo, columnas, codigo in formas:
+            vtk[tipos == tipo] = codigo
+            largo[tipos == tipo] = len(columnas) + 1
+        inicio = np.concatenate([[0], np.cumsum(largo)[:-1]])  # las celdas conservan su orden (el visor usa su índice)
+        celdas = np.empty(int(largo.sum()), dtype=np.int64)
+        for tipo, columnas, _ in formas:
+            sel = np.where(tipos == tipo)[0]
+            if len(sel):
+                filas = np.hstack([np.full((len(sel), 1), len(columnas)), c[sel][:, columnas]])
+                celdas[inicio[sel][:, None] + np.arange(len(columnas) + 1)] = filas
+        return celdas, vtk
 
     @property
     def n_nodos(self) -> int:
@@ -69,6 +102,7 @@ def recortar_malla(malla: MallaTensiones, mantener: np.ndarray):
         coordenadas=malla.coordenadas[usados],
         ids_elementos=malla.ids_elementos[mantener],
         conectividad=nueva,
+        tipos=None if malla.tipos is None else malla.tipos[mantener],
     )
     return recortada, usados
 
@@ -142,11 +176,14 @@ def leer_malla_frd(ruta_frd: Path) -> MallaTensiones:
         return [e[0], e[1], e[2], e[2], e[3], e[4], e[5], e[5]]
 
     conectividad = np.array([celda(elementos[i]) for i in ids_el], dtype=np.int64)
+    tipos = np.array([TIPO_HEXAEDRO if len(elementos[i]) == 8 else TIPO_TETRAEDRO if len(elementos[i]) == 10 else TIPO_CUNA
+                      for i in ids_el], dtype=np.int64)
     indices = np.searchsorted(ids, conectividad)
     if not np.array_equal(ids[indices], conectividad):
         raise ErrorLecturaResultados("La conectividad del .frd referencia nodos inexistentes.")
 
-    return MallaTensiones(ids_nodos=ids, coordenadas=coords, ids_elementos=ids_el, conectividad=indices)
+    return MallaTensiones(ids_nodos=ids, coordenadas=coords, ids_elementos=ids_el, conectividad=indices,
+                          tipos=None if (tipos == TIPO_HEXAEDRO).all() else tipos)
 
 
 def leer_tensiones_frd(ruta_frd: Path, malla: MallaTensiones) -> np.ndarray:

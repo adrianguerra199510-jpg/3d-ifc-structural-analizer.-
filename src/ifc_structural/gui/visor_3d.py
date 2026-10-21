@@ -1035,9 +1035,7 @@ class Visor3D(QtInteractor):
                     visual.actor_bordes.SetVisibility(self._visibles[visual.tipo] and not ocultar_planos)
                 visual.actor.GetProperty().SetOpacity(OPACIDAD_PLANOS_EN_ESFUERZOS)
 
-        n_celdas = len(malla.ids_elementos)
-        celdas = np.hstack([np.full((n_celdas, 1), 8, dtype=np.int64), malla.conectividad.astype(np.int64)]).ravel()
-        tipos = np.full(n_celdas, pv.CellType.HEXAHEDRON, dtype=np.uint8)
+        celdas, tipos = malla.celdas_vtk()  # hexaedros, tetraedros y cuñas (láminas) con su forma real
         coordenadas = np.asarray(malla.coordenadas, dtype=float)
         grid = pv.UnstructuredGrid(celdas, tipos, coordenadas.copy())
         grid.point_data["esfuerzo"] = np.asarray(valores, dtype=float)

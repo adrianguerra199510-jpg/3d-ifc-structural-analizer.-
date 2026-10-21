@@ -1,11 +1,9 @@
 """Escritura del .inp de CalculiX del modelo sólido.
 
-Elementos ``C3D8I`` (hexaedros con modos incompatibles: flexionan bien con un
-solo elemento en el espesor de un ala o un alma) en barras, losas y muros, y
-``C3D10`` (tetraedros cuadráticos de Gmsh, como en Placa Base Pro) en los sólidos libres, uniones ``*TIE`` entre
-piezas, apoyos sobre las caras (cuerpo rígido con nodo de referencia cuando
-se dejan giros libres) y cargas repartidas sobre los nodos de la sección o de
-la cara cargada. El peso propio es ``*DLOAD,GRAV`` con ``*DENSITY`` igual al
+Elementos ``C3D10`` (tetraedros cuadráticos, como en Placa Base Pro) y ``S6`` (láminas) en el análisis; ``C3D8I``
+(hexaedros con modos incompatibles) solo si la malla aún tiene hexaedros. Uniones ``*TIE`` entre piezas, acoples
+``*EQUATION`` de las láminas, apoyos sobre las caras (cuerpo rígido con nodo de referencia cuando se dejan giros
+libres) y cargas repartidas sobre los nodos de la sección o de la cara cargada. El peso propio es ``*DLOAD,GRAV`` con ``*DENSITY`` igual al
 peso específico (kN/m³) y aceleración 1.
 """
 
@@ -52,6 +50,10 @@ class Acople:
     nodos_a: np.ndarray  # índices 0-based, uno por pareja
     nodos_b: np.ndarray
     giros: bool = False  # True si las dos piezas son láminas: también se igualan los giros
+    # Lámina unida a un sólido: el giro de cada nodo de la lámina sigue al giro del parche de nodos del sólido que lo
+    # rodea (ajuste de cuerpo rígido por mínimos cuadrados), para que la unión transmita también momentos.
+    # Una entrada por ecuación: [(nodo 0-based, grado 1..6, coeficiente), ...]; el primer término es el dependiente.
+    ecuaciones_giro: List[List[Tuple[int, int, float]]] = field(default_factory=list)
 
 
 @dataclass
@@ -169,6 +171,13 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         for g in (1, 2, 3, 4, 5, 6) if acople.giros else (1, 2, 3):
             for n, m in zip(acople.nodos_a[libres], acople.nodos_b[libres]):
                 ecuaciones += ["2", f"{int(n) + 1},{g},1.,{int(m) + 1},{g},-1."]
+        prohibidos = set(int(n) for n in apoyados)
+        for terminos in acople.ecuaciones_giro:
+            if terminos[0][0] in prohibidos:
+                continue
+            ecuaciones.append(str(len(terminos)))
+            textos = [f"{n + 1},{g},{c:.10g}" for n, g, c in terminos]
+            ecuaciones += [",".join(textos[k:k + 4]) for k in range(0, len(textos), 4)]
     if ecuaciones:
         lineas.append("*EQUATION")
         lineas += ecuaciones

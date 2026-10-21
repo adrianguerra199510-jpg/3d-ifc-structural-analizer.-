@@ -25,12 +25,11 @@ from ..solver.analisis import (
 from ..solver.ejecutor_ccx import ejecutar_ccx_todos_los_casos
 from ..solver.generador_inp import ElementoMalla, MallaAnalisis
 from ..solver.lector_resultados import leer_desplazamientos_frd, leer_malla_frd, leer_tensiones_frd
-from .contactos import Union, _caras_en_contacto, detectar_acoples, detectar_uniones, partes_sin_conexion
+from .contactos import Union, _caras_cercanas, _caras_en_contacto, detectar_acoples, detectar_uniones, partes_sin_conexion
 from .generador import Acople, Apoyo3D, CargasCaso, Enlace3D, ModeloSolido, escribir, escribir_caso, escribir_comun, etiqueta
 from .malla import ErrorMalla, MallaSolida, ParteMalla, construir_malla_solida, estimar_hexaedros
 from .miembros import MiembroBarra, barras_de_longitud_cero, construir_miembros, recortar_uniones
 from .superficies import _parte_de, fuerzas_nodales, superficie_en_malla
-from .tetraedros import gmsh_disponible
 
 #: Tamaño de elemento por defecto (m) y máximo de hexaedros que se aceptan sin avisar.
 TAMANO_POR_DEFECTO = 0.05
@@ -39,22 +38,34 @@ TIEMPO_LIMITE_CCX = 3600.0
 
 
 def elemento_solido_por_defecto() -> str:
-    """Elemento de los sólidos libres: tetraedros cuadráticos ``C3D10`` (Gmsh, como Placa Base Pro) si Gmsh está
-    disponible; si no, hexaedros ``C3D8I`` por voxelización."""
+    """Elemento del análisis: tetraedros cuadráticos ``C3D10`` en todo (Gmsh, como Placa Base Pro; sin Gmsh, los
+    sólidos libres se mallan por vóxeles y se parten en tetraedros) y láminas ``S6`` en las piezas que son láminas."""
 
-    return "TETRA" if gmsh_disponible() else "HEXA"
+    return "TETRA"
 
 
-def tamano_sugerido(proyecto: Proyecto, objetivo_hexaedros: int = 40_000, elemento_solido: Optional[str] = None) -> float:
-    """Tamaño de elemento (m) más fino, entre 1 cm y 25 cm, que no pasa de ``objetivo_hexaedros``."""
+#: Elementos (tetraedros C3D10 + láminas S6) que se buscan con el tamaño sugerido: CalculiX los resuelve en uno o dos
+#: minutos con poca memoria.
+OBJETIVO_ELEMENTOS = 60_000
+#: Tamaños de elemento que se prueban (m), de fino a grueso.
+TAMANOS = (0.01, 0.012, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.25)
+
+
+def tamano_sugerido(proyecto: Proyecto, objetivo: int = OBJETIVO_ELEMENTOS, elemento_solido: Optional[str] = None) -> float:
+    """Tamaño de elemento (m) más fino que no pasa de ``objetivo`` elementos.
+
+    Las piezas pequeñas (pernos, tuercas, arandelas) no bajan de un mínimo de elementos aunque el tamaño crezca: si ni el
+    más grueso cumple el objetivo, se toma el más fino que da casi lo mismo que el más grueso (agrandar más los elementos
+    solo empeoraría las piezas grandes sin ahorrar nada)."""
 
     elemento_solido = elemento_solido or elemento_solido_por_defecto()
     miembros = construir_miembros(proyecto)
     recortar_uniones(proyecto, miembros)
-    for tamano in (0.01, 0.012, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.15, 0.2, 0.25):
-        if estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA") <= objetivo_hexaedros:
-            return tamano  # el más fino que no pasa del objetivo
-    return 0.25
+    estimados = [estimar_hexaedros(proyecto, miembros, h, elemento_solido == "TETRA") for h in TAMANOS]
+    for h, n in zip(TAMANOS, estimados):
+        if n <= objetivo:
+            return h  # el más fino que no pasa del objetivo
+    return next(h for h, n in zip(TAMANOS, estimados) if n <= 1.15 * estimados[-1])
 
 
 def estimar(proyecto: Proyecto, tamano: float, elemento_solido: Optional[str] = None) -> int:
@@ -277,10 +288,11 @@ def _cargas_del_caso(proyecto: Proyecto, miembros: Sequence[MiembroBarra], malla
         area_total = 0.5 * float(np.linalg.norm(sum(np.cross(contorno[i], contorno[(i + 1) % len(contorno)])
                                                     for i in range(len(contorno)))))
         factor = area_total / float(f.area[enfrentadas].sum()) if f.area[enfrentadas].sum() > 0 else 1.0
+        k = f.nodos.shape[1]
+        reparto = np.full(k, 1.0 / k) if f.pesos_nodo is None else np.asarray(f.pesos_nodo, dtype=float)
         for i in np.where(enfrentadas)[0]:
             presion = c.presion_en(tuple(f.centro[i])) * factor
-            for n in f.nodos[i]:
-                cargas.sumar(np.array([n]), (presion * f.area[i] / 4.0 * d)[None, :])
+            cargas.sumar(f.nodos[i], (presion * f.area[i]) * reparto[:, None] * d[None, :])
     return cargas
 
 
@@ -310,7 +322,8 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
                 continue
             if u.tipo == "SOLDADURA":
                 tol = max(u.tolerancia, 2e-3 + 0.25 * tamano)
-                contacto = _caras_en_contacto(malla, ia, ib, tol)
+                # caras planas enfrentadas; si no hay (superficies curvas, piezas que se solapaban), las caras cercanas
+                contacto = _caras_en_contacto(malla, ia, ib, tol) or _caras_cercanas(malla, ia, ib, tol)
                 if contacto is None:
                     avisos.append(f"Soldadura «{u.nombre}»: los elementos no se tocan ni están a menos de {tol * 1000:.0f} mm "
                                   "(aumente la tolerancia); no se unieron.")
@@ -407,7 +420,8 @@ def ejecutar_analisis_solido(
     avanzar(f"Mallando (unos {estimados:,} elementos)...".replace(",", " "))
     especiales = puntos_especiales(proyecto, miembros, apoyos, cargas_puntuales_por_caso, cargas_lineales_por_caso)
     try:
-        malla = construir_malla_solida(proyecto, miembros, tamano, especiales, elemento_solido, lamina_si_delgado=True)
+        malla = construir_malla_solida(proyecto, miembros, tamano, especiales, elemento_solido, usar_laminas=True,
+                                       al_avanzar=avanzar)
     except ErrorMalla as exc:
         raise ErrorAnalisis(str(exc)) from exc
 
@@ -508,9 +522,11 @@ def ejecutar_analisis_solido(
         "pernos, contacto con separación ni fricción. Los esfuerzos junto a apoyos y cargas puntuales son locales y "
         "dependen del tamaño de elemento.")
 
-    if elemento_solido == "TETRA" and len(malla.tetraedros):
-        advertencias.insert(0, f"Los sólidos libres se mallaron con {len(malla.tetraedros):,} tetraedros cuadráticos (C3D10, Gmsh)."
-                            .replace(",", " "))
+    if len(malla.tetraedros) or len(malla.laminas):
+        partes_malla = [f"{len(malla.tetraedros):,} tetraedros cuadráticos C3D10"] if len(malla.tetraedros) else []
+        if len(malla.laminas):
+            partes_malla.append(f"{len(malla.laminas):,} láminas S6")
+        advertencias.insert(0, f"Malla: {' y '.join(partes_malla)} ({len(malla.coordenadas):,} nodos).".replace(",", " "))
     equivalente = MallaAnalisis()
     for i, id_ in enumerate(malla.elementos_en_orden, start=1):
         equivalente.elementos[i] = ElementoMalla(id=i, barra_id=id_, nodo_i=0, nodo_f=0, s_inicio=0.0, s_fin=1.0)

@@ -194,9 +194,11 @@ def test_perno_cilindrico_en_traccion_apoyado_en_su_tapa(tmp_path: Path):
     r = _analizar(p, [apoyo], [carga], tmp_path, tamano=0.05)
     x = r.malla_tensiones.coordenadas
     u = r.desplazamientos_por_caso["L"]
-    malla = construir_malla_solida(p, [], 0.05)
-    c = malla.coordenadas[malla.hexaedros]
-    area = (np.prod(c[:, 6] - c[:, 0], axis=1).sum()) / 0.2  # área de la sección escalonada
+    from ifc_structural.solido.tetraedros import volumenes_firmados
+
+    malla = construir_malla_solida(p, [], 0.05, None, "TETRA")
+    area = volumenes_firmados(malla.coordenadas, malla.tetraedros).sum() / 0.2  # sección poligonal de la malla
+    assert area == pytest.approx(np.pi * 0.015**2, rel=0.1)  # la superficie curva no se recorta a pocos lados
     assert u[np.isclose(x[:, 2], 0.2), 2].mean() == pytest.approx(5.0 * 0.2 / (E * area), rel=0.03)
 
 

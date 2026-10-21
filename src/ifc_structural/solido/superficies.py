@@ -16,7 +16,7 @@ import numpy as np
 
 from ..core.asignacion_superficie import direccion_efectiva
 from ..core.cargas import ApoyoSuperficie, CargaSuperficie
-from ..core.geometria import solido_elemento
+from ..core.geometria import area_poligono, solido_elemento
 from ..core.modelo import Proyecto
 from .malla import CARAS_HEXAEDRO, MallaSolida, ParteMalla
 from .tetraedros import CARAS_TETRAEDRO, MEDIOS_CARA
@@ -154,10 +154,42 @@ def superficie_en_malla(proyecto: Proyecto, malla: MallaSolida, tipo: str, id_: 
             marca[:] = False
             marca[indices[dentro]] = True
     if not marca.any():
+        if parte.lamina:
+            return _canto_de_lamina(malla, parte, cara_geom, tol)
         return None
     return SuperficieMallada(parte=malla.partes.index(parte), nodos=f.nodos[marca], centro=f.centro[marca],
                              normal=f.normal[marca], area=f.area[marca], hexaedro=f.hexaedro[marca], cara=f.cara[marca],
                              pesos_nodo=f.pesos_nodo)
+
+
+def _canto_de_lamina(malla: MallaSolida, parte: ParteMalla, cara_geom, tol: float) -> Optional[SuperficieMallada]:
+    """Canto (borde) de una losa o muro modelado como lámina: los nodos de la lámina que están sobre esa cara. Cada nodo
+    lleva una parte igual del área de la cara."""
+
+    from shapely import contains_xy
+    from shapely.geometry import Polygon
+
+    normal = np.asarray(cara_geom.normal, dtype=float)
+    puntos = np.asarray(cara_geom.puntos, dtype=float)
+    centro = puntos.mean(axis=0)
+    nodos = malla.nodos_de_parte(parte)
+    x = malla.coordenadas[nodos]
+    sobre = np.abs((x - centro) @ normal) <= tol
+    if not sobre.any():
+        return None
+    u = puntos[1] - puntos[0]
+    u = u - np.dot(u, normal) * normal
+    u /= np.linalg.norm(u)
+    v = np.cross(normal, u)
+    poligono = Polygon(np.column_stack([(puntos - centro) @ u, (puntos - centro) @ v])).buffer(tol)
+    rel = x[sobre] - centro
+    nodos = nodos[sobre][contains_xy(poligono, rel @ u, rel @ v)]
+    if len(nodos) == 0:
+        return None
+    area = np.full(len(nodos), area_poligono(puntos) / len(nodos))
+    return SuperficieMallada(parte=malla.partes.index(parte), nodos=nodos[:, None], centro=malla.coordenadas[nodos],
+                             normal=np.tile(normal, (len(nodos), 1)), area=area, hexaedro=np.full(len(nodos), -1),
+                             cara=np.zeros(len(nodos), dtype=np.int64), pesos_nodo=np.array([1.0]))
 
 
 # ---------------------------------------------------------------------------

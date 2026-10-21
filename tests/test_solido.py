@@ -127,11 +127,18 @@ def test_la_losa_solapada_con_las_vigas_se_recorta_y_se_une(tmp_path: Path):
     assert any("L1" in a for a in avisos)
 
 
-def test_estimacion_de_hexaedros_coincide_con_la_malla(conexion):
+def test_estimacion_de_elementos_coincide_con_la_malla(conexion):
+    from ifc_structural.solido.malla import estimar_hexaedros
+
     miembros = construir_miembros(conexion)
     recortar_uniones(conexion, miembros)
+    # malla de la detección de contactos: hexaedros
     real = len(construir_malla_solida(conexion, miembros, 0.02).hexaedros)
-    assert estimar(conexion, 0.02) == pytest.approx(real, rel=0.15)  # los sólidos solapados pierden celdas
+    assert estimar_hexaedros(conexion, miembros, 0.02) == pytest.approx(real, rel=0.15)  # los sólidos solapados pierden celdas
+    # malla del análisis: tetraedros C3D10 y láminas S6
+    malla = construir_malla_solida(conexion, miembros, 0.02, None, "TETRA", usar_laminas=True)
+    assert len(malla.hexaedros) == 0
+    assert estimar(conexion, 0.02) == pytest.approx(len(malla.tetraedros) + len(malla.laminas), rel=0.3)
     assert 0.01 <= tamano_sugerido(conexion) <= 0.25
 
 
