@@ -67,8 +67,10 @@ def main(argumentos=None) -> int:
         print("ERROR: uso: proceso_gmsh entrada.npz salida.npz")
         return 2
     try:
-        datos = np.load(argumentos[0])
-        coordenadas, tetraedros = mallar(datos["vertices"], datos["triangulos"], float(datos["tamano"]), float(datos["angulo"]))
+        with np.load(argumentos[0]) as datos:
+            vertices, triangulos = np.array(datos["vertices"]), np.array(datos["triangulos"])
+            tamano, angulo = float(datos["tamano"]), float(datos["angulo"])
+        coordenadas, tetraedros = mallar(vertices, triangulos, tamano, angulo)
         np.savez(argumentos[1], coordenadas=coordenadas, tetraedros=tetraedros)
     except Exception as exc:  # noqa: BLE001 - Gmsh lanza Exception genéricas
         print(f"ERROR: {exc}")

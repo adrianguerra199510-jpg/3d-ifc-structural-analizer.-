@@ -40,7 +40,7 @@ def ejecutar_autoprueba() -> int:
     configuracion = cargar_configuracion()
     lineas = [f"CalculiX: {configuracion.ruta_ccx_efectiva}"]
     try:
-        with tempfile.TemporaryDirectory(prefix="autoprueba_") as carpeta:
+        with tempfile.TemporaryDirectory(prefix="autoprueba_", ignore_cleanup_errors=True) as carpeta:
             resultado = ejecutar_analisis(
                 _voladizo(),
                 {"L": CasoCarga("L", "Carga viva", TipoCaso.L)},
@@ -57,7 +57,7 @@ def ejecutar_autoprueba() -> int:
         lineas.append(f"Esfuerzo en x = 2 m: {obtenido:.1f} kPa (teoria de vigas: {esperado:.1f} kPa, error {error:.2%})")
         ok = error < 0.05
 
-        with tempfile.TemporaryDirectory(prefix="autoprueba3d_") as carpeta:
+        with tempfile.TemporaryDirectory(prefix="autoprueba3d_", ignore_cleanup_errors=True) as carpeta:
             solido = ejecutar_analisis_solido(
                 _voladizo(),
                 {"L": CasoCarga("L", "Carga viva", TipoCaso.L)},

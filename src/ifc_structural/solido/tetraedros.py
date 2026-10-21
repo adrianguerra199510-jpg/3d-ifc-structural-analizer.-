@@ -112,7 +112,7 @@ def _gmsh_tetraedros(vertices: np.ndarray, triangulos: np.ndarray, tamano: float
     if not _es_variedad(np.asarray(triangulos)):
         raise ErrorTetraedros("la superficie tiene aristas compartidas por más de dos triángulos")
     tiempo_limite = TIEMPO_LIMITE_GMSH if tiempo_limite is None else tiempo_limite
-    with tempfile.TemporaryDirectory(prefix="gmsh_") as carpeta:
+    with tempfile.TemporaryDirectory(prefix="gmsh_", ignore_cleanup_errors=True) as carpeta:
         entrada, salida = str(Path(carpeta) / "entrada.npz"), str(Path(carpeta) / "salida.npz")
         np.savez(entrada, vertices=np.asarray(vertices, float), triangulos=np.asarray(triangulos, np.int64),
                  tamano=tamano, angulo=angulo)
@@ -128,8 +128,9 @@ def _gmsh_tetraedros(vertices: np.ndarray, triangulos: np.ndarray, tamano: float
             mensaje = next((l[6:].strip() for l in reversed((r.stdout or "").splitlines()) if l.startswith("ERROR:")),
                            f"Gmsh terminó con código {r.returncode}")
             raise ErrorTetraedros(mensaje)
-        datos = np.load(salida)
-        coordenadas, tetraedros = datos["coordenadas"], datos["tetraedros"].astype(np.int64)
+        # El .npz se lee entero y se cierra antes de borrar la carpeta: en Windows un archivo abierto no se puede borrar.
+        with np.load(salida) as datos:
+            coordenadas, tetraedros = np.array(datos["coordenadas"]), np.array(datos["tetraedros"], dtype=np.int64)
     return coordenadas, _orientar(coordenadas, tetraedros)
 
 
