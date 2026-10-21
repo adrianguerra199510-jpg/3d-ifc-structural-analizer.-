@@ -99,6 +99,8 @@ if exist "%BUILD%\work" rmdir /s /q "%BUILD%\work"
     --collect-all shapely ^
     --collect-all imageio ^
     --collect-all imageio_ffmpeg ^
+    --collect-all reportlab ^
+    --collect-data docx ^
     --hidden-import gmsh ^
     --add-binary "%GMSHLIB%;." ^
     "%~dp0iniciar_app.py"

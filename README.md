@@ -197,6 +197,18 @@ Gmsh. La versión portable lleva CalculiX y Gmsh incluidos, así que no hay nada
   envolvente), pero sobre el sólido: se ven las alas, el alma y las uniones. Comprobado
   contra `M·c/I`, `wL²/8` y el equilibrio (`tests/test_solido.py`): error < 3 %.
 
+## Reporte del análisis (PDF o Word)
+
+Tras analizar, **Archivo → Exportar reporte de análisis…** (Ctrl+R) o el botón *Exportar reporte (PDF / Word)…* del panel
+de esfuerzos genera un documento con: datos del modelo y materiales, apoyos, casos y combinaciones, la **malla** de
+elementos finitos (número de elementos y nodos, imagen), una tabla resumen con el **Von Mises máximo** (valor, ubicación y
+elemento) y el **desplazamiento máximo** de cada caso y combinación, y por cada uno la imagen del mapa de Von Mises [MPa] y
+de la **deformada** ampliada y coloreada por el desplazamiento [mm] (la ampliación y los colores son los del panel), más las
+advertencias del análisis. Se elige el formato al guardar: **PDF** (`reportlab`) o **Word** `.docx` (`python-docx`); los
+dos llevan el mismo contenido. Las imágenes se dibujan aparte, sin cambiar la vista del visor. Sirve para el análisis de
+barras y para el sólido 3D (`tests/test_reporte.py`). Si alguna pieza se desplaza más que el 10 % del tamaño del modelo, el
+análisis avisa de que forma un mecanismo (no está unida a las demás ni apoyada) y sus resultados no son válidos.
+
 ## Geometría de cualquier elemento y apoyos/cargas en cualquier superficie
 
 Además de vigas, columnas, losas y muros, el importador lee la **geometría real de cualquier

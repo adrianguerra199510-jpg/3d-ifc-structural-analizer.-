@@ -373,6 +373,26 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
 # ---------------------------------------------------------------------------
 
 
+def piezas_con_mecanismo(malla_tensiones, desplazamientos: Dict[str, np.ndarray], pieza_de_celda: Sequence[str]) -> List[str]:
+    """Piezas con algún nodo que se mueve más que el 10 % del tamaño del modelo en algún caso o combinación: con cargas
+    de servicio un desplazamiento así solo sale de una pieza suelta (la matriz de rigidez casi singular)."""
+
+    c = np.asarray(malla_tensiones.coordenadas, dtype=float)
+    if not len(c) or not desplazamientos:
+        return []
+    limite = 0.1 * float(np.linalg.norm(c.max(axis=0) - c.min(axis=0)))
+    grandes = np.zeros(len(c), dtype=bool)
+    for u in desplazamientos.values():
+        grandes |= ~np.isfinite(u).all(axis=1) | (np.linalg.norm(np.nan_to_num(u), axis=1) > limite)
+    if not grandes.any():
+        return []
+    conectividad = np.asarray(malla_tensiones.conectividad, dtype=np.int64)
+    celdas = np.flatnonzero(grandes[conectividad].any(axis=1))
+    return list(dict.fromkeys(pieza_de_celda[int(k)] for k in celdas))
+
+
+
+
 def ejecutar_analisis_solido(
     proyecto: Proyecto,
     casos: Dict[str, CasoCarga],
@@ -530,6 +550,12 @@ def ejecutar_analisis_solido(
     equivalente = MallaAnalisis()
     for i, id_ in enumerate(malla.elementos_en_orden, start=1):
         equivalente.elementos[i] = ElementoMalla(id=i, barra_id=id_, nodo_i=0, nodo_f=0, s_inicio=0.0, s_fin=1.0)
+    sueltas = piezas_con_mecanismo(malla_tensiones, {**desplazamientos_por_caso, **desplazamientos_por_combinacion},
+                                   [equivalente.elementos[int(e)].barra_id for e in malla_tensiones.ids_elementos])
+    if sueltas:
+        advertencias.insert(0, f"Las piezas {', '.join(sueltas[:10])}{' y otras' if len(sueltas) > 10 else ''} se desplazan más que el "
+                               "tamaño del modelo: no están bien unidas a las demás o a los apoyos (mecanismo) y sus resultados no "
+                               "son válidos. Únalas con un constraint (Conectar) o asígneles apoyos.")
     return ResultadoAnalisis(
         malla=equivalente, malla_tensiones=malla_tensiones, tensiones_por_caso=tensiones_por_caso,
         tensiones_por_combinacion=tensiones_por_combinacion, advertencias=advertencias, es_solido=True,

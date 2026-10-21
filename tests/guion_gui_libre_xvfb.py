@@ -361,6 +361,13 @@ def main(salida: Path) -> None:
     ventana.panel_esfuerzos.check_deformada.setChecked(True)
     bombear(30)
     ventana.grab().save(str(salida / "05_deformada.png"))
+    # Reporte del análisis en PDF y en Word (el botón del panel y Archivo → Exportar reporte)
+    verificar(ventana.accion_reporte.isEnabled() and ventana.panel_esfuerzos.boton_reporte.isVisible(),
+              "se puede exportar el reporte tras analizar")
+    for extension in ("pdf", "docx"):
+        ruta = ventana.exportar_reporte(str(salida / f"reporte.{extension}"))
+        verificar(ruta is not None and ruta.exists() and ruta.stat().st_size > 50_000, f"reporte {extension} exportado")
+    verificar(not [m for m in mensajes if m[0] == "critical"], f"el reporte no dio errores: {mensajes}")
     # Eliminar elementos y deshacer / rehacer
     ventana.volver_al_modelo()
     ventana.accion_modo_elemento.trigger()

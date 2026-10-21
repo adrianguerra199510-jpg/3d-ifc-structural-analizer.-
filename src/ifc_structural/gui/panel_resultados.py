@@ -56,6 +56,7 @@ class PanelEsfuerzos(QWidget):
     volver_al_modelo = Signal()
     animacion_alternada = Signal(bool)
     video_solicitado = Signal()
+    reporte_solicitado = Signal()
     escala_automatica_solicitada = Signal()
 
     def __init__(self, parent=None):
@@ -89,6 +90,9 @@ class PanelEsfuerzos(QWidget):
         self.boton_video = QPushButton("Guardar video…")
         self.boton_video.setToolTip("Graba la deformada animada en un video MP4 (o GIF) con la vista actual")
 
+        self.boton_reporte = QPushButton("Exportar reporte (PDF / Word)…")
+        self.boton_reporte.setToolTip("Reporte del análisis con la malla, los esfuerzos de Von Mises y la deformada de cada caso "
+                                      "y combinación, en PDF o en Word")
         self.boton_volver = QPushButton("Volver al modelo (selección)")
         self.etiqueta_resumen = QLabel("Ejecute el análisis para ver los esfuerzos.")
         self.etiqueta_resumen.setWordWrap(True)
@@ -125,6 +129,7 @@ class PanelEsfuerzos(QWidget):
         layout.addWidget(grupo)
         layout.addWidget(self.etiqueta_resumen)
         layout.addWidget(self.tabla)
+        layout.addWidget(self.boton_reporte)
         layout.addWidget(self.boton_volver)
 
         self._actualizar_escala_habilitada()
@@ -144,6 +149,7 @@ class PanelEsfuerzos(QWidget):
         self.boton_escala_auto.clicked.connect(self.escala_automatica_solicitada)
         self.boton_animar.toggled.connect(self._al_alternar_animacion)
         self.boton_video.clicked.connect(self.video_solicitado)
+        self.boton_reporte.clicked.connect(self.reporte_solicitado)
         self._actualizar_deformada_habilitada()
 
     @staticmethod

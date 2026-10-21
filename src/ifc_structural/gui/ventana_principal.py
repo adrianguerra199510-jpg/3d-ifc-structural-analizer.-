@@ -211,6 +211,8 @@ class VentanaPrincipal(QMainWindow):
         self.accion_abrir = accion("Abrir", self._abrir_proyecto, "abrir", "Ctrl+O", "Abrir un proyecto guardado (Ctrl+O)")
         self.accion_guardar = accion("Guardar", self._guardar_proyecto, "guardar", "Ctrl+S", "Guardar el proyecto (Ctrl+S)")
         self.accion_salir = accion("Salir", self.close)
+        self.accion_reporte = accion("Exportar reporte de análisis…", self.exportar_reporte, "esfuerzos", "Ctrl+R",
+                                     "Reporte del último análisis (malla, Von Mises y deformada) en PDF o Word (Ctrl+R)")
         self.accion_deshacer = accion("Deshacer", self.deshacer, "deshacer", "Ctrl+Z", "Deshacer el último cambio (Ctrl+Z)")
         self.accion_rehacer = accion("Rehacer", self.rehacer, "rehacer", "Ctrl+Y", "Rehacer el cambio deshecho (Ctrl+Y o Ctrl+Mayús+Z)")
         self.accion_deshacer.setEnabled(False)
@@ -260,6 +262,8 @@ class VentanaPrincipal(QMainWindow):
     def _crear_menus(self) -> None:
         menu = self.menuBar().addMenu("&Archivo")
         menu.addActions([self.accion_importar, self.accion_abrir, self.accion_guardar])
+        menu.addSeparator()
+        menu.addAction(self.accion_reporte)
         menu.addSeparator()
         menu.addAction(self.accion_salir)
 
@@ -429,6 +433,7 @@ class VentanaPrincipal(QMainWindow):
         self.panel_esfuerzos.cambio.connect(self.mostrar_esfuerzos)
         self.panel_esfuerzos.animacion_alternada.connect(self._alternar_animacion)
         self.panel_esfuerzos.video_solicitado.connect(self._guardar_video)
+        self.panel_esfuerzos.reporte_solicitado.connect(self.exportar_reporte)
         self.panel_esfuerzos.escala_automatica_solicitada.connect(self._aplicar_escala_automatica)
         self.panel_esfuerzos.volver_al_modelo.connect(self.volver_al_modelo)
 
@@ -461,6 +466,7 @@ class VentanaPrincipal(QMainWindow):
         self.accion_materiales.setEnabled(True)
         self.accion_carga.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
         self.accion_ver_esfuerzos.setEnabled(self.resultado is not None)
+        self.accion_reporte.setEnabled(self.resultado is not None and not ocupado)
 
     def _al_cambiar_seleccion(self, objetivos: List[Objetivo]) -> None:
         if not self._desde_arbol:
@@ -1549,6 +1555,50 @@ class VentanaPrincipal(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
         self.statusBar().showMessage(f"Video guardado en {ruta}")
+
+    # ------------------------------------------------------------------
+    # Reporte
+    # ------------------------------------------------------------------
+    def exportar_reporte(self, ruta: Optional[str] = None) -> Optional[Path]:
+        """Reporte del último análisis en PDF o Word (según la extensión elegida)."""
+
+        from ..reporte import DatosReporte, exportar_reporte
+
+        if self.resultado is None:
+            QMessageBox.information(self, "Exportar reporte", "Primero ejecute el análisis (ANALIZAR).")
+            return None
+        if not ruta:
+            nombre = Path(self.proyecto.ruta_ifc).stem if getattr(self.proyecto, "ruta_ifc", None) else "reporte"
+            ruta, filtro = QFileDialog.getSaveFileName(
+                self, "Exportar reporte de análisis", f"{nombre}_reporte.pdf", "PDF (*.pdf);;Word (*.docx)")
+            if not ruta:
+                return None
+            if not ruta.lower().endswith((".pdf", ".docx")):
+                ruta += ".docx" if "docx" in filtro.lower() else ".pdf"
+        parametros = self.panel_esfuerzos.parametros()
+        cargas_por_caso: Dict[str, int] = {}
+        for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso,
+                         self.cargas_superficie_por_caso):
+            for caso, lista in por_caso.items():
+                cargas_por_caso[caso] = cargas_por_caso.get(caso, 0) + len(lista)
+        datos = DatosReporte(
+            proyecto=self.proyecto, resultado=self.resultado, casos=self.casos, combinaciones=self.combinaciones,
+            apoyos=list(self.apoyos), cargas_por_caso=cargas_por_caso,
+            escala_deformada=parametros.escala_deformada if parametros is not None else None,
+            colormap=parametros.colormap if parametros is not None else "turbo")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            salida = exportar_reporte(ruta, datos, al_avanzar=lambda texto: (self.statusBar().showMessage(texto),
+                                                                              QApplication.processEvents()))
+        except Exception as exc:  # archivo abierto en Word, carpeta sin permisos...
+            logger.exception("No se pudo exportar el reporte")
+            QMessageBox.critical(self, "No se pudo exportar el reporte",
+                                 f"{exc}\n\nSi el archivo está abierto en otro programa, ciérrelo y vuelva a intentarlo.")
+            return None
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.statusBar().showMessage(f"Reporte guardado en {salida}")
+        return salida
 
     # ------------------------------------------------------------------
     def closeEvent(self, evento) -> None:

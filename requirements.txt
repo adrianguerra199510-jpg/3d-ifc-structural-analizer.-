@@ -9,4 +9,6 @@ shapely>=2.0
 gmsh>=4.12
 imageio>=2.31
 imageio-ffmpeg>=0.4.9
+reportlab>=4.0
+python-docx>=1.1
 pytest>=8.0
