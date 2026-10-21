@@ -238,6 +238,7 @@ def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra],
     # (pernos, placas y soldaduras suelen solapar con los perfiles que unen).
     ordenados = sorted(proyecto.solidos.values(), key=lambda x: -x.volumen)
     recortados = 0
+    delgados: List[str] = []
     for k, solido in enumerate(ordenados):
         if not solido.cerrado:
             raise ErrorMalla(f"El sólido {solido.id} ({solido.nombre}) no es una superficie cerrada y no se puede mallar en 3D.")
@@ -253,9 +254,7 @@ def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra],
         espesor = 2.0 * solido.volumen / area if area > 0 else np.inf  # espesor medio si es una pared delgada
         relacion = libre.volumen / solido.volumen if solido.volumen > 0 else 1.0
         if espesor < 0.7 * libre.celda_minima or not 0.75 <= relacion <= 1.33:
-            avisos.append(f"El sólido {solido.id} ({solido.nombre}) es de pared delgada (espesor medio ≈ {espesor * 1000:.0f} mm) para el "
-                          f"tamaño de elemento usado ({libre.celda_minima * 1000:.0f} mm): la malla representa el {relacion * 100:.0f} % de su "
-                          "volumen real y los resultados son poco fiables. Reduzca el tamaño de elemento o modele la pieza con losas o muros.")
+            delgados.append(solido.id)
         bloques_nodos.append(libre.coordenadas)
         lista_hex.append(libre.hexaedros + n_nodos)
         partes.append(ParteMalla(id=solido.id, tipo="SOLIDO", material=solido.material, primer_hexaedro=n_hex,
@@ -264,6 +263,10 @@ def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra],
         n_nodos += len(libre.coordenadas)
         n_hex += len(libre.hexaedros)
 
+    if delgados:
+        lista = ", ".join(delgados[:8]) + (f" y {len(delgados) - 8} más" if len(delgados) > 8 else "")
+        avisos.append(f"{len(delgados)} sólido(s) son de pared delgada para el tamaño de elemento usado ({lista}): la malla no representa "
+                      "bien su espesor y los resultados son poco fiables. Reduzca el tamaño de elemento o modele esas piezas con losas o muros.")
     if recortados:
         avisos.append(f"{recortados} sólido(s) se recortaron donde solapan con otras piezas (se conserva el volumen de la pieza "
                       "mayor o de la viga o columna, para no contarlo dos veces).")

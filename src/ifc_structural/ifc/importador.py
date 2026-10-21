@@ -59,7 +59,7 @@ import ifcopenshell.util.unit as util_unit
 
 from ..core.conectividad import conectar_nodos, conectar_uniones_en_t
 from ..core.modelo import DireccionLosa, Material, ModoAnalisisLosa, PerfilSeccion, Proyecto
-from ..core.solidos import SolidoGeneral, soldar_vertices
+from ..core.solidos import SolidoGeneral, partes_conexas, soldar_vertices
 from ..core.vigas_soporte import asignar_vigas_soporte
 
 logger = logging.getLogger(__name__)
@@ -554,35 +554,58 @@ _TIPOS_SIN_SOLIDO = ("IfcOpeningElement", "IfcVirtualElement")
 MAXIMO_DE_SOLIDOS = 400
 
 
-def importar_solido_de_elemento(proyecto: Proyecto, elemento, ajustes, factor_longitud: float,
-                                id_: Optional[str] = None) -> Optional[SolidoGeneral]:
-    """Lee la geometría real de un elemento IFC (cualquiera) y la agrega como sólido con sus superficies."""
+#: Máximo de piezas sueltas que se conservan de un mismo elemento IFC (las de mayor superficie).
+MAXIMO_DE_PIEZAS_POR_ELEMENTO = 300
+
+
+def importar_solidos_de_elemento(proyecto: Proyecto, elemento, ajustes, factor_longitud: float) -> List[SolidoGeneral]:
+    """Lee la geometría real de un elemento IFC (cualquiera) y la agrega como sólidos con sus superficies.
+
+    Un mismo elemento puede contener varias piezas sin conexión (un equipo exportado como un solo
+    ``IfcBuildingElementProxy`` con patas, pernos y engranajes): cada una entra como sólido independiente, para poder
+    asignarles materiales, apoyos y cargas por separado y detectar los contactos entre ellas."""
 
     try:
         forma = ifcopenshell.geom.create_shape(ajustes, elemento)
     except Exception as exc:  # ifcopenshell lanza distintas excepciones según el caso
         logger.debug("Sin geometría en %s %s: %s", elemento.is_a(), elemento.GlobalId, exc)
-        return None
+        return []
     vertices = np.array(forma.geometry.verts, dtype=float).reshape(-1, 3)  # ya en metros
     triangulos = np.array(forma.geometry.faces, dtype=np.int64).reshape(-1, 3)
     if not np.isfinite(vertices).all():
         proyecto.avisos.append(f"{elemento.Name or elemento.GlobalId} ({elemento.is_a()}): su geometría tiene coordenadas "
                                "no válidas (NaN); se omitió el elemento.")
-        return None
+        return []
     if len(vertices) < 4 or len(triangulos) < 4:
-        return None
+        return []
     vertices, triangulos = soldar_vertices(vertices, triangulos)
     if len(triangulos) < 4:
-        return None
+        return []
     material = _obtener_o_crear_material(proyecto, elemento)
-    solido = SolidoGeneral(
-        id=id_ or proyecto.siguiente_id("S"), nombre=elemento.Name or elemento.GlobalId, tipo_ifc=elemento.is_a(),
-        material=material, vertices=vertices, triangulos=triangulos, ifc_guid=elemento.GlobalId,
-    )
-    if solido.volumen < 1e-12:
-        return None
-    proyecto.solidos[solido.id] = solido
-    return solido
+    nombre = elemento.Name or elemento.GlobalId
+
+    pieza = partes_conexas(triangulos, len(vertices))
+    numeros, cuenta = np.unique(pieza, return_counts=True)
+    grupos = [triangulos[pieza == n] for n in numeros[np.argsort(-cuenta)]]
+    grupos = [g for g in grupos if len(g) >= 4]
+    if len(grupos) > MAXIMO_DE_PIEZAS_POR_ELEMENTO:
+        proyecto.avisos.append(f"{nombre}: tiene {len(grupos)} piezas sueltas; se importan las {MAXIMO_DE_PIEZAS_POR_ELEMENTO} mayores.")
+        grupos = grupos[:MAXIMO_DE_PIEZAS_POR_ELEMENTO]
+    solidos: List[SolidoGeneral] = []
+    for k, grupo in enumerate(grupos, start=1):
+        usados, inverso = np.unique(grupo, return_inverse=True)
+        solido = SolidoGeneral(
+            id=proyecto.siguiente_id("S"), nombre=nombre if len(grupos) == 1 else f"{nombre} · pieza {k}", tipo_ifc=elemento.is_a(),
+            material=material, vertices=vertices[usados], triangulos=inverso.reshape(-1, 3), ifc_guid=elemento.GlobalId,
+        )
+        if solido.volumen < 1e-12:
+            continue
+        proyecto.solidos[solido.id] = solido
+        solidos.append(solido)
+    if len(solidos) > 1:
+        proyecto.avisos.append(f"{nombre}: contiene {len(solidos)} piezas sin conexión entre sí; se importaron como sólidos "
+                               "independientes (use «Conectar» para unirlas por donde se tocan).")
+    return solidos
 
 
 def _importar_solidos(modelo_ifc, proyecto: Proyecto, ajustes, factor_longitud: float) -> None:
@@ -601,12 +624,10 @@ def _importar_solidos(modelo_ifc, proyecto: Proyecto, ajustes, factor_longitud: 
     por_tipo: Dict[str, int] = {}
     abiertos = 0
     for elemento in candidatos:
-        solido = importar_solido_de_elemento(proyecto, elemento, ajustes, factor_longitud)
-        if solido is None:
-            continue
-        por_tipo[elemento.is_a()] = por_tipo.get(elemento.is_a(), 0) + 1
-        if not solido.cerrado:
-            abiertos += 1
+        for solido in importar_solidos_de_elemento(proyecto, elemento, ajustes, factor_longitud):
+            por_tipo[elemento.is_a()] = por_tipo.get(elemento.is_a(), 0) + 1
+            if not solido.cerrado:
+                abiertos += 1
     if por_tipo:
         detalle = ", ".join(f"{n} {t.replace('Ifc', '')}" for t, n in sorted(por_tipo.items()))
         proyecto.avisos.append(

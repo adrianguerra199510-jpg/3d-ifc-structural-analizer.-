@@ -87,7 +87,7 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         for nombre, caras in ((f"{u.nombre}_E", u.esclava), (f"{u.nombre}_M", u.maestra)):
             lineas.append(f"*SURFACE,NAME={nombre},TYPE=ELEMENT")
             lineas += [f"{h + 1},S{cara}" for h, cara in caras]
-        lineas += [f"*TIE,NAME={u.nombre},POSITION TOLERANCE={u.tolerancia:.6g}", f"{u.nombre}_E,{u.nombre}_M"]
+        lineas += [f"*TIE,NAME={u.nombre},POSITION TOLERANCE={u.tolerancia:.6g},ADJUST=NO", f"{u.nombre}_E,{u.nombre}_M"]
 
     siguiente = modelo.n_nodos + 1
     condiciones: List[str] = []

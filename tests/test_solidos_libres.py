@@ -508,3 +508,27 @@ def test_dialogo_de_material_acepta_solidos():
     p = proyecto_con(caja("S1", 0, 0, 0, 1, 1, 1))
     dialogo = DialogoAsignarMaterial(p, [Objetivo("SOLIDO", "S1", 0)])
     assert dialogo.material_elegido() == "ACERO"
+
+
+def test_un_elemento_con_piezas_sueltas_se_separa_en_componentes():
+    from ifc_structural.core.solidos import partes_conexas
+
+    a, b = caja("a", 0, 0, 0, 1, 1, 1), caja("b", 5, 0, 0, 1, 1, 1)
+    v = np.vstack([a.vertices, b.vertices])
+    t = np.vstack([a.triangulos, b.triangulos + len(a.vertices)])
+    pieza = partes_conexas(t, len(v))
+    assert len(np.unique(pieza)) == 2 and len(set(pieza[: len(a.triangulos)])) == 1
+    assert pieza[0] != pieza[-1]
+
+
+def test_placa_con_agujeros_lleva_una_sola_capa():
+    from ifc_structural.solido.libres import celdas_por_eje
+
+    base = pv.Cube(x_length=0.4, y_length=0.65, z_length=0.014).triangulate()
+    hueco = pv.Cube(x_length=0.1, y_length=0.1, z_length=0.014).triangulate()
+    # placa con un hueco pasante aproximado: se usa el volumen reducido (relleno 0.9 de la caja)
+    v, t = soldar_vertices(np.asarray(base.points), base.faces.reshape(-1, 4)[:, 1:])
+    s = SolidoGeneral(id="P", nombre="P", tipo_ifc="IfcPlate", material="ACERO", vertices=v, triangulos=t)
+    s.volumen *= 0.7
+    n = celdas_por_eje(s, 0.25)
+    assert n.min() == 1 and int(np.prod(n)) < 100

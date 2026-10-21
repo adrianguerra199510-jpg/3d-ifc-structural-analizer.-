@@ -96,6 +96,20 @@ def soldar_vertices(vertices: np.ndarray, triangulos: np.ndarray, tolerancia: fl
     return vertices_unicos, t[valido]
 
 
+def partes_conexas(triangulos: np.ndarray, n_vertices: int) -> np.ndarray:
+    """Número de pieza (componente conexa por vértices compartidos) de cada triángulo."""
+
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    t = np.asarray(triangulos, dtype=np.int64)
+    origen = np.concatenate([t[:, 0], t[:, 1], t[:, 2]])
+    destino = np.concatenate([t[:, 1], t[:, 2], t[:, 0]])
+    grafo = coo_matrix((np.ones(len(origen)), (origen, destino)), shape=(n_vertices, n_vertices))
+    _, etiqueta = connected_components(grafo, directed=False)
+    return etiqueta[t[:, 0]]
+
+
 def normales_y_areas(vertices: np.ndarray, triangulos: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     p = vertices[triangulos]
     n = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])

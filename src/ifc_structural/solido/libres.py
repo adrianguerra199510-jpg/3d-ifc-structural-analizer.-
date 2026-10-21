@@ -41,7 +41,7 @@ class MallaLibre:
 def celdas_por_eje(solido: SolidoGeneral, tamano: float) -> np.ndarray:
     """Número de celdas de la cuadrícula en X, Y y Z.
 
-    * Una **placa delgada** (caras paralelas a los ejes, espesor menor que la cuarta parte de su otra dimensión) lleva una
+    * Una **placa delgada** (caras paralelas a los ejes, espesor menor que la cuarta parte de su otra dimensión; puede tener agujeros) lleva una
       sola capa de hexaedros en el espesor (``C3D8I`` flexiona bien así) y celdas de ``tamano`` en su plano (como mucho
       12 veces el espesor): un alma de 10 mm y 6 m de largo no se convierte en cientos de miles de celdas.
     * Cualquier otra pieza lleva celdas cúbicas, al menos 2 por la dimensión menor (4 si no es una caja).
@@ -52,7 +52,7 @@ def celdas_por_eje(solido: SolidoGeneral, tamano: float) -> np.ndarray:
     llenado = solido.volumen / caja if caja > 0 and np.isfinite(solido.volumen) else 1.0
     orden = np.argsort(dimensiones)
     fino, medio = dimensiones[orden[0]], dimensiones[orden[1]]
-    if llenado > 0.9 and fino <= 0.25 * medio:
+    if llenado > 0.4 and fino <= 0.25 * medio:  # también placas con agujeros o recortes
         paso_plano = min(tamano, 12.0 * fino)
         n = np.maximum(1, np.ceil(dimensiones / paso_plano - 1e-3)).astype(int)
         n[orden[0]] = 1 if fino <= 0.6 * tamano else max(2, int(np.ceil(fino / tamano - 1e-3)))
