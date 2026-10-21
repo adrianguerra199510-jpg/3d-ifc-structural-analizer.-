@@ -156,7 +156,7 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         lineas += _numeros(nodos)
         lineas.append(f"*RIGID BODY,NSET=APOYO{k},REF NODE={ref},ROT NODE={rot}")
         condiciones += [f"{ref},{g},{g}" for g in traslaciones] + [f"{rot},{g},{g}" for g in giros]
-    ecuaciones: List[str] = []
+    ecuaciones: List[List[Tuple[int, int, float]]] = []  # términos (nodo 1-based, grado, coeficiente); el primero depende
     apoyados = np.unique(np.concatenate([a.nodos for a in modelo.apoyos])) if modelo.apoyos else np.zeros(0, dtype=np.int64)
     for k, enlace in enumerate(modelo.enlaces):
         # un nodo con apoyo propio no puede además depender de un cuerpo rígido o una ecuación: se deja fuera
@@ -170,20 +170,43 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         libres = ~np.isin(acople.nodos_a, apoyados)
         for g in (1, 2, 3, 4, 5, 6) if acople.giros else (1, 2, 3):
             for n, m in zip(acople.nodos_a[libres], acople.nodos_b[libres]):
-                ecuaciones += ["2", f"{int(n) + 1},{g},1.,{int(m) + 1},{g},-1."]
-        prohibidos = set(int(n) for n in apoyados)
+                ecuaciones.append([(int(n) + 1, g, 1.0), (int(m) + 1, g, -1.0)])
         for terminos in acople.ecuaciones_giro:
-            if terminos[0][0] in prohibidos:
-                continue
-            ecuaciones.append(str(len(terminos)))
-            textos = [f"{n + 1},{g},{c:.10g}" for n, g, c in terminos]
-            ecuaciones += [",".join(textos[k:k + 4]) for k in range(0, len(textos), 4)]
-    if ecuaciones:
-        lineas.append("*EQUATION")
-        lineas += ecuaciones
+            ecuaciones.append([(n + 1, g, c) for n, g, c in terminos])
+    lineas += _ecuaciones_validas(ecuaciones, lineas, condiciones)
     if condiciones:
         lineas += ["*BOUNDARY"] + list(dict.fromkeys(condiciones))
     return lineas
+
+
+def _ecuaciones_validas(ecuaciones: List[List[Tuple[int, int, float]]], lineas: List[str], condiciones: List[str]) -> List[str]:
+    """``*EQUATION`` sin conflictos: CalculiX aborta si un mismo grado de libertad es el dependiente de dos ecuaciones
+    (o de una ecuación y un ``*RIGID BODY``) o si además tiene un apoyo. Pasa cuando un nodo de lámina queda a la vez en
+    un acople, un constraint (igualar, cuerpo rígido, articulación) o junto a un apoyo; la ecuación repetida se omite."""
+
+    ocupados = set()
+    for condicion in condiciones:  # apoyos: "nodo,grado,grado"
+        n, g, _ = condicion.split(",")
+        ocupados.add((int(n), int(g)))
+    nset, en_nset = {}, None  # nodos de cada *RIGID BODY: dependen en sus 6 grados
+    for linea in lineas:
+        if linea.startswith("*"):
+            en_nset = linea.split("NSET=")[1].strip() if linea.upper().startswith("*NSET") else None
+            if linea.upper().startswith("*RIGID BODY"):
+                nombre = linea.split("NSET=")[1].split(",")[0].strip()
+                ocupados.update((n, g) for n in nset.get(nombre, ()) for g in range(1, 7))
+        elif en_nset is not None:
+            nset.setdefault(en_nset, []).extend(int(x) for x in linea.split(",") if x.strip())
+    texto: List[str] = []
+    for terminos in ecuaciones:
+        dependiente = terminos[0][:2]
+        if dependiente in ocupados or any(t[:2] == dependiente for t in terminos[1:]):
+            continue
+        ocupados.add(dependiente)
+        texto.append(str(len(terminos)))
+        partes = [f"{n},{g},{c:.10g}" for n, g, c in terminos]
+        texto += [",".join(partes[k:k + 4]) for k in range(0, len(partes), 4)]
+    return ["*EQUATION"] + texto if texto else []
 
 
 def _cuerpo_rigido(nombre: str, nodos: np.ndarray, coordenadas: np.ndarray, siguiente: int, lineas: List[str]):
@@ -198,7 +221,7 @@ def _cuerpo_rigido(nombre: str, nodos: np.ndarray, coordenadas: np.ndarray, sigu
     return ref, rot, siguiente + 2
 
 
-def _escribir_enlace(enlace: Enlace3D, k: int, c: np.ndarray, siguiente: int, lineas: List[str], ecuaciones: List[str]) -> int:
+def _escribir_enlace(enlace: Enlace3D, k: int, c: np.ndarray, siguiente: int, lineas: List[str], ecuaciones: list) -> int:
     from scipy.spatial import cKDTree
 
     a, b = np.unique(enlace.nodos_a), np.unique(enlace.nodos_b)
@@ -210,14 +233,14 @@ def _escribir_enlace(enlace: Enlace3D, k: int, c: np.ndarray, siguiente: int, li
         for g in sorted(enlace.grados):
             na, nb = (ref_a, ref_b) if g <= 3 else (rot_a, rot_b)
             gl = g if g <= 3 else g - 3
-            ecuaciones += ["2", f"{na},{gl},1.,{nb},{gl},-1."]
+            ecuaciones.append([(na, gl, 1.0), (nb, gl, -1.0)])
     elif enlace.tipo == "IGUALAR":
         # cada nodo de la superficie con menos nodos sigue al nodo más cercano de la otra
         corto, largo = (a, b) if len(a) <= len(b) else (b, a)
         _, vecino = cKDTree(c[largo]).query(c[corto])
         for g in sorted(g for g in enlace.grados if g <= 3):
             for n, m in zip(corto, largo[vecino]):
-                ecuaciones += ["2", f"{int(n) + 1},{g},1.,{int(m) + 1},{g},-1."]
+                ecuaciones.append([(int(n) + 1, g, 1.0), (int(m) + 1, g, -1.0)])
     return siguiente
 
 

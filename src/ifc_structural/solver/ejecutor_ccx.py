@@ -74,10 +74,12 @@ def ejecutar_ccx(
     en la salida estándar, no solo el código de retorno.
     """
 
-    nombre_base = ruta_inp.with_suffix("")
+    # solo el nombre, relativo a la carpeta de trabajo: CalculiX rechaza rutas de más de 127 caracteres (habitual en
+    # Windows con carpetas de usuario u OneDrive largas)
+    nombre_base = ruta_inp.with_suffix("").name
     try:
         proceso = subprocess.run(
-            [ruta_ejecutable, str(nombre_base)],
+            [ruta_ejecutable, nombre_base],
             cwd=str(ruta_inp.parent),
             capture_output=True,
             text=True,

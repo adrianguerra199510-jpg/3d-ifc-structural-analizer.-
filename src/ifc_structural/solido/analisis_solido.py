@@ -9,6 +9,7 @@ donde viene.
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -31,10 +32,49 @@ from .malla import ErrorMalla, MallaSolida, ParteMalla, construir_malla_solida, 
 from .miembros import MiembroBarra, barras_de_longitud_cero, construir_miembros, recortar_uniones
 from .superficies import _parte_de, fuerzas_nodales, superficie_en_malla
 
-#: Tamaño de elemento por defecto (m) y máximo de hexaedros que se aceptan sin avisar.
+#: Tamaño de elemento por defecto (m). No hay máximo de elementos: el diálogo solo avisa de la memoria que necesitará el
+#: solver directo de CalculiX.
 TAMANO_POR_DEFECTO = 0.05
-MAXIMO_HEXAEDROS = 400_000
-TIEMPO_LIMITE_CCX = 3600.0
+#: Por encima de esta cantidad de elementos estimada el diálogo avisa de que el cálculo será largo.
+ELEMENTOS_CALCULO_LARGO = 150_000
+#: Memoria que usa el solver directo de CalculiX (SPOOLES), medida con el balde: 2,95 GB con 193 000 nodos; crece como
+#: nodos^1,4. Nodos por elemento (C3D10 y S6), para estimarla antes de mallar.
+MEMORIA_DIRECTO_REFERENCIA = (193_000, 2.95e9)
+EXPONENTE_MEMORIA_DIRECTO = 1.4
+NODOS_POR_ELEMENTO = 2.0
+TIEMPO_LIMITE_CCX = 24 * 3600.0
+
+
+def memoria_disponible() -> Optional[float]:
+    """Bytes de memoria física libre (None si no se puede saber)."""
+
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class Estado(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong), ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong), ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            estado = Estado()
+            estado.dwLength = ctypes.sizeof(Estado)
+            return float(estado.ullAvailPhys) if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(estado)) else None
+        with open("/proc/meminfo", encoding="ascii") as f:
+            for linea in f:
+                if linea.startswith("MemAvailable:"):
+                    return float(linea.split()[1]) * 1024.0
+    except Exception:  # noqa: BLE001 - otro sistema
+        return None
+    return None
+
+
+def memoria_solver(elementos: int) -> float:
+    """Bytes aproximados que necesita el solver directo de CalculiX para ``elementos`` elementos."""
+
+    n0, m0 = MEMORIA_DIRECTO_REFERENCIA
+    return m0 * (max(NODOS_POR_ELEMENTO * elementos, 1.0) / n0) ** EXPONENTE_MEMORIA_DIRECTO
 
 
 def elemento_solido_por_defecto() -> str:
@@ -432,10 +472,6 @@ def ejecutar_analisis_solido(
     advertencias.extend(recortar_uniones(proyecto, miembros))
     elemento_solido = elemento_solido or elemento_solido_por_defecto()
     estimados = estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA")
-    if estimados > MAXIMO_HEXAEDROS:
-        raise ErrorAnalisis(
-            f"Con elementos de {tamano * 1000:.0f} mm el modelo tendría unos {estimados:,} elementos (máximo "
-            f"{MAXIMO_HEXAEDROS:,}). Aumente el tamaño de elemento.".replace(",", " "))
 
     avanzar(f"Mallando (unos {estimados:,} elementos)...".replace(",", " "))
     especiales = puntos_especiales(proyecto, miembros, apoyos, cargas_puntuales_por_caso, cargas_lineales_por_caso)

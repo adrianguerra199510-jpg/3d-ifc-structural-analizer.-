@@ -188,7 +188,7 @@ Gmsh. La versión portable lleva CalculiX y Gmsh incluidos, así que no hay nada
   sobre las caras de la losa. El peso propio es `*DLOAD,GRAV` con el peso específico del
   material (caso de tipo D). Las conexiones manuales (articulaciones) no se aplican.
 - **Tamaño de elemento.** El diálogo propone el más fino que da unos 60 000 elementos (tetraedros + láminas) y
-  estima la cantidad (máximo 400 000). La estimación cuenta los triángulos de superficie que hará Gmsh (las piezas
+  estima la cantidad y la memoria que usará CalculiX (no hay máximo: si no cabe en la memoria libre, avisa). La estimación cuenta los triángulos de superficie que hará Gmsh (las piezas
   pequeñas, como pernos y tuercas, no bajan de un mínimo aunque crezca el tamaño): si ni el tamaño más grueso cumple
   el objetivo, propone el más fino que da casi lo mismo que el más grueso. Con 1 elemento en el espesor de un ala,
   `C3D10` flexiona bien (IPE300 en voladizo: +0,15 % frente a la teoría); las concentraciones junto a apoyos, cargas

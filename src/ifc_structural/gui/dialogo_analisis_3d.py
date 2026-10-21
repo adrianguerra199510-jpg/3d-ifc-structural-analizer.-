@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel, QVBoxLayout
 
 from ..core.modelo import Proyecto
-from ..solido.analisis_solido import MAXIMO_HEXAEDROS, estimar, tamano_sugerido
+from ..solido.analisis_solido import ELEMENTOS_CALCULO_LARGO, estimar, memoria_disponible, memoria_solver, tamano_sugerido
 from .estilo import EncabezadoDialogo
 
 
@@ -55,6 +55,7 @@ class DialogoAnalisis3D(QDialog):
         self.botones.rejected.connect(self.reject)
         layout.addWidget(self.botones)
 
+        self._libre = memoria_disponible()
         self.spin_tamano.valueChanged.connect(self._actualizar)
         self._actualizar()
 
@@ -70,15 +71,16 @@ class DialogoAnalisis3D(QDialog):
 
     def _actualizar(self) -> None:
         n = estimar(self._proyecto, self.tamano(), self.elemento())
-        texto = f"Unos <b>{n:,}</b> elementos (estimación aproximada)".replace(",", " ")
-        if n > MAXIMO_HEXAEDROS:
-            texto += f" — demasiados (máximo {MAXIMO_HEXAEDROS:,}). Aumente el tamaño.".replace(",", " ")
+        memoria = memoria_solver(n)
+        texto = f"Unos <b>{n:,}</b> elementos (estimación aproximada), unos {memoria / 1e9:.1f} GB de memoria".replace(",", " ")
+        if self._libre is not None and memoria > 0.8 * self._libre:
+            texto += (f": hay {self._libre / 1e9:.1f} GB libres, CalculiX puede quedarse sin memoria o ir muy lento. Cierre otros "
+                      "programas o aumente el tamaño de elemento.")
             color = "#b3261e"
-        elif n > 150_000:
-            texto += ": el cálculo puede tardar varios minutos y usar varios GB de memoria."
+        elif n > ELEMENTOS_CALCULO_LARGO:
+            texto += ": el cálculo puede tardar varios minutos."
             color = "#9a6700"
         else:
             texto += ": el cálculo tardará de segundos a pocos minutos."
             color = "#1a7f4b"
         self.estimacion.setText(f'<span style="color:{color}">{texto}</span>')
-        self.botones.button(QDialogButtonBox.Ok).setEnabled(n <= MAXIMO_HEXAEDROS)
