@@ -75,7 +75,9 @@ if errorlevel 1 goto :error
 
 rem Libreria nativa de Gmsh (tetraedros C3D10 de los solidos): debe ir en la raiz de la carpeta portable
 set "GMSHLIB="
-for /f "usebackq delims=" %%i in (`"%VPY%" -c "import gmsh; print(gmsh.libpath)"`) do set "GMSHLIB=%%i"
+if exist "%BUILD%\gmshlib.txt" del "%BUILD%\gmshlib.txt"
+"%VPY%" -c "import gmsh; open(r'%BUILD%\gmshlib.txt', 'w').write(gmsh.libpath)"
+if exist "%BUILD%\gmshlib.txt" set /p GMSHLIB=<"%BUILD%\gmshlib.txt"
 if not defined GMSHLIB (
     echo ERROR: no se encontro la libreria de Gmsh ^(pip install gmsh^).
     goto :error
