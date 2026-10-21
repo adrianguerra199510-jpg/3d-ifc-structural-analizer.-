@@ -314,16 +314,25 @@ def superficie_media(solido: SolidoGeneral, tamano: float) -> SuperficieMedia:
     n, area_tri = normales_y_areas(v, t)
     conservados, espesores, opuesto, espesor_tri = _piel_conservada(solido)
 
-    # cada vértice de la piel conservada se desplaza la mitad del espesor hacia dentro
+    # cada vértice de la piel conservada se desplaza hacia dentro lo justo para que cada una de sus caras quede a medio
+    # espesor (mínimos cuadrados: d·n_i = -t_i/2). En una cara plana es -t/2·n; en una esquina viva de 90° es la «inglete»
+    # (0,71·t por la bisectriz): con el promedio de normales (0,35·t) la esquina de un tubo cuadrado quedaba plegada y
+    # CalculiX daba «nonpositive jacobian» al expandir las láminas.
     tc = t[conservados]
     usados, local = np.unique(tc, return_inverse=True)
     local = local.reshape(-1, 3)
-    desplazamiento = np.zeros((len(usados), 3))
-    cuenta = np.zeros(len(usados))
+    nc = n[conservados]
+    matriz = np.zeros((len(usados), 3, 3))
+    lado = np.zeros((len(usados), 3))
     for k in range(3):
-        np.add.at(desplazamiento, local[:, k], -0.5 * espesores[:, None] * n[conservados])
-        np.add.at(cuenta, local[:, k], 1.0)
-    vm = v[usados] + desplazamiento / cuenta[:, None]
+        np.add.at(matriz, local[:, k], nc[:, :, None] * nc[:, None, :])
+        np.add.at(lado, local[:, k], -0.5 * espesores[:, None] * nc)
+    # pseudoinversa: las direcciones sin cara (a lo largo de una arista, en el plano de una cara) no se mueven
+    desplazamiento = (np.linalg.pinv(matriz, rcond=1e-3, hermitian=True) @ lado[:, :, None])[:, :, 0]
+    tope = 2.0 * float(np.max(espesores))  # en aristas muy agudas el inglete se dispara
+    largo = np.linalg.norm(desplazamiento, axis=1)
+    desplazamiento *= np.minimum(1.0, tope / np.maximum(largo, 1e-30))[:, None]
+    vm = v[usados] + desplazamiento
     # Una barra o un bloque macizo no es una pared: en una pared el espesor que miden los rayos es ~2V/A (una chapa de
     # lados a, b: 1 + t/a + t/b), en una barra cuadrada o redonda el doble y en un cubo el triple; además su «superficie
     # media» se encoge hasta el eje.
@@ -399,6 +408,10 @@ def lamina_de_superficie(solido: SolidoGeneral, media: SuperficieMedia, tamano: 
     if tm is None:
         vm, tm, origen = _refinar(media.vertices, media.triangulos, media.origen, FACTOR_REFINAMIENTO * tamano)
     espesores = media.espesores
+    # Agujas: la bisección conserva los triángulos de la piel con un lado diminuto (0,07 mm frente a 27 mm en una pata de
+    # tubo) y CalculiX, al expandirlos con su espesor, da «nonpositive jacobian». Se juntan los nodos más cercanos que una
+    # fracción del tamaño de elemento: la aguja queda degenerada y desaparece, y sus vecinas se cierran entre sí.
+    vm, tm, origen = _soldar(vm, tm, origen, min(0.1 * tamano, 0.25 * float(np.median(espesores))))
 
     e = espesores[origen]
     p = vm[tm]

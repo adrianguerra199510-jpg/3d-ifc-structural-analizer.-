@@ -279,3 +279,59 @@ def test_el_tamano_sugerido_no_engorda_los_elementos_sin_ganar_nada(monkeypatch)
     h = tamano_sugerido(proyecto_con(), objetivo=40_000)
     assert h < TAMANOS[-1] and cuenta[h] <= 1.15 * cuenta[TAMANOS[-1]]
     assert tamano_sugerido(proyecto_con(), objetivo=10**9) == TAMANOS[0]
+
+
+def _tubo_cuadrado(lado=0.35, espesor=0.012, largo=1.5):
+    """Tubo cuadrado de esquinas vivas (las patas del balde): pieles exterior e interior y los dos anillos de los extremos."""
+
+    from ifc_structural.core.solidos import SolidoGeneral
+
+    def cuadrado(m, z):
+        return [(-m, -m, z), (m, -m, z), (m, m, z), (-m, m, z)]
+
+    a, b = lado / 2, lado / 2 - espesor
+    v = np.array(cuadrado(a, 0) + cuadrado(b, 0) + cuadrado(a, largo) + cuadrado(b, largo), dtype=float)
+    eo, ei, so, si = 0, 4, 8, 12  # exterior/interior, abajo/arriba
+    t = []
+    for k in range(4):
+        j = (k + 1) % 4
+        t += [(eo + k, eo + j, so + j), (eo + k, so + j, so + k)]  # pared exterior (normal hacia fuera)
+        t += [(ei + k, si + j, ei + j), (ei + k, si + k, si + j)]  # pared interior (normal hacia el hueco)
+        t += [(eo + k, ei + j, eo + j), (eo + k, ei + k, ei + j)]  # anillo de abajo
+        t += [(so + k, so + j, si + j), (so + k, si + j, si + k)]  # anillo de arriba
+    s = SolidoGeneral(id="T", nombre="Tubo", tipo_ifc="IfcMember", material="ACERO", vertices=v, triangulos=np.array(t))
+    if s.volumen < 0:
+        s = SolidoGeneral(id="T", nombre="Tubo", tipo_ifc="IfcMember", material="ACERO", vertices=v,
+                          triangulos=np.array(t)[:, ::-1].copy())
+    return s
+
+
+def test_la_superficie_media_de_un_tubo_cuadrado_no_se_pliega_en_las_esquinas():
+    tubo = _tubo_cuadrado()
+    media = superficie_media(tubo, 0.02)
+    # cada esquina de la superficie media queda a medio espesor de las dos caras (inglete), no a 0,35 t
+    xy = np.abs(media.vertices[:, :2])
+    assert np.allclose(xy.max(axis=0), 0.35 / 2 - 0.006, atol=1e-6)
+    m = mallar_lamina(tubo, 0.02)  # sin Gmsh: bisección
+    from ifc_structural.core.solidos import normales_y_areas
+
+    n, _ = normales_y_areas(m.coordenadas, m.elementos[:, :3])
+    centro = m.coordenadas[m.elementos[:, :3]].mean(axis=1)
+    assert (np.einsum("ij,ij->i", n[:, :2], centro[:, :2]) > 0).all() or (np.einsum("ij,ij->i", n[:, :2], centro[:, :2]) < 0).all()
+
+
+@requiere_ccx
+def test_un_tubo_cuadrado_con_elementos_pequenos_se_analiza(tmp_path: Path):
+    """Con elementos de 20 mm la esquina plegada daba «nonpositive jacobian» al expandir las láminas en CalculiX."""
+
+    from ifc_structural.core.cargas import ApoyoSuperficie
+
+    tubo = _tubo_cuadrado()
+    p = proyecto_con(tubo)
+    apoyo = ApoyoSuperficie(id="A", elemento_tipo="SOLIDO", elemento_id="T", cara=cara_hacia(tubo, (0, 0, -1)),
+                            ux=True, uy=True, uz=True, rx=True, ry=True, rz=True)
+    casos, combinaciones = _casos()
+    r = ejecutar_analisis_solido(p, casos, combinaciones, [apoyo], {}, {}, {}, tmp_path, tamano=0.03,
+                                 cargas_superficie_por_caso={"L": [_carga(tubo, (0, 0, 1), "FUERZA", 10.0, (1, 0, 0))]})
+    u = r.desplazamientos_por_caso["L"]
+    assert np.isfinite(u).all() and u[:, 0].max() > 0
