@@ -276,7 +276,7 @@ class DialogoAsignarMaterial(QDialog):
         resumen.setPlainText(
             "\n".join(
                 f"{descripcion(proyecto, Objetivo(t, i))} — material actual: "
-                f"{({'VIGA': proyecto.vigas, 'COLUMNA': proyecto.columnas, 'LOSA': proyecto.losas, 'MURO': proyecto.muros}[t][i]).material}"
+                f"{({'VIGA': proyecto.vigas, 'COLUMNA': proyecto.columnas, 'LOSA': proyecto.losas, 'MURO': proyecto.muros, 'SOLIDO': proyecto.solidos}[t][i]).material}"
                 for t, i in elementos
             ) or "No hay nada seleccionado."
         )

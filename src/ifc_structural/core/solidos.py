@@ -113,8 +113,11 @@ def _aristas(triangulos: np.ndarray) -> np.ndarray:
 
 
 def es_cerrado(triangulos: np.ndarray) -> bool:
+    """Superficie sin bordes: cada arista la comparten un número par de triángulos. Se admiten aristas en las que
+    se tocan dos cascarones (4 triángulos), habituales en piezas de Revit; el trazado de rayos usa la paridad."""
+
     _, cuenta = np.unique(_aristas(triangulos), axis=0, return_counts=True)
-    return bool(np.all(cuenta == 2))
+    return bool(np.all(cuenta % 2 == 0))
 
 
 def orientar_hacia_fuera(vertices: np.ndarray, triangulos: np.ndarray):

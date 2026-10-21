@@ -33,7 +33,9 @@ class MallaLibre:
     hexaedros: np.ndarray  # (M, 8)
     superficies: Dict[int, np.ndarray] = field(default_factory=dict)  # superficie -> (k, 2) (hexaedro local, cara 1..6)
     tamano: float = 0.0
+    celda_minima: float = 0.0  # lado menor de las celdas (el espesor de una placa delgada lleva una sola capa)
     descartados: int = 0  # hexaedros quitados por solapar con otras piezas
+    volumen: float = 0.0  # volumen de la malla más el de los hexaedros cedidos a otras piezas
 
 
 def celdas_por_eje(solido: SolidoGeneral, tamano: float) -> np.ndarray:
@@ -176,7 +178,8 @@ def mallar_solido(solido: SolidoGeneral, tamano: float, mayores: Sequence[Solido
         for s in np.unique(superficie[superficie >= 0]):
             marca = superficie == s
             superficies[int(s)] = np.stack([hexa[marca], cara[marca]], axis=1)
-    return MallaLibre(coordenadas=coordenadas, hexaedros=hexaedros, superficies=superficies, tamano=h, descartados=descartados)
+    return MallaLibre(coordenadas=coordenadas, hexaedros=hexaedros, superficies=superficies, tamano=h, celda_minima=float(paso.min()), descartados=descartados,
+                      volumen=float(len(ii) + descartados) * float(np.prod(paso)))
 
 
 def centros_de(i, j, k, minimo, paso):

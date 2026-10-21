@@ -594,14 +594,17 @@ def conexion_para_objetivos(
 
 def asignar_material(proyecto: Proyecto, objetivos: Sequence[Objetivo], nombre_material: str) -> List[str]:
     """Asigna un material a los elementos seleccionados (vigas, columnas,
-    losas y muros). Devuelve las descripciones de los elementos cambiados."""
+    losas, muros y sólidos de forma libre). Devuelve las descripciones de los elementos cambiados."""
 
     if nombre_material not in proyecto.materiales:
         raise ErrorAsignacion(f"El material «{nombre_material}» no existe.")
     cambiados: List[str] = []
     for objetivo in dict.fromkeys((o.tipo, o.id) for o in objetivos):
         tipo, id_ = objetivo
-        coleccion = {"VIGA": proyecto.vigas, "COLUMNA": proyecto.columnas, "LOSA": proyecto.losas, "MURO": proyecto.muros}[tipo]
+        coleccion = {"VIGA": proyecto.vigas, "COLUMNA": proyecto.columnas, "LOSA": proyecto.losas, "MURO": proyecto.muros,
+                     "SOLIDO": proyecto.solidos}.get(tipo)
+        if coleccion is None or id_ not in coleccion:
+            raise ErrorAsignacion(f"No se puede asignar un material a «{tipo} {id_}».")
         elemento = coleccion[id_]
         elemento.material = nombre_material
         cambiados.append(descripcion(proyecto, Objetivo(tipo, id_)))

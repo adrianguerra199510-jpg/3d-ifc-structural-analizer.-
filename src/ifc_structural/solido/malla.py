@@ -249,6 +249,13 @@ def construir_malla_solida(proyecto: Proyecto, miembros: Sequence[MiembroBarra],
             avisos.append(f"El sólido {solido.id} ({solido.nombre}) queda dentro de otras piezas y no se analiza.")
             continue
         recortados += bool(libre.descartados)
+        area = sum(c.area for c in solido.caras)
+        espesor = 2.0 * solido.volumen / area if area > 0 else np.inf  # espesor medio si es una pared delgada
+        relacion = libre.volumen / solido.volumen if solido.volumen > 0 else 1.0
+        if espesor < 0.7 * libre.celda_minima or not 0.75 <= relacion <= 1.33:
+            avisos.append(f"El sólido {solido.id} ({solido.nombre}) es de pared delgada (espesor medio ≈ {espesor * 1000:.0f} mm) para el "
+                          f"tamaño de elemento usado ({libre.celda_minima * 1000:.0f} mm): la malla representa el {relacion * 100:.0f} % de su "
+                          "volumen real y los resultados son poco fiables. Reduzca el tamaño de elemento o modele la pieza con losas o muros.")
         bloques_nodos.append(libre.coordenadas)
         lista_hex.append(libre.hexaedros + n_nodos)
         partes.append(ParteMalla(id=solido.id, tipo="SOLIDO", material=solido.material, primer_hexaedro=n_hex,

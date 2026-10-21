@@ -439,3 +439,72 @@ def test_una_pieza_suelta_sin_asignaciones_se_deja_fija_y_se_avisa(tmp_path: Pat
     # si la pieza suelta tiene una carga asignada, sí es un error (quedaría flotando)
     with pytest.raises(ErrorAnalisis):
         _analizar(p, [apoyo], [_carga(a, (1, 0, 0), "FUERZA", 5.0, (0, 0, -1)), _carga(suelta, (0, 0, 1), "PRESION", 10.0, None)], tmp_path / "x")
+
+
+# ---------------------------------------------------------------------------
+# Piezas de Revit: cascarones que se tocan por una arista y asignación de material
+# ---------------------------------------------------------------------------
+
+
+def _dos_cajas_por_arista() -> SolidoGeneral:
+    """Dos cubos que solo comparten una arista (cada arista de contacto la usan 4 triángulos)."""
+
+    a, b = caja("a", 0, 0, 0, 1, 1, 1), caja("b", 1, 1, 0, 1, 1, 1)
+    v = np.vstack([a.vertices, b.vertices])
+    t = np.vstack([a.triangulos, b.triangulos + len(a.vertices)])
+    v, t = soldar_vertices(v, t)
+    return SolidoGeneral(id="S1", nombre="doble", tipo_ifc="IfcBuildingElementProxy", material="ACERO", vertices=v, triangulos=t)
+
+
+def test_aristas_compartidas_por_cuatro_triangulos_siguen_siendo_superficie_cerrada():
+    s = _dos_cajas_por_arista()
+    assert s.cerrado and s.volumen == pytest.approx(2.0, rel=1e-6)
+    malla = mallar_solido(s, 0.25)
+    assert malla is not None and len(malla.hexaedros) > 0
+    assert malla.volumen == pytest.approx(2.0, rel=0.1)
+
+
+def test_una_malla_con_agujeros_sigue_siendo_abierta():
+    s = caja("a", 0, 0, 0, 1, 1, 1)
+    assert not SolidoGeneral(id="x", nombre="x", tipo_ifc="IfcPlate", material="ACERO", vertices=s.vertices,
+                             triangulos=s.triangulos[:-1]).cerrado
+
+
+def test_pared_delgada_avisa_pero_una_placa_plana_no():
+    placa = construir_malla_solida(proyecto_con(caja("S1", 0, 0, 0, 2.0, 2.0, 0.01)), [], 0.2)  # una capa en el espesor
+    assert not any("pared delgada" in a for a in placa.avisos)
+    gruesa = construir_malla_solida(proyecto_con(caja("S1", 0, 0, 0, 1, 1, 1)), [], 0.25)
+    assert not any("pared delgada" in a for a in gruesa.avisos)
+    # un depósito de pared de 1 cm con celdas de 5 cm: no hay una capa de hexaedros por pared que lo represente
+    cilindro_grande = pv.Cylinder(center=(0, 0, 1), direction=(0, 0, 1), radius=1.0, height=2.0, resolution=64, capping=True).triangulate()
+    interior = pv.Cylinder(center=(0, 0, 1), direction=(0, 0, 1), radius=0.99, height=1.98, resolution=64, capping=True).triangulate()
+    v = np.vstack([np.asarray(cilindro_grande.points), np.asarray(interior.points)])
+    t = np.vstack([cilindro_grande.faces.reshape(-1, 4)[:, 1:], interior.faces.reshape(-1, 4)[:, 1:][:, ::-1] + len(cilindro_grande.points)])
+    v, t = soldar_vertices(v, t)
+    deposito = SolidoGeneral(id="S1", nombre="deposito", tipo_ifc="IfcBuildingElementProxy", material="ACERO", vertices=v, triangulos=t)
+    malla = construir_malla_solida(proyecto_con(deposito), [], 0.05)
+    assert any("pared delgada" in a for a in malla.avisos)
+
+
+def test_asignar_material_a_un_solido():
+    from ifc_structural.core.asignacion import ErrorAsignacion, Objetivo, asignar_material
+
+    p = proyecto_con(caja("S1", 0, 0, 0, 1, 1, 1))
+    p.agregar_material(Material(nombre="HORMIGON", modulo_elasticidad=2.5e7, densidad=24.0, modulo_poisson=0.2))
+    cambiados = asignar_material(p, [Objetivo("SOLIDO", "S1", 0)], "HORMIGON")
+    assert p.solidos["S1"].material == "HORMIGON" and len(cambiados) == 1
+    with pytest.raises(ErrorAsignacion):
+        asignar_material(p, [Objetivo("SOLIDO", "S9")], "HORMIGON")
+
+
+def test_dialogo_de_material_acepta_solidos():
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from ifc_structural.core.asignacion import Objetivo
+    from ifc_structural.gui.dialogo_materiales import DialogoAsignarMaterial
+
+    QApplication.instance() or QApplication([])
+    p = proyecto_con(caja("S1", 0, 0, 0, 1, 1, 1))
+    dialogo = DialogoAsignarMaterial(p, [Objetivo("SOLIDO", "S1", 0)])
+    assert dialogo.material_elegido() == "ACERO"
