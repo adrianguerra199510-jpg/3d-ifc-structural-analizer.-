@@ -1,6 +1,8 @@
-"""Diálogo del análisis como modelo sólido (3D): tamaño de elemento y estimación."""
+"""Diálogo del análisis como modelo sólido (3D) y del botón Mallar: tamaño de elemento y estimación."""
 
 from __future__ import annotations
+
+from typing import Optional
 
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel, QVBoxLayout
 
@@ -10,16 +12,18 @@ from .estilo import EncabezadoDialogo
 
 
 class DialogoAnalisis3D(QDialog):
-    def __init__(self, proyecto: Proyecto, parent=None, motivo: str = ""):
+    def __init__(self, proyecto: Proyecto, parent=None, motivo: str = "", para_mallar: bool = False,
+                 tamano_inicial: Optional[float] = None):
         super().__init__(parent)
-        self.setWindowTitle("Analizar como modelo sólido (3D)")
+        self.setWindowTitle("Mallar el modelo sólido (3D)" if para_mallar else "Analizar como modelo sólido (3D)")
         self.resize(560, 420)
         self._proyecto = proyecto
 
         layout = QVBoxLayout(self)
         layout.addWidget(EncabezadoDialogo(
-            "solido", "Análisis sólido (3D)",
-            "Cada pieza se malla con su geometría real y se resuelve con CalculiX."))
+            "malla" if para_mallar else "solido", "Malla del modelo sólido (3D)" if para_mallar else "Análisis sólido (3D)",
+            "Cada pieza se malla con su geometría real; ANALIZAR usará esta misma malla mientras no cambie el modelo."
+            if para_mallar else "Cada pieza se malla con su geometría real y se resuelve con CalculiX."))
         if motivo:
             aviso = QLabel(f"Se analiza como <b>sólido 3D</b> porque {motivo}.")
             aviso.setWordWrap(True)
@@ -41,7 +45,9 @@ class DialogoAnalisis3D(QDialog):
         self.spin_tamano.setRange(5.0, 500.0)
         self.spin_tamano.setDecimals(0)
         self.spin_tamano.setSuffix(" mm")
-        self.spin_tamano.setValue(round(tamano_sugerido(proyecto, elemento_solido=self.elemento()) * 1000.0))
+        if tamano_inicial is None:
+            tamano_inicial = tamano_sugerido(proyecto, elemento_solido=self.elemento())
+        self.spin_tamano.setValue(round(tamano_inicial * 1000.0))
         formulario.addRow("Tamaño de elemento:", self.spin_tamano)
         layout.addLayout(formulario)
 
@@ -50,7 +56,7 @@ class DialogoAnalisis3D(QDialog):
         layout.addWidget(self.estimacion)
 
         self.botones = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.botones.button(QDialogButtonBox.Ok).setText("Analizar en 3D")
+        self.botones.button(QDialogButtonBox.Ok).setText("Mallar" if para_mallar else "Analizar en 3D")
         self.botones.accepted.connect(self.accept)
         self.botones.rejected.connect(self.reject)
         layout.addWidget(self.botones)

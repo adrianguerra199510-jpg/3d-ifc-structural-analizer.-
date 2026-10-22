@@ -8,8 +8,11 @@ donde viene.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
+import pickle
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -449,6 +452,98 @@ def piezas_con_mecanismo(malla_tensiones, desplazamientos: Dict[str, np.ndarray]
 
 
 
+def huella_geometria(proyecto: Proyecto) -> str:
+    """Resumen de todo lo que define la malla (geometría, perfiles y materiales; no las cargas ni los constraints)."""
+
+    datos = (proyecto.nodos, proyecto.materiales, proyecto.perfiles, proyecto.vigas, proyecto.columnas, proyecto.losas,
+             proyecto.muros, proyecto.solidos)
+    return hashlib.sha1(pickle.dumps(datos, protocol=pickle.HIGHEST_PROTOCOL)).hexdigest()
+
+
+@dataclass
+class MallaPrevia:
+    """Malla hecha antes de analizar (botón Mallar): ANALIZAR la vuelve a usar si el modelo no cambió."""
+
+    huella: str
+    tamano: float
+    elemento_solido: str
+    especiales: Dict[str, List[float]]
+    miembros: List[MiembroBarra]
+    malla: MallaSolida
+    advertencias: List[str] = field(default_factory=list)
+
+    def sirve_para(self, proyecto: Proyecto, tamano: float, elemento_solido: str,
+                   especiales: Dict[str, List[float]]) -> bool:
+        return (abs(self.tamano - tamano) < 1e-9 and self.elemento_solido == elemento_solido
+                and self.especiales == especiales and self.huella == huella_geometria(proyecto))
+
+    def resumen(self) -> str:
+        def n(valor: int) -> str:
+            return f"{valor:,}".replace(",", " ")
+
+        m = self.malla
+        partes = []
+        if len(m.tetraedros):
+            partes.append(f"{n(len(m.tetraedros))} tetraedros cuadráticos C3D10")
+        if len(m.hexaedros):
+            partes.append(f"{n(len(m.hexaedros))} hexaedros")
+        if len(m.laminas):
+            partes.append(f"{n(len(m.laminas))} láminas S6")
+        texto = " y ".join([", ".join(partes[:-1]), partes[-1]] if len(partes) > 1 else partes)
+        return f"{texto} ({n(len(m.coordenadas))} nodos), tamaño de elemento {self.tamano * 1000:.0f} mm"
+
+
+def celdas_vtk_de_malla(malla: MallaSolida) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(celdas, tipos, es_lamina) de VTK para dibujar ``malla``: hexaedros, tetraedros (sus 4 vértices) y triángulos."""
+
+    bloques, tipos = [], []
+    for conectividad, columnas, codigo in ((malla.hexaedros, 8, 12), (malla.tetraedros, 4, 10), (malla.laminas, 3, 5)):
+        if len(conectividad) == 0:
+            continue
+        c = np.asarray(conectividad, dtype=np.int64)[:, :columnas]
+        bloques.append(np.hstack([np.full((len(c), 1), columnas, dtype=np.int64), c]).ravel())
+        tipos.append(np.full(len(c), codigo, dtype=np.uint8))
+    if not bloques:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.uint8), np.zeros(0, dtype=bool)
+    tipos_vtk = np.concatenate(tipos)
+    return np.concatenate(bloques), tipos_vtk, tipos_vtk == 5
+
+
+def mallar_modelo(
+    proyecto: Proyecto,
+    tamano: float = TAMANO_POR_DEFECTO,
+    apoyos: Sequence = (),
+    cargas_puntuales_por_caso: Optional[Dict[str, List[CargaPuntual]]] = None,
+    cargas_lineales_por_caso: Optional[Dict[str, List[CargaLineal]]] = None,
+    elemento_solido: Optional[str] = None,
+    al_avanzar: Optional[Callable[[str], None]] = None,
+) -> MallaPrevia:
+    """Malla de elementos finitos del modelo sólido, sin resolverlo (la que usará el análisis)."""
+
+    def avanzar(mensaje: str) -> None:
+        if al_avanzar is not None:
+            al_avanzar(mensaje)
+
+    advertencias: List[str] = []
+    avanzar("Preparando los miembros sólidos...")
+    degeneradas = barras_de_longitud_cero(proyecto)
+    if degeneradas:
+        advertencias.append(f"Las barras {', '.join(degeneradas)} tienen longitud cero (sus dos extremos coinciden) y se omiten.")
+    miembros = construir_miembros(proyecto)
+    advertencias.extend(recortar_uniones(proyecto, miembros))
+    elemento_solido = elemento_solido or elemento_solido_por_defecto()
+    estimados = estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA")
+
+    avanzar(f"Mallando (unos {estimados:,} elementos)...".replace(",", " "))
+    especiales = puntos_especiales(proyecto, miembros, apoyos, cargas_puntuales_por_caso or {}, cargas_lineales_por_caso or {})
+    try:
+        malla = construir_malla_solida(proyecto, miembros, tamano, especiales, elemento_solido, usar_laminas=True,
+                                       al_avanzar=avanzar)
+    except ErrorMalla as exc:
+        raise ErrorAnalisis(str(exc)) from exc
+    return MallaPrevia(huella_geometria(proyecto), tamano, elemento_solido, especiales, miembros, malla, advertencias)
+
+
 def ejecutar_analisis_solido(
     proyecto: Proyecto,
     casos: Dict[str, CasoCarga],
@@ -465,6 +560,7 @@ def ejecutar_analisis_solido(
     cargas_superficie_por_caso: Optional[Dict[str, List[CargaSuperficie]]] = None,
     uniones_manuales: Sequence[UnionSuperficie] = (),
     elemento_solido: Optional[str] = None,
+    malla_previa: Optional[MallaPrevia] = None,
 ) -> ResultadoAnalisis:
     def avanzar(mensaje: str) -> None:
         if al_avanzar is not None:
@@ -480,22 +576,18 @@ def ejecutar_analisis_solido(
         advertencias.append("Las conexiones manuales (articulaciones y enlaces) no se aplican en el análisis sólido: "
                             "las piezas se unen por las superficies en contacto.")
 
-    avanzar("Preparando los miembros sólidos...")
-    degeneradas = barras_de_longitud_cero(proyecto)
-    if degeneradas:
-        advertencias.append(f"Las barras {', '.join(degeneradas)} tienen longitud cero (sus dos extremos coinciden) y se omiten.")
-    miembros = construir_miembros(proyecto)
-    advertencias.extend(recortar_uniones(proyecto, miembros))
     elemento_solido = elemento_solido or elemento_solido_por_defecto()
-    estimados = estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA")
-
-    avanzar(f"Mallando (unos {estimados:,} elementos)...".replace(",", " "))
-    especiales = puntos_especiales(proyecto, miembros, apoyos, cargas_puntuales_por_caso, cargas_lineales_por_caso)
-    try:
-        malla = construir_malla_solida(proyecto, miembros, tamano, especiales, elemento_solido, usar_laminas=True,
-                                       al_avanzar=avanzar)
-    except ErrorMalla as exc:
-        raise ErrorAnalisis(str(exc)) from exc
+    previa = None
+    if malla_previa is not None:
+        especiales = puntos_especiales(proyecto, malla_previa.miembros, apoyos, cargas_puntuales_por_caso, cargas_lineales_por_caso)
+        if malla_previa.sirve_para(proyecto, tamano, elemento_solido, especiales):
+            previa = malla_previa
+            avanzar("Usando la malla ya generada...")
+    if previa is None:
+        previa = mallar_modelo(proyecto, tamano, apoyos, cargas_puntuales_por_caso, cargas_lineales_por_caso, elemento_solido,
+                               avanzar)
+    advertencias.extend(previa.advertencias)
+    miembros, malla = previa.miembros, previa.malla
 
     avanzar("Detectando las uniones entre piezas...")
     espesores = {**{i: l.espesor for i, l in proyecto.losas.items()}, **{i: m.espesor for i, m in proyecto.muros.items()}}

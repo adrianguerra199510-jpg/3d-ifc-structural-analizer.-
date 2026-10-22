@@ -338,6 +338,36 @@ def main(salida: Path) -> None:
     vp.DialogoAnalisis3D = Dialogo3D
     verificar(ventana.accion_analizar.isEnabled(), "el botón ANALIZAR está habilitado")
     verificar(ventana._detectar_modo_de_analisis()[0] == "SOLIDO", "con sólidos libres el análisis automático es 3D")
+    # Mallar antes de analizar: se dibuja la malla y ANALIZAR la reutiliza (no vuelve a mallar)
+    import ifc_structural.solido.analisis_solido as modulo_solido
+
+    llamadas_mallar = []
+    mallar_original = modulo_solido.mallar_modelo
+
+    def mallar_contando(*a, **k):
+        llamadas_mallar.append(1)
+        return mallar_original(*a, **k)
+
+    modulo_solido.mallar_modelo = vp.mallar_modelo = mallar_contando
+    mensajes.clear()
+    verificar(ventana.accion_mallar.isEnabled() and not ventana.accion_ver_malla.isEnabled(), "Mallar habilitado; aún no hay malla que ver")
+    ventana.accion_mallar.trigger()
+    inicio = time.time()
+    while ventana._worker.isRunning() and time.time() - inicio < 250:
+        bombear(5)
+        time.sleep(0.05)
+    bombear(30)
+    verificar(ventana._malla_previa is not None and len(llamadas_mallar) == 1, f"se generó la malla ({mensajes})")
+    verificar(not [m for m in mensajes if m[0] == "critical"], f"mallar sin errores: {mensajes}")
+    verificar(ventana.visor.vista == "MALLA" and "MALLA" in visor.actors and ventana.accion_ver_malla.isChecked(),
+              "el visor muestra la malla")
+    verificar("C3D10" in ventana.statusBar().currentMessage(), ventana.statusBar().currentMessage())
+    ventana.grab().save(str(salida / "04a_malla.png"))
+    ventana.volver_al_modelo()
+    verificar("MALLA" not in visor.actors and visor.vista == "MODELO", "se vuelve al modelo")
+    ventana.accion_ver_malla.trigger()
+    verificar(visor.vista == "MALLA", "y otra vez a la malla desde la barra de vista")
+
     mensajes.clear()
     ventana.accion_analizar.trigger()  # un solo botón: detecta que hay sólidos y analiza en 3D
     inicio = time.time()
@@ -349,6 +379,8 @@ def main(salida: Path) -> None:
     verificar(resultado is not None and resultado.es_solido, f"el análisis 3D terminó ({mensajes})")
     verificar(not [m for m in mensajes if m[0] == "critical"], f"sin errores: {mensajes}")
     verificar(ventana.visor.vista == "ESFUERZOS", "el visor muestra esfuerzos")
+    verificar(len(llamadas_mallar) == 1 and "MALLA" not in visor.actors, "ANALIZAR usó la malla ya generada")
+    modulo_solido.mallar_modelo = vp.mallar_modelo = mallar_original
     ventana.grab().save(str(salida / "04_esfuerzos.png"))
     vm = esfuerzos.von_mises(resultado.tensiones_por_caso["D"])
     verificar(np.isfinite(vm).all() and vm.max() > 0, "esfuerzos finitos")

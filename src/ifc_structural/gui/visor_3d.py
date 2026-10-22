@@ -1024,6 +1024,8 @@ class Visor3D(QtInteractor):
         factor, de 0 a 1, es el de la animación) y, si se pide, se deja el contorno sin deformar."""
 
         self._vista = "ESFUERZOS"
+        for nombre in ("MALLA", "MALLA_LAMINAS"):
+            self.remove_actor(nombre, render=False)
         for visual in self._visuales.values():
             if visual.tipo in ("VIGA", "COLUMNA"):
                 visual.actor.SetVisibility(False)
@@ -1076,6 +1078,37 @@ class Visor3D(QtInteractor):
             self.add_text(texto, position="upper_left", font_size=11, color="black", name="TEXTO_ESFUERZOS")
         self.render()
 
+    def mostrar_malla(self, celdas: np.ndarray, tipos: np.ndarray, coordenadas: np.ndarray, es_lamina: np.ndarray,
+                      texto: str = "") -> None:
+        """Malla de elementos finitos (botón Mallar): sólidos en gris azulado y láminas en ocre, con las aristas de cada
+        elemento. Los elementos del modelo se ocultan, como en la vista de esfuerzos."""
+
+        self._quitar_resultados()
+        self._vista = "MALLA"
+        self._grid_esfuerzos = None
+        for visual in self._visuales.values():
+            visual.actor.SetVisibility(False)
+            visual.actor.SetPickable(False)
+            if visual.actor_bordes is not None:
+                visual.actor_bordes.SetVisibility(False)
+        grid = pv.UnstructuredGrid(celdas, tipos, np.asarray(coordenadas, dtype=float).copy())
+        for nombre, mascara, color in (("MALLA", ~es_lamina, "#c9d6e3"), ("MALLA_LAMINAS", es_lamina, "#e3c48f")):
+            if mascara.any():
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    parte = grid.extract_cells(np.flatnonzero(mascara)).extract_surface()
+                self.add_mesh(parte, color=color, show_edges=True, edge_color="#2f3b47", line_width=0.6, name=nombre,
+                              pickable=False, show_scalar_bar=False)
+        self._mostrar_asignaciones(False)  # las caras resaltadas de apoyos y constraints taparían la malla
+        if texto:
+            self.add_text(texto, position="upper_left", font_size=11, color="black", name="TEXTO_ESFUERZOS")
+        self.render()
+
+    def _quitar_resultados(self) -> None:
+        for nombre in ("ESFUERZOS", "TEXTO_ESFUERZOS", "SIN_DEFORMAR", "MALLA", "MALLA_LAMINAS"):
+            self.remove_actor(nombre, render=False)
+        self.remove_scalar_bar_si_existe()
+
     # ------------------------------------------------------------------
     # Tamaño de los símbolos
     # ------------------------------------------------------------------
@@ -1120,6 +1153,8 @@ class Visor3D(QtInteractor):
             self.mostrar_asignaciones(*self._argumentos_asignaciones)
             if self._vista == "ESFUERZOS":
                 self._mostrar_asignaciones(self._desplazamientos is None)
+            elif self._vista == "MALLA":
+                self._mostrar_asignaciones(False)
 
     def configurar_apoyos(self, visibles: bool) -> None:
         """Muestra u oculta los símbolos de apoyo."""
@@ -1135,6 +1170,8 @@ class Visor3D(QtInteractor):
             self.mostrar_asignaciones(*self._argumentos_asignaciones)
             if self._vista == "ESFUERZOS":
                 self._mostrar_asignaciones(self._desplazamientos is None)
+            elif self._vista == "MALLA":
+                self._mostrar_asignaciones(False)
 
     def configurar_flechas(self, visibles: bool) -> None:
         """Muestra u oculta las flechas de las cargas."""
@@ -1247,11 +1284,8 @@ class Visor3D(QtInteractor):
             self._reconstruir_visuales()
             self._seleccion = []
         else:
-            self.remove_actor("ESFUERZOS", render=False)
-            self.remove_actor("TEXTO_ESFUERZOS", render=False)
-            self.remove_actor("SIN_DEFORMAR", render=False)
+            self._quitar_resultados()
             self._mostrar_asignaciones(True)
-            self.remove_scalar_bar_si_existe()
             self._aplicar_estilo()
         self._aplicar_visibilidad()
         self._grid_esfuerzos = None

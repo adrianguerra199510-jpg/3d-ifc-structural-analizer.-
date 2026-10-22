@@ -60,7 +60,7 @@ from ..core.materiales import descripcion_material
 from ..core.modelo import Proyecto
 from ..core.persistencia import cargar_cargas_superficie, cargar_proyecto, guardar_proyecto
 from ..ifc.importador import importar_ifc
-from ..solido.analisis_solido import ejecutar_analisis_solido
+from ..solido.analisis_solido import MallaPrevia, celdas_vtk_de_malla, ejecutar_analisis_solido, huella_geometria, mallar_modelo
 from ..solver.analisis import ResultadoAnalisis, ejecutar_analisis, validar_modelo
 from .barra_vista import BarraVista
 from .dialogo_analisis_3d import DialogoAnalisis3D
@@ -98,6 +98,8 @@ AYUDA = (
     "(uniforme, triangular, trapezoidal) y la dirección de aplicación.</li>"
     "<li><b>Materiales</b>: cree los suyos (o use las plantillas) y asígnelos a los elementos.</li>"
     "<li><b>Conectar elementos</b>: articulación o enlace rígido entre dos elementos seleccionados.</li>"
+    "<li>Si quiere revisar la malla antes de calcular, pulse <b>Mallar</b> (F7): se genera y se dibuja la malla de "
+    "elementos finitos del análisis sólido, y ANALIZAR la vuelve a usar mientras no cambie el modelo.</li>"
     "<li>Pulse <b>▶ ANALIZAR</b> (F5) y revise los esfuerzos en el panel <b>Esfuerzos</b>. "
     "<b>ANALIZAR 3D</b> (F6) lo resuelve como modelo sólido, con la geometría real de cada pieza.</li></ol>"
     "Con el botón central del mouse se desplaza la vista; con la rueda se acerca o aleja; arrastrando con "
@@ -125,6 +127,7 @@ class VentanaPrincipal(QMainWindow):
 
         self.resultado: Optional[ResultadoAnalisis] = None
         self._resultado_desactualizado = False
+        self._malla_previa: Optional[MallaPrevia] = None  # la del botón Mallar (ANALIZAR la reutiliza si sirve)
         self._barra_principal = None
         self.modo_analisis = "AUTO"  # AUTO, BARRAS o SOLIDO (Analizar → Modo de análisis)
         self._deshacer: list = []  # estados anteriores del modelo editable (el último es el más reciente)
@@ -246,14 +249,19 @@ class VentanaPrincipal(QMainWindow):
         self.accion_casos = accion("Casos", self._gestionar_casos, "casos", ayuda="Casos de carga y combinaciones")
         self.accion_analizar = accion("ANALIZAR", self.analizar, None, "F5", "Analizar el modelo: el programa decide si lo resuelve como barras o como sólido 3D (F5)")
         self.accion_analizar.setIcon(icono_blanco("analizar"))
+        self.accion_mallar = accion("Mallar", self.mallar, "malla", "F7",
+                                    "Generar y ver la malla de elementos finitos antes de analizar; ANALIZAR la reutiliza (F7)")
 
         self.accion_ver_modelo = accion("Modelo", lambda: self.volver_al_modelo(), "modelo",
                                         ayuda="Volver a la vista del modelo", checkable=True, checked=True)
         self.accion_ver_esfuerzos = accion("Esfuerzos", lambda: self.mostrar_esfuerzos(), "esfuerzos",
                                            ayuda="Ver el mapa de esfuerzos del último análisis", checkable=True)
+        self.accion_ver_malla = accion("Malla", lambda: self.mostrar_malla(), "malla",
+                                       ayuda="Ver la malla de elementos finitos generada con Mallar", checkable=True)
         grupo_vista = QActionGroup(self)
         grupo_vista.setExclusive(True)
         grupo_vista.addAction(self.accion_ver_modelo)
+        grupo_vista.addAction(self.accion_ver_malla)
         grupo_vista.addAction(self.accion_ver_esfuerzos)
 
         self.accion_ayuda = accion("Cómo se usa", lambda: QMessageBox.information(self, "Ayuda", AYUDA), "ayuda", "F1")
@@ -281,7 +289,7 @@ class VentanaPrincipal(QMainWindow):
         menu.addActions([self.accion_materiales, self.accion_casos])
 
         menu = self.menuBar().addMenu("A&nalizar")
-        menu.addAction(self.accion_analizar)
+        menu.addActions([self.accion_mallar, self.accion_analizar])
         menu.addSeparator()
         submenu = menu.addMenu("Modo de análisis")
         grupo_modo_analisis = QActionGroup(self)
@@ -293,7 +301,7 @@ class VentanaPrincipal(QMainWindow):
 
         self.menu_ver = QMenu("&Ver", self)
         self.menuBar().addMenu(self.menu_ver)
-        self.menu_ver.addActions([self.accion_ver_modelo, self.accion_ver_esfuerzos])
+        self.menu_ver.addActions([self.accion_ver_modelo, self.accion_ver_malla, self.accion_ver_esfuerzos])
         self.menu_ver.addSeparator()
         # Estilo de vista: sólido, transparente o alambre (las mismas acciones salen al hacer clic derecho sobre el fondo)
         self._acciones_estilo = {}
@@ -393,11 +401,20 @@ class VentanaPrincipal(QMainWindow):
         barra.addActions([self.accion_materiales, self.accion_casos])
 
         self.barra_vista.agregar_accion(self.accion_ver_modelo)
+        self.barra_vista.agregar_accion(self.accion_ver_malla)
         self.barra_vista.agregar_accion(self.accion_ver_esfuerzos)
 
         espacio = QWidget()
         espacio.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         barra.addWidget(espacio)
+
+        self.boton_mallar = QToolButton()
+        self.boton_mallar.setObjectName("botonMallar")
+        self.boton_mallar.setDefaultAction(self.accion_mallar)
+        self.boton_mallar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.boton_mallar.setIconSize(QSize(18, 18))
+        self.boton_mallar.setCursor(Qt.PointingHandCursor)
+        barra.addWidget(self.boton_mallar)
 
         self.boton_analizar = QToolButton()
         self.boton_analizar.setObjectName("botonAnalizar")
@@ -460,6 +477,8 @@ class VentanaPrincipal(QMainWindow):
         hay_solidos = bool(self.proyecto.solidos)
         ocupado = self._worker is not None and self._worker.isRunning()
         self.accion_analizar.setEnabled((hay_modelo or hay_solidos or bool(self.proyecto.losas or self.proyecto.muros)) and not ocupado)
+        self.accion_mallar.setEnabled(self.accion_analizar.isEnabled())
+        self.accion_ver_malla.setEnabled(self._malla_previa is not None)
         self.accion_apoyo.setEnabled(hay_modelo or hay_solidos)
         self.accion_material.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
         self.accion_conexion.setEnabled(len(self.proyecto.todas_las_barras()) >= 2 or len(self.proyecto.solidos) + len(self.proyecto.losas) + len(self.proyecto.muros) >= 2)
@@ -569,6 +588,7 @@ class VentanaPrincipal(QMainWindow):
         self.cargas_puntuales_por_caso = cargas_puntuales
         self.resultado = None
         self._resultado_desactualizado = False
+        self._malla_previa = None
         self.panel_esfuerzos.establecer_resultados([], [])
         self.panel_esfuerzos.mostrar_resumen("Ejecute el análisis para ver los esfuerzos.", {})
 
@@ -1312,10 +1332,58 @@ class VentanaPrincipal(QMainWindow):
             QMessageBox.warning(self, "Todavía no se puede analizar",
                                 "• No hay apoyos asignados: seleccione una superficie (modo «Cara») o la cara extrema de una columna o viga y asigne un apoyo.")
             return
-        dialogo = DialogoAnalisis3D(self.proyecto, self, motivo)
+        previa = self._malla_previa
+        dialogo = DialogoAnalisis3D(self.proyecto, self, motivo, tamano_inicial=previa.tamano if previa else None)
         if not dialogo.exec():
             return
         self._iniciar_hilo(solido=True, tamano=dialogo.tamano(), elemento_solido=dialogo.elemento())
+
+    def mallar(self) -> None:
+        """Botón Mallar: genera la malla del análisis sólido sin resolverlo, para revisarla antes de ANALIZAR."""
+
+        if self._worker is not None and self._worker.isRunning():
+            return
+        if not self.proyecto.todas_las_barras() and not self.proyecto.losas and not self.proyecto.muros and not self.proyecto.solidos:
+            QMessageBox.information(self, "Mallar", "El modelo no tiene elementos que mallar.")
+            return
+        previa = self._malla_previa
+        dialogo = DialogoAnalisis3D(self.proyecto, self, para_mallar=True, tamano_inicial=previa.tamano if previa else None)
+        if not dialogo.exec():
+            return
+        proyecto, apoyos, tamano, elemento = self.proyecto, list(self.apoyos), dialogo.tamano(), dialogo.elemento()
+        puntuales = {k: list(v) for k, v in self.cargas_puntuales_por_caso.items()}
+        lineales = {k: list(v) for k, v in self.cargas_lineales_por_caso.items()}
+
+        def trabajo(avanzar):
+            return mallar_modelo(proyecto, tamano, apoyos, puntuales, lineales, elemento, avanzar)
+
+        self._lanzar_trabajo(trabajo, "Mallando", "Preparando la malla...", self._al_terminar_mallado,
+                             "No se pudo generar la malla")
+
+    def _al_terminar_mallado(self, previa: MallaPrevia) -> None:
+        self._cerrar_dialogo_progreso()
+        self._malla_previa = previa
+        self._actualizar_estado_de_acciones()
+        self._detener_animacion()
+        self.mostrar_malla()
+        mensaje = f"Malla: {previa.resumen()}. ANALIZAR la usará mientras no cambie el modelo."
+        if self.modo_analisis == "BARRAS" or self.modo_analisis == "AUTO" and self._detectar_modo_de_analisis()[0] == "BARRAS":
+            mensaje += " (El modelo se analiza como barras; elija Analizar → Modo de análisis → sólido 3D para usarla.)"
+        self.statusBar().showMessage(mensaje)
+        avisos = list(previa.advertencias) + list(previa.malla.avisos)
+        if avisos:
+            QMessageBox.warning(self, "Malla generada, con advertencias", "\n\n".join(f"• {a}" for a in avisos))
+
+    def mostrar_malla(self) -> None:
+        previa = self._malla_previa
+        if previa is None:
+            return
+        celdas, tipos, es_lamina = celdas_vtk_de_malla(previa.malla)
+        texto = f"Malla: {previa.resumen()}"
+        if previa.huella != huella_geometria(self.proyecto):
+            texto += "\nEl modelo cambió después de mallar: vuelva a pulsar Mallar"
+        self.visor.mostrar_malla(celdas, tipos, previa.malla.coordenadas, es_lamina, texto)
+        self.accion_ver_malla.setChecked(True)
 
     def _iniciar_hilo(self, solido: bool = False, tamano: float = 0.05, elemento_solido: Optional[str] = None) -> None:
         proyecto, casos, combinaciones, apoyos = self.proyecto, dict(self.casos), dict(self.combinaciones), list(self.apoyos)
@@ -1326,6 +1394,7 @@ class VentanaPrincipal(QMainWindow):
         superficiales = {k: list(v) for k, v in self.cargas_superficie_por_caso.items()}
         uniones = list(self.proyecto.uniones)
         configuracion = self.configuracion
+        malla_previa = self._malla_previa
 
         def trabajo(avanzar):
             if solido:
@@ -1333,7 +1402,7 @@ class VentanaPrincipal(QMainWindow):
                     proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,
                     configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx_efectiva, avanzar,
                     tamano=tamano, conexiones=conexiones, cargas_superficie_por_caso=superficiales,
-                    uniones_manuales=uniones, elemento_solido=elemento_solido,
+                    uniones_manuales=uniones, elemento_solido=elemento_solido, malla_previa=malla_previa,
                 )
             return ejecutar_analisis(
                 proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,
@@ -1341,13 +1410,19 @@ class VentanaPrincipal(QMainWindow):
                 conexiones=conexiones,
             )
 
+        self._lanzar_trabajo(trabajo, "Analizando", "Preparando el análisis 3D..." if solido else "Preparando el análisis...",
+                             self._al_terminar_analisis, "El análisis no pudo completarse")
+
+    def _lanzar_trabajo(self, trabajo, titulo: str, texto: str, al_terminar, titulo_error: str) -> None:
+        """Ejecuta ``trabajo`` en un hilo con un diálogo de progreso; ``al_terminar`` recibe lo que devuelva."""
+
         self._worker = TrabajadorAnalisis(trabajo, self)
-        self._worker.terminado.connect(self._al_terminar_analisis)
-        self._worker.fallido.connect(self._al_fallar_analisis)
+        self._worker.terminado.connect(al_terminar)
+        self._worker.fallido.connect(lambda mensaje: self._al_fallar_analisis(mensaje, titulo_error))
         self._worker.finished.connect(self._al_finalizar_hilo)
 
-        self._dialogo_progreso = QProgressDialog("Preparando el análisis 3D..." if solido else "Preparando el análisis...", "", 0, 0, self)
-        self._dialogo_progreso.setWindowTitle("Analizando")
+        self._dialogo_progreso = QProgressDialog(texto, "", 0, 0, self)
+        self._dialogo_progreso.setWindowTitle(titulo)
         self._dialogo_progreso.setCancelButton(None)
         self._dialogo_progreso.setWindowModality(Qt.WindowModal)
         self._dialogo_progreso.setMinimumDuration(0)
@@ -1365,10 +1440,10 @@ class VentanaPrincipal(QMainWindow):
     def _al_finalizar_hilo(self) -> None:
         self._actualizar_estado_de_acciones()
 
-    def _al_fallar_analisis(self, mensaje: str) -> None:
+    def _al_fallar_analisis(self, mensaje: str, titulo: str = "El análisis no pudo completarse") -> None:
         self._cerrar_dialogo_progreso()
-        QMessageBox.critical(self, "El análisis no pudo completarse", mensaje)
-        self.statusBar().showMessage("El análisis falló.")
+        QMessageBox.critical(self, titulo, mensaje)
+        self.statusBar().showMessage(f"{titulo}.")
 
     def _al_terminar_analisis(self, resultado: ResultadoAnalisis) -> None:
         self._cerrar_dialogo_progreso()

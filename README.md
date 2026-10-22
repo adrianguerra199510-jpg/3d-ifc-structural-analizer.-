@@ -166,6 +166,12 @@ que son láminas. Las vigas, columnas, losas y muros se mallan con su geometría
 barra) en hexaedros que al final se parten en 5 o 6 tetraedros cuadráticos conformes; los sólidos de forma libre, con
 Gmsh. La versión portable lleva CalculiX y Gmsh incluidos, así que no hay nada que instalar.
 
+**Mallar** (F7, junto a ANALIZAR): genera la malla del análisis sólido sin resolverlo y la dibuja (sólidos en gris,
+láminas en ocre, con las aristas de cada elemento), para revisarla y ajustar el tamaño de elemento antes de calcular.
+La vista *Malla* de la barra del visor vuelve a mostrarla. ANALIZAR usa esa misma malla si el tamaño es el mismo y la
+geometría, los perfiles, los materiales y los apoyos o cargas puntuales en barras no cambiaron; si cambió algo, vuelve
+a mallar sola.
+
 - **¿Cuándo es lámina?** Cuando su espesor medio `t = 2·V/A` (V el volumen y A el área de toda su superficie) es como
   mucho **1/20 de su tamaño en planta** `L = √(A/2)` (el criterio habitual de placa o cáscara delgada): el cuerpo y el
   cono de un balde, el anillo inferior, una tolva, tubos de pared delgada, chapas. Una losa o un muro, si su espesor es

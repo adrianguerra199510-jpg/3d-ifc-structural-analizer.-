@@ -98,6 +98,10 @@ CUERPOS: Dict[str, str] = {
     ),
     # -- análisis y vistas -----------------------------------------------------------
     "analizar": '<path d="M7.5 4.8v14.4a.6.6 0 0 0 .9.5l11.6-7.2a.6.6 0 0 0 0-1L8.4 4.3a.6.6 0 0 0-.9.5z" fill="@A@" stroke="@A@"/>',
+    "malla": (
+        '<path d="M4 4h16v16H4z"/><path d="M4 12h16M12 4v16" stroke-width="1.1"/>'
+        '<path d="M4 12l8-8M4 20l16-16M12 20l8-8" stroke="@A@" stroke-width="1.1"/>'
+    ),
     "solido": (
         '<path d="M12 3l8.5 4.8v8.4L12 21l-8.5-4.8V7.8z"/><path d="M12 12l8.5-4.2M12 12v9M12 12L3.5 7.8"/>'
         '<path d="M8.2 5.4l8.5 4.8M3.5 12l8.5 4.8 8.5-4.8M16.1 5.4L7.6 10.2" stroke="@A@" stroke-width="1.1"/>'
