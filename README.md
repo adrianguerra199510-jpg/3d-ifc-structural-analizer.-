@@ -39,11 +39,14 @@ linealidad, sismo, reportes PDF.
    caras (presión; las caras laterales dan carga lineal, las extremas una
    fuerza axial). Elija el caso de carga en el diálogo.
 5. **▶ ANALIZAR** (o `F5`): valida el modelo (estabilidad, barras sueltas,
-   losas sin vigas, etc.), ejecuta CalculiX por cada caso y abre la pestaña
-   **Esfuerzos**.
+   losas sin vigas, etc.), pregunta **qué casos de carga se resuelven** (casillas; dice qué combinaciones se
+   podrán calcular con ellos: una combinación necesita todos sus casos), ejecuta CalculiX por cada caso elegido y
+   abre la pestaña **Esfuerzos**.
 6. **Casos y combinaciones** (botón de la barra o menú *Asignar*): formulario con
    dos pestañas. En *Casos de carga* se crean con identificador, nombre y
-   tipo (D, L, W, E…). En *Combinaciones* se escribe el nombre y el **factor de
+   tipo (D, L, W, E…); los de carga muerta (D) tienen la casilla **Incluir el peso propio** (marcada por defecto;
+   desmárquela en un caso de cargas muertas sobreimpuestas o si otro caso D ya lleva el peso propio). Los
+   proyectos guardados antes de la casilla la llevan marcada solo en su primer caso D, como hasta ahora. En *Combinaciones* se escribe el nombre y el **factor de
    cada caso** (0 = no participa), o se parte de una plantilla ACI 318 /
    AASHTO y se edita; se muestra la fórmula resultante («1.2·D + 1.6·L»).
    «Guardar» confirma el formulario en la lista y «OK» aplica todo; «Cancelar»
@@ -159,7 +162,8 @@ por cortante), ver `tests/test_solido.py`.
 
 Un solo botón **ANALIZAR** (F5): el programa decide qué análisis corresponde. Si el modelo tiene sólidos de
 forma libre, apoyos o cargas sobre superficies, constraints o ninguna barra, lo resuelve como **sólido 3D**
-(el diálogo pregunta el tamaño de elemento y dice por qué); si son solo barras (con o sin losas), como barras.
+(el diálogo de ANALIZAR dice por qué y con qué malla; el tamaño de elemento se elige con **Mallar**, y si no se
+malló antes se usa el tamaño sugerido); si son solo barras (con o sin losas), como barras.
 *Analizar → Modo de análisis* permite forzar uno de los dos. El análisis 3D usa tres elementos de CalculiX:
 **tetraedros cuadráticos `C3D10`** (los de *Placa Base Pro*) en las piezas macizas, **hexaedros cuadráticos `C3D20R`
 barridos** en las piezas prismáticas (casilla del diálogo, activada por defecto) y **láminas `S6`** en las piezas que
@@ -202,8 +206,8 @@ a mallar sola.
   mueve la cara como cuerpo rígido con un nodo de referencia. Las fuerzas y momentos puntuales
   se reparten por el área de la sección, las cargas lineales a lo largo de ella y las presiones
   sobre las caras de la losa. El peso propio es `*DLOAD,GRAV` con el peso específico del
-  material (caso de tipo D). Las conexiones manuales (articulaciones) no se aplican.
-- **Tamaño de elemento.** El diálogo propone el más fino que da unos 60 000 elementos (tetraedros + láminas) y
+  material (en los casos de tipo D con la casilla del peso propio). Las conexiones manuales (articulaciones) no se aplican.
+- **Tamaño de elemento.** El diálogo de Mallar propone el más fino que da unos 60 000 elementos (tetraedros + láminas) y
   estima la cantidad y la memoria que usará CalculiX (no hay máximo: si no cabe en la memoria libre, avisa). La estimación cuenta los triángulos de superficie que hará Gmsh (las piezas
   pequeñas, como pernos y tuercas, no bajan de un mínimo aunque crezca el tamaño): si ni el tamaño más grueso cumple
   el objetivo, propone el más fino que da casi lo mismo que el más grueso. Con 1 elemento en el espesor de un ala,

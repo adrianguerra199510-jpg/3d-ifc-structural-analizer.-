@@ -21,6 +21,7 @@ from typing import Dict, Iterable, Optional, Set
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -135,6 +136,12 @@ class DialogoCasos(QDialog):
         formulario.addRow("Identificador:", self.edit_caso_id)
         formulario.addRow("Nombre:", self.edit_caso_nombre)
         formulario.addRow("Tipo:", self.combo_caso_tipo)
+        self.check_peso_propio = QCheckBox("Incluir el peso propio de los elementos")
+        self.check_peso_propio.setChecked(True)
+        self.check_peso_propio.setToolTip("Solo en los casos de carga muerta (D): se suma el peso de cada elemento (peso "
+                                          "específico del material × volumen). Desmárquelo si el caso es solo de cargas "
+                                          "muertas sobreimpuestas, o si otro caso D ya lleva el peso propio.")
+        formulario.addRow("", self.check_peso_propio)
         self.etiqueta_ayuda_caso = QLabel(
             "El identificador se usa en las combinaciones y en los archivos de cálculo "
             "(solo letras, números y guion bajo). No se puede cambiar después de guardar."
@@ -155,7 +162,14 @@ class DialogoCasos(QDialog):
         for editor in (self.edit_caso_id, self.edit_caso_nombre):
             editor.textChanged.connect(self._marcar_sucio_caso)
         self.combo_caso_tipo.currentIndexChanged.connect(self._marcar_sucio_caso)
+        self.combo_caso_tipo.currentIndexChanged.connect(self._actualizar_peso_propio)
+        self.check_peso_propio.toggled.connect(self._marcar_sucio_caso)
         return pagina
+
+    def _actualizar_peso_propio(self, *_args) -> None:
+        """La casilla del peso propio solo tiene sentido en los casos de carga muerta."""
+
+        self.check_peso_propio.setEnabled(self.combo_caso_tipo.currentText() == TipoCaso.D.value)
 
     def _crear_pestana_combinaciones(self) -> QWidget:
         pagina = QWidget()
@@ -231,7 +245,8 @@ class DialogoCasos(QDialog):
         self._cargando = True
         self.lista_casos.clear()
         for caso in self._casos.values():
-            self.lista_casos.addItem(f"{caso.id} — {caso.nombre}  [{caso.tipo.value}]")
+            self.lista_casos.addItem(f"{caso.id} — {caso.nombre}  [{caso.tipo.value}]"
+                                     + ("  + peso propio" if caso.incluye_peso_propio else ""))
         if elegir in self._casos:
             self.lista_casos.setCurrentRow(list(self._casos).index(elegir))
         self._cargando = False
@@ -252,6 +267,8 @@ class DialogoCasos(QDialog):
         self.edit_caso_id.setEnabled(True)
         self.edit_caso_nombre.clear()
         self.combo_caso_tipo.setCurrentIndex(self.combo_caso_tipo.findText(TipoCaso.OTRO.value))
+        self.check_peso_propio.setChecked(True)
+        self._actualizar_peso_propio()
         self.boton_eliminar_caso.setEnabled(False)
         self.lista_casos.setCurrentRow(-1)
         self._sucio_caso = False
@@ -271,6 +288,8 @@ class DialogoCasos(QDialog):
         self.edit_caso_id.setEnabled(False)
         self.edit_caso_nombre.setText(caso.nombre)
         self.combo_caso_tipo.setCurrentIndex(self.combo_caso_tipo.findText(caso.tipo.value))
+        self.check_peso_propio.setChecked(caso.peso_propio)
+        self._actualizar_peso_propio()
         self.boton_eliminar_caso.setEnabled(True)
         self._sucio_caso = False
         self._cargando = False
@@ -297,7 +316,8 @@ class DialogoCasos(QDialog):
             self._error("Identificador repetido", f"Ya existe un caso de carga «{id_}».")
             return False
         caso = CasoCarga(
-            id=id_, nombre=self.edit_caso_nombre.text().strip(), tipo=TipoCaso(self.combo_caso_tipo.currentText())
+            id=id_, nombre=self.edit_caso_nombre.text().strip(), tipo=TipoCaso(self.combo_caso_tipo.currentText()),
+            peso_propio=self.check_peso_propio.isChecked(),
         )
         self._casos[id_] = caso
         self._casos_eliminados.discard(id_)

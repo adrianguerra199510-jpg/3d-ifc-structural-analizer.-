@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict
+from typing import Dict, List, Sequence
 
 
 class TipoCaso(str, Enum):
@@ -25,10 +25,30 @@ class CasoCarga:
     id: str
     nombre: str
     tipo: TipoCaso = TipoCaso.OTRO
+    #: Solo en los casos de carga muerta (D): el caso incluye el peso propio de los elementos (peso específico del
+    #: material × volumen).
+    peso_propio: bool = True
 
     def __post_init__(self) -> None:
         if not self.nombre:
             self.nombre = self.id
+
+    @property
+    def incluye_peso_propio(self) -> bool:
+        return self.tipo == TipoCaso.D and self.peso_propio
+
+
+def casos_con_peso_propio(casos: Dict[str, CasoCarga]) -> List[str]:
+    """Casos que llevan el peso propio: los de carga muerta con la casilla marcada."""
+
+    return [c.id for c in casos.values() if c.incluye_peso_propio]
+
+
+def combinaciones_calculables(combinaciones: Dict[str, "Combinacion"], casos: Sequence[str]) -> Dict[str, "Combinacion"]:
+    """Combinaciones cuyos casos (los de factor no nulo) están todos en ``casos``."""
+
+    elegidos = set(casos)
+    return {i: c for i, c in combinaciones.items() if {k for k, f in c.factores.items() if f} <= elegidos}
 
 
 @dataclass

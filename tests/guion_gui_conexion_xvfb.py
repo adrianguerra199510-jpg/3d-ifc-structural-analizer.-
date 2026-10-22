@@ -161,7 +161,27 @@ def main(salida: Path) -> None:
     verificar(ventana._detectar_modo_de_analisis()[0] == "SOLIDO", "la conexión tiene placas y pernos: el análisis automático es 3D")
     ventana.volver_al_modelo()
     mensajes.clear()
+    ventana.accion_mallar.trigger()  # el tamaño de elemento se elige al mallar; ANALIZAR usa esa malla
+    inicio = time.time()
+    while ventana._worker.isRunning() and time.time() - inicio < 200:
+        bombear(5)
+        time.sleep(0.05)
+    bombear(10)
+    verificar(ventana._malla_previa is not None and ventana._malla_previa.tamano == 0.025, f"malla de 25 mm ({mensajes})")
+
+    from ifc_structural.gui.dialogo_analizar import DialogoAnalizar
+
+    elegidos = []
+
+    class DialogoCasos(DialogoAnalizar):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            verificar("Malla:" in " ".join(w.text() for w in self.findChildren(vp.QLabel)), "el diálogo dice qué malla se usa")
+            elegidos.append(self.casos_elegidos())
+
+    vp.DialogoAnalizar = DialogoCasos
     ventana.accion_analizar.trigger()
+    verificar(elegidos and set(elegidos[0]) == set(ventana.casos), "ANALIZAR ofrece todos los casos, marcados")
     inicio = time.time()
     while ventana._worker.isRunning() and time.time() - inicio < 200:
         bombear(5)

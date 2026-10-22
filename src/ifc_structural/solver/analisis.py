@@ -19,7 +19,7 @@ from ..combinaciones import esfuerzos
 from ..combinaciones.motor_superposicion import superponer_todas_las_combinaciones
 from ..core.asignacion import barras_de_apoyo_area
 from ..core.cargas import Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, Conexion
-from ..core.casos_carga import CasoCarga, Combinacion, TipoCaso
+from ..core.casos_carga import CasoCarga, Combinacion, TipoCaso, casos_con_peso_propio
 from ..core.modelo import Proyecto
 from ..core.transferencia import (
     ErrorTransferencia,
@@ -319,8 +319,7 @@ def preparar_cargas_lineales(
         advertencias.extend(str(a.message) for a in avisos)
         return lineales
 
-    caso_muerta = next((c.id for c in casos.values() if c.tipo == TipoCaso.D), None)
-    if caso_muerta:
+    for caso_muerta in casos_con_peso_propio(casos):  # casos de carga muerta con la casilla del peso propio
         resultado[caso_muerta].extend(peso_propio_barras(proyecto, caso_muerta))
         for carga_pp in cargas_area_peso_propio_losas(proyecto, caso_muerta):
             resultado[caso_muerta].extend(transferir(carga_pp))

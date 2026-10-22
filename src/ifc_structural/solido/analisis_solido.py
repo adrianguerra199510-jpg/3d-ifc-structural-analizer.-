@@ -21,7 +21,7 @@ import numpy as np
 from ..combinaciones import esfuerzos
 from ..combinaciones.motor_superposicion import superponer_todas_las_combinaciones
 from ..core.cargas import Apoyo, ApoyoArea, ApoyoSuperficie, CargaArea, CargaLineal, CargaPuntual, CargaSuperficie, UnionSuperficie
-from ..core.casos_carga import CasoCarga, Combinacion, TipoCaso
+from ..core.casos_carga import CasoCarga, Combinacion, TipoCaso, casos_con_peso_propio
 from ..core.modelo import Proyecto
 from ..solver.analisis import (
     LIMITE_ESFUERZO_RAZONABLE_KPA, ErrorAnalisis, ResultadoAnalisis,
@@ -648,7 +648,7 @@ def ejecutar_analisis_solido(
             "también puede unirlas con un constraint (Conectar).")
 
     materiales = {m: etiqueta(m) for m in {p.material for p in malla.partes}}
-    caso_muerta = next((c.id for c in casos.values() if c.tipo == TipoCaso.D), None)
+    con_peso_propio = set(casos_con_peso_propio(casos))
     directorio_trabajo.mkdir(parents=True, exist_ok=True)
 
     def resolver(apoyos_modelo: List[Apoyo3D]):
@@ -662,7 +662,7 @@ def ejecutar_analisis_solido(
             cargas = _cargas_del_caso(
                 proyecto, miembros, malla, caso_id, cargas_puntuales_por_caso.get(caso_id, []),
                 cargas_lineales_por_caso.get(caso_id, []), cargas_area_por_caso.get(caso_id, []),
-                caso_id == caso_muerta, avisos_cargas, cargas_superficie_por_caso.get(caso_id, []), tamano)
+                caso_id in con_peso_propio, avisos_cargas, cargas_superficie_por_caso.get(caso_id, []), tamano)
             ruta = escribir(directorio_trabajo / f"solido_{caso_id}.inp", escribir_caso(comun, cargas, caso_id))
             for sufijo in (".frd", ".dat"):
                 ruta.with_suffix(sufijo).unlink(missing_ok=True)

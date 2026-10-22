@@ -139,6 +139,11 @@ def cargar_proyecto(ruta: Path):
         apoyos.append(ApoyoArea(**a) if clase == "area" else ApoyoSuperficie(**a) if clase == "superficie" else Apoyo(**a))
     conexiones = [Conexion(**c) for c in datos.get("conexiones", [])]
     casos = {c["id"]: CasoCarga(**{**c, "tipo": TipoCaso(c["tipo"])}) for c in datos.get("casos", [])}
+    if datos.get("casos") and not any("peso_propio" in c for c in datos["casos"]):
+        # archivos anteriores a la casilla del peso propio: lo llevaba solo el primer caso de carga muerta
+        primero = next((c.id for c in casos.values() if c.tipo == TipoCaso.D), None)
+        for caso in casos.values():
+            caso.peso_propio = caso.id == primero
     combinaciones = {c["id"]: Combinacion(**c) for c in datos.get("combinaciones", [])}
     def carga_area(c: dict) -> CargaArea:
         c = dict(c)

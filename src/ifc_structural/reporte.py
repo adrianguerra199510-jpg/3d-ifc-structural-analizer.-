@@ -184,7 +184,7 @@ def armar_contenido(datos: DatosReporte, imagenes: Dict[str, str]) -> List[Bloqu
         bloques.append(Bloque("tabla", filas=filas))
     filas = [["Caso", "Nombre", "Tipo", "Cargas"]]
     for c in datos.casos.values():
-        tipo = getattr(c.tipo, "value", str(c.tipo))
+        tipo = getattr(c.tipo, "value", str(c.tipo)) + (" + peso propio" if getattr(c, "incluye_peso_propio", False) else "")
         filas.append([c.id, c.nombre, str(tipo), str(datos.cargas_por_caso.get(c.id, 0))])
     bloques.append(Bloque("tabla", filas=filas))
     if datos.combinaciones:

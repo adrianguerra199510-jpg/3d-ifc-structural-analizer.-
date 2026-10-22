@@ -38,6 +38,7 @@ def main(salida: Path) -> None:
     QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
     QDialog.exec = lambda self: 1  # los diálogos se aceptan con sus valores por defecto
 
+    import ifc_structural.gui.ventana_principal as vp
     from ifc_structural.gui.ventana_principal import VentanaPrincipal
 
     def bombear(n=15):
@@ -122,6 +123,31 @@ def main(salida: Path) -> None:
     ventana.panel_esfuerzos.combo_magnitud.setCurrentIndex(1)  # σ1
     bombear()
     ventana.grab().save(str(salida / "esfuerzos.png"))
+    ventana.volver_al_modelo()
+
+    # 5b) ANALIZAR solo el caso D: no se resuelve L y solo se combinan las combinaciones que tienen solo D (1.4D)
+    from ifc_structural.gui.dialogo_analizar import DialogoAnalizar
+
+    class SoloD(DialogoAnalizar):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            for i in range(self.lista.count()):
+                item = self.lista.item(i)
+                item.setCheckState(Qt.Checked if item.data(Qt.UserRole) == "D" else Qt.Unchecked)
+            verificar("COMB1" in self.combinaciones.text() and "Sin calcular" in self.combinaciones.text(),
+                      f"el diálogo dice qué combinaciones se calculan: {self.combinaciones.text()}")
+
+    vp.DialogoAnalizar = SoloD
+    ventana.accion_analizar.trigger()
+    inicio = time.time()
+    while ventana._worker.isRunning() and time.time() - inicio < 150:
+        bombear(5)
+        time.sleep(0.05)
+    bombear(30)
+    r = ventana.resultado
+    verificar(set(r.tensiones_por_caso) == {"D"} and set(r.tensiones_por_combinacion) == {"COMB1"},
+              f"solo el caso D y 1.4D: {set(r.tensiones_por_caso)}, {set(r.tensiones_por_combinacion)}")
+    vp.DialogoAnalizar = DialogoAnalizar
     ventana.volver_al_modelo()
     verificar(ventana.visor.vista != "ESFUERZOS", "se vuelve a la vista del modelo")
     print("OK")

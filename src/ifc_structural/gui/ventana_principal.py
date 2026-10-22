@@ -60,10 +60,12 @@ from ..core.materiales import descripcion_material
 from ..core.modelo import Proyecto
 from ..core.persistencia import cargar_cargas_superficie, cargar_proyecto, guardar_proyecto
 from ..ifc.importador import importar_ifc
-from ..solido.analisis_solido import MallaPrevia, celdas_vtk_de_malla, ejecutar_analisis_solido, huella_geometria, mallar_modelo
+from ..solido.analisis_solido import (MallaPrevia, celdas_vtk_de_malla, ejecutar_analisis_solido, huella_geometria, mallar_modelo,
+                                      tamano_sugerido)
 from ..solver.analisis import ResultadoAnalisis, ejecutar_analisis, validar_modelo
 from .barra_vista import BarraVista
 from .dialogo_analisis_3d import DialogoAnalisis3D
+from .dialogo_analizar import DialogoAnalizar
 from .dialogo_acerca import DialogoAcerca
 from .dialogo_apoyos import DialogoApoyo
 from .dialogo_cargas import DialogoCargas
@@ -128,6 +130,8 @@ class VentanaPrincipal(QMainWindow):
         self.resultado: Optional[ResultadoAnalisis] = None
         self._resultado_desactualizado = False
         self._malla_previa: Optional[MallaPrevia] = None  # la del botón Mallar (ANALIZAR la reutiliza si sirve)
+        self._casos_elegidos: Optional[set] = None  # casos marcados en el último ANALIZAR (los nuevos, marcados)
+        self._casos_conocidos: set = set()
         self._barra_principal = None
         self.modo_analisis = "AUTO"  # AUTO, BARRAS o SOLIDO (Analizar → Modo de análisis)
         self._deshacer: list = []  # estados anteriores del modelo editable (el último es el más reciente)
@@ -1296,8 +1300,9 @@ class VentanaPrincipal(QMainWindow):
         return "BARRAS", ""
 
     def analizar(self, modo: Optional[str] = None) -> None:
-        """Botón ANALIZAR: elige solo el tipo de análisis (barras o sólido 3D) según lo que tenga el modelo. ``modo``
-        (``"BARRAS"`` o ``"SOLIDO"``) lo fuerza; si no, se usa el modo elegido en *Analizar → Modo de análisis*."""
+        """Botón ANALIZAR: elige solo el tipo de análisis (barras o sólido 3D) según lo que tenga el modelo y pregunta qué
+        casos de carga se resuelven. ``modo`` (``"BARRAS"`` o ``"SOLIDO"``) lo fuerza; si no, se usa el modo elegido en
+        *Analizar → Modo de análisis*. El tamaño de la malla del análisis sólido se elige con Mallar."""
 
         if self._worker is not None and self._worker.isRunning():
             return
@@ -1309,6 +1314,21 @@ class VentanaPrincipal(QMainWindow):
             self._analizar_solido(motivo)
         else:
             self._analizar_barras()
+
+    def _elegir_casos(self, motivo: str, texto_malla: str = "") -> Optional[Tuple[Dict[str, CasoCarga], Dict[str, Combinacion]]]:
+        """Casos y combinaciones que se analizan (diálogo de ANALIZAR); ``None`` si se cancela."""
+
+        if not self.casos:
+            QMessageBox.warning(self, "Todavía no se puede analizar", "• No hay casos de carga definidos (botón Casos).")
+            return None
+        previos = None if self._casos_elegidos is None else [i for i in self.casos if i in self._casos_elegidos
+                                                              or i not in self._casos_conocidos]
+        dialogo = DialogoAnalizar(self.casos, self.combinaciones, self, motivo, texto_malla, previos)
+        if not dialogo.exec():
+            return None
+        elegidos = dialogo.casos_elegidos()
+        self._casos_elegidos, self._casos_conocidos = set(elegidos), set(self.casos)
+        return {i: self.casos[i] for i in elegidos}, dialogo.combinaciones_elegidas()
 
     def _analizar_barras(self) -> None:
         errores, advertencias = validar_modelo(self.proyecto, self.casos, self.combinaciones, self.apoyos, self.conexiones)
@@ -1322,7 +1342,9 @@ class VentanaPrincipal(QMainWindow):
             )
             if respuesta != QMessageBox.Yes:
                 return
-        self._iniciar_hilo()
+        elegidos = self._elegir_casos("Se analiza como <b>modelo de barras</b>.")
+        if elegidos is not None:
+            self._iniciar_hilo(casos=elegidos[0], combinaciones=elegidos[1])
 
     def _analizar_solido(self, motivo: str = "") -> None:
         if not self.proyecto.todas_las_barras() and not self.proyecto.losas and not self.proyecto.muros and not self.proyecto.solidos:
@@ -1332,12 +1354,23 @@ class VentanaPrincipal(QMainWindow):
             QMessageBox.warning(self, "Todavía no se puede analizar",
                                 "• No hay apoyos asignados: seleccione una superficie (modo «Cara») o la cara extrema de una columna o viga y asigne un apoyo.")
             return
+        # la malla: la del botón Mallar si la hay; si no, con el tamaño sugerido
         previa = self._malla_previa
-        dialogo = DialogoAnalisis3D(self.proyecto, self, motivo, tamano_inicial=previa.tamano if previa else None,
-                                    barridos=previa.barridos if previa else True)
-        if not dialogo.exec():
-            return
-        self._iniciar_hilo(solido=True, tamano=dialogo.tamano(), elemento_solido=dialogo.elemento(), barridos=dialogo.barridos())
+        if previa is not None:
+            tamano, barridos = previa.tamano, previa.barridos
+            if previa.huella == huella_geometria(self.proyecto):
+                texto_malla = f"<b>Malla:</b> la generada con Mallar ({previa.resumen()})."
+            else:
+                texto_malla = (f"<b>Malla:</b> el modelo cambió después de mallar; se volverá a mallar con elementos de "
+                               f"{tamano * 1000:.0f} mm.")
+        else:
+            tamano, barridos = tamano_sugerido(self.proyecto), True
+            texto_malla = (f"<b>Malla:</b> se mallará con elementos de {tamano * 1000:.0f} mm (tamaño sugerido). Para "
+                           "revisarla o cambiar el tamaño de elemento, use <b>Mallar</b> antes de analizar.")
+        texto_motivo = "Se analiza como <b>sólido 3D</b>" + (f" porque {motivo}." if motivo else ".")
+        elegidos = self._elegir_casos(texto_motivo, texto_malla)
+        if elegidos is not None:
+            self._iniciar_hilo(solido=True, tamano=tamano, barridos=barridos, casos=elegidos[0], combinaciones=elegidos[1])
 
     def mallar(self) -> None:
         """Botón Mallar: genera la malla del análisis sólido sin resolverlo, para revisarla antes de ANALIZAR."""
@@ -1389,8 +1422,11 @@ class VentanaPrincipal(QMainWindow):
         self.accion_ver_malla.setChecked(True)
 
     def _iniciar_hilo(self, solido: bool = False, tamano: float = 0.05, elemento_solido: Optional[str] = None,
-                      barridos: bool = True) -> None:
-        proyecto, casos, combinaciones, apoyos = self.proyecto, dict(self.casos), dict(self.combinaciones), list(self.apoyos)
+                      barridos: bool = True, casos: Optional[Dict[str, CasoCarga]] = None,
+                      combinaciones: Optional[Dict[str, Combinacion]] = None) -> None:
+        casos = dict(self.casos if casos is None else casos)
+        combinaciones = dict(self.combinaciones if combinaciones is None else combinaciones)
+        proyecto, apoyos = self.proyecto, list(self.apoyos)
         conexiones = list(self.conexiones)
         area = {k: list(v) for k, v in self.cargas_area_por_caso.items()}
         lineales = {k: list(v) for k, v in self.cargas_lineales_por_caso.items()}
@@ -1662,7 +1698,10 @@ class VentanaPrincipal(QMainWindow):
             for caso, lista in por_caso.items():
                 cargas_por_caso[caso] = cargas_por_caso.get(caso, 0) + len(lista)
         datos = DatosReporte(
-            proyecto=self.proyecto, resultado=self.resultado, casos=self.casos, combinaciones=self.combinaciones,
+            proyecto=self.proyecto, resultado=self.resultado,
+            # solo los casos y combinaciones que se analizaron (ANALIZAR deja elegir los casos)
+            casos={i: c for i, c in self.casos.items() if i in self.resultado.tensiones_por_caso},
+            combinaciones={i: c for i, c in self.combinaciones.items() if i in self.resultado.tensiones_por_combinacion},
             apoyos=list(self.apoyos), cargas_por_caso=cargas_por_caso,
             escala_deformada=parametros.escala_deformada if parametros is not None else None,
             colormap=parametros.colormap if parametros is not None else "turbo")
