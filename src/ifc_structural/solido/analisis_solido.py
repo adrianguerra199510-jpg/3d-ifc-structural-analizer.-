@@ -413,6 +413,22 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
 # ---------------------------------------------------------------------------
 
 
+def _nodos_de_piezas(malla: MallaSolida, ids: Sequence[str], uniones) -> np.ndarray:
+    """Nodos (0-based) de las piezas ``ids``, sin los esclavos de un *TIE (CalculiX no admite un apoyo en un nodo esclavo)."""
+
+    nodos = set()
+    for parte in malla.partes:
+        if parte.id in ids:
+            nodos.update(int(n) for n in malla.nodos_de_parte(parte))
+    for u in uniones:
+        frontera = malla.fronteras(malla.partes[u.parte_esclava])
+        mapa = {(int(h), int(k)): i for i, (h, k) in enumerate(zip(frontera.hexaedro, frontera.cara))}
+        for h, k in u.esclava:
+            if (h, k) in mapa:
+                nodos.difference_update(int(n) for n in frontera.nodos[mapa[(h, k)]])
+    return np.array(sorted(nodos), dtype=np.int64)
+
+
 def piezas_con_mecanismo(malla_tensiones, desplazamientos: Dict[str, np.ndarray], pieza_de_celda: Sequence[str]) -> List[str]:
     """Piezas con algún nodo que se mueve más que el 10 % del tamaño del modelo en algún caso o combinación: con cargas
     de servicio un desplazamiento así solo sale de una pieza suelta (la matriz de rigidez casi singular)."""
@@ -527,44 +543,83 @@ def ejecutar_analisis_solido(
             "también puede unirlas con un constraint (Conectar).")
 
     materiales = {m: etiqueta(m) for m in {p.material for p in malla.partes}}
-    modelo = ModeloSolido(malla=malla, uniones=uniones, apoyos=apoyos_3d, materiales=materiales, enlaces=enlaces, acoples=acoples)
-
-    avanzar("Generando los archivos de CalculiX...")
-    comun = escribir_comun(modelo, proyecto)
     caso_muerta = next((c.id for c in casos.values() if c.tipo == TipoCaso.D), None)
-    avisos_cargas: List[str] = []
-    rutas: Dict[str, Path] = {}
     directorio_trabajo.mkdir(parents=True, exist_ok=True)
-    for caso_id in casos:
-        cargas = _cargas_del_caso(
-            proyecto, miembros, malla, caso_id, cargas_puntuales_por_caso.get(caso_id, []),
-            cargas_lineales_por_caso.get(caso_id, []), cargas_area_por_caso.get(caso_id, []),
-            caso_id == caso_muerta, avisos_cargas, cargas_superficie_por_caso.get(caso_id, []), tamano)
-        ruta = escribir(directorio_trabajo / f"solido_{caso_id}.inp", escribir_caso(comun, cargas, caso_id))
-        for sufijo in (".frd", ".dat"):
-            ruta.with_suffix(sufijo).unlink(missing_ok=True)
-        rutas[caso_id] = ruta
+
+    def resolver(apoyos_modelo: List[Apoyo3D]):
+        modelo = ModeloSolido(malla=malla, uniones=uniones, apoyos=apoyos_modelo, materiales=materiales, enlaces=enlaces,
+                              acoples=acoples)
+        avanzar("Generando los archivos de CalculiX...")
+        comun = escribir_comun(modelo, proyecto)
+        avisos_cargas: List[str] = []
+        rutas: Dict[str, Path] = {}
+        for caso_id in casos:
+            cargas = _cargas_del_caso(
+                proyecto, miembros, malla, caso_id, cargas_puntuales_por_caso.get(caso_id, []),
+                cargas_lineales_por_caso.get(caso_id, []), cargas_area_por_caso.get(caso_id, []),
+                caso_id == caso_muerta, avisos_cargas, cargas_superficie_por_caso.get(caso_id, []), tamano)
+            ruta = escribir(directorio_trabajo / f"solido_{caso_id}.inp", escribir_caso(comun, cargas, caso_id))
+            for sufijo in (".frd", ".dat"):
+                ruta.with_suffix(sufijo).unlink(missing_ok=True)
+            rutas[caso_id] = ruta
+        ejecuciones = ejecutar_ccx_todos_los_casos(
+            rutas, ruta_ccx, tiempo_limite=TIEMPO_LIMITE_CCX,
+            al_avanzar=lambda caso, i, total: avanzar(f"Resolviendo el caso {caso} ({i} de {total}) con CalculiX..."))
+        fallidos = {c: r for c, r in ejecuciones.items() if not r.exitoso}
+        if fallidos:
+            detalle = "\n".join(f"Caso {c}: {r.diagnostico()}" for c, r in fallidos.items())
+            raise ErrorAnalisis("CalculiX no pudo resolver el modelo sólido.\n" + detalle)
+        avanzar("Leyendo los esfuerzos...")
+        primer = next(iter(ejecuciones))
+        malla_t = leer_malla_frd(ejecuciones[primer].ruta_frd)
+        tensiones: Dict[str, np.ndarray] = {}
+        desplazamientos: Dict[str, np.ndarray] = {}
+        for caso_id, ejecucion in ejecuciones.items():
+            m_caso = leer_malla_frd(ejecucion.ruta_frd)
+            if not np.array_equal(m_caso.ids_nodos, malla_t.ids_nodos):
+                raise ErrorAnalisis(f"La malla de resultados del caso {caso_id} no coincide con la de los demás casos.")
+            tensiones[caso_id] = leer_tensiones_frd(ejecucion.ruta_frd, malla_t)
+            desplazamientos[caso_id] = leer_desplazamientos_frd(ejecucion.ruta_frd, malla_t)
+        return malla_t, tensiones, desplazamientos, avisos_cargas
+
+    malla_tensiones, tensiones_por_caso, desplazamientos_por_caso, avisos_cargas = resolver(apoyos_3d)
     advertencias.extend(dict.fromkeys(avisos_cargas))
+    pieza_de_elemento = malla.elementos_en_orden
+    pieza_de_celda = [pieza_de_elemento[int(e) - 1] for e in malla_tensiones.ids_elementos]
+    sueltas = piezas_con_mecanismo(malla_tensiones, desplazamientos_por_caso, pieza_de_celda)
+    if sueltas:
+        # Piezas que quedaron sueltas o colgando de un punto (p. ej. tuercas y placas de unas piezas que se borraron): con
+        # su peso propio la matriz es casi singular y sus desplazamientos absurdos contaminan las combinaciones. Se fijan en
+        # su sitio los nodos que se van lejos y se vuelve a calcular; el resto de la estructura no cambia.
+        # solo las que el usuario no tocó: las que tienen apoyos, cargas o constraints (una articulación con un giro libre a
+        # propósito) se dejan como están y se avisa
+        asignadas = {a.elemento_id for a in apoyos if isinstance(a, (ApoyoSuperficie, ApoyoArea))}
+        asignadas |= {c.elemento_id for lista in cargas_superficie_por_caso.values() for c in lista}
+        asignadas |= {c.losa_id or c.muro_id for lista in cargas_area_por_caso.values() for c in lista}
+        for u in uniones_manuales:
+            asignadas |= {u.a_id, u.b_id}
+        fijables = [i for i in sueltas if i not in asignadas and any(p.id == i and p.tipo in ("SOLIDO", "LOSA", "MURO") for p in malla.partes)]
+        nodos_sueltos = _nodos_de_piezas(malla, fijables, uniones)
+        if len(nodos_sueltos):
+            avanzar(f"Fijando {len(fijables)} pieza(s) sueltas y recalculando...")
+            apoyos_3d = list(apoyos_3d) + [Apoyo3D(nodos_sueltos, {1, 2, 3}, rigido=False, nombre="piezas en mecanismo")]
+            malla_tensiones, tensiones_por_caso, desplazamientos_por_caso, _ = resolver(apoyos_3d)
+            pieza_de_celda = [pieza_de_elemento[int(e) - 1] for e in malla_tensiones.ids_elementos]
+            siguen = piezas_con_mecanismo(malla_tensiones, desplazamientos_por_caso, pieza_de_celda)
+        else:
+            siguen = sueltas
+        def nombres(ids):
+            return f"{', '.join(ids[:10])}{' y otras' if len(ids) > 10 else ''}"
 
-    ejecuciones = ejecutar_ccx_todos_los_casos(
-        rutas, ruta_ccx, tiempo_limite=TIEMPO_LIMITE_CCX,
-        al_avanzar=lambda caso, i, total: avanzar(f"Resolviendo el caso {caso} ({i} de {total}) con CalculiX..."))
-    fallidos = {c: r for c, r in ejecuciones.items() if not r.exitoso}
-    if fallidos:
-        detalle = "\n".join(f"Caso {c}: {r.diagnostico()}" for c, r in fallidos.items())
-        raise ErrorAnalisis("CalculiX no pudo resolver el modelo sólido.\n" + detalle)
-
-    avanzar("Leyendo los esfuerzos...")
-    primer = next(iter(ejecuciones))
-    malla_tensiones = leer_malla_frd(ejecuciones[primer].ruta_frd)
-    tensiones_por_caso: Dict[str, np.ndarray] = {}
-    desplazamientos_por_caso: Dict[str, np.ndarray] = {}
-    for caso_id, ejecucion in ejecuciones.items():
-        m_caso = leer_malla_frd(ejecucion.ruta_frd)
-        if not np.array_equal(m_caso.ids_nodos, malla_tensiones.ids_nodos):
-            raise ErrorAnalisis(f"La malla de resultados del caso {caso_id} no coincide con la de los demás casos.")
-        tensiones_por_caso[caso_id] = leer_tensiones_frd(ejecucion.ruta_frd, malla_tensiones)
-        desplazamientos_por_caso[caso_id] = leer_desplazamientos_frd(ejecucion.ruta_frd, malla_tensiones)
+        if fijables and len(nodos_sueltos):
+            advertencias.insert(0, f"Las piezas {nombres(fijables)} no estaban unidas a la estructura (mecanismo: con su peso propio "
+                                   "se desplazaban sin límite): se fijaron en su sitio y se volvió a calcular. Sus esfuerzos no son "
+                                   "significativos; únalas con un constraint (Conectar) o elimínelas si sobran.")
+        if siguen:
+            lista = nombres(siguen)
+            advertencias.insert(0, f"Las piezas {lista} se desplazan más que el tamaño del modelo: no están bien unidas a las demás "
+                                   "o a los apoyos (mecanismo) y sus resultados no son válidos. Únalas con un constraint (Conectar), "
+                                   "asígneles apoyos o elimínelas.")
 
     # Solo los hexaedros del modelo (CalculiX no añade otros, pero los nodos de apoyo rígido no se dibujan)
     avanzar("Combinando casos de carga...")
@@ -586,12 +641,6 @@ def ejecutar_analisis_solido(
     equivalente = MallaAnalisis()
     for i, id_ in enumerate(malla.elementos_en_orden, start=1):
         equivalente.elementos[i] = ElementoMalla(id=i, barra_id=id_, nodo_i=0, nodo_f=0, s_inicio=0.0, s_fin=1.0)
-    sueltas = piezas_con_mecanismo(malla_tensiones, {**desplazamientos_por_caso, **desplazamientos_por_combinacion},
-                                   [equivalente.elementos[int(e)].barra_id for e in malla_tensiones.ids_elementos])
-    if sueltas:
-        advertencias.insert(0, f"Las piezas {', '.join(sueltas[:10])}{' y otras' if len(sueltas) > 10 else ''} se desplazan más que el "
-                               "tamaño del modelo: no están bien unidas a las demás o a los apoyos (mecanismo) y sus resultados no "
-                               "son válidos. Únalas con un constraint (Conectar) o asígneles apoyos.")
     return ResultadoAnalisis(
         malla=equivalente, malla_tensiones=malla_tensiones, tensiones_por_caso=tensiones_por_caso,
         tensiones_por_combinacion=tensiones_por_combinacion, advertencias=advertencias, es_solido=True,
