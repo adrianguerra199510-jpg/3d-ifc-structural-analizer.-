@@ -191,6 +191,10 @@ a mallar sola.
   cono de un balde, el anillo inferior, una tolva, tubos de pared delgada, chapas. Una losa o un muro, si su espesor es
   ≤ 1/20 de √(área de su contorno). Los bloques, ejes, pernos, engranajes y placas gruesas van con `C3D10`; una barra
   redonda esbelta (que el cociente confundiría con una lámina) se reconoce como maciza al medir su espesor con rayos.
+  En un cajón (el anillo inferior del balde, un tubo rectangular) cada pared conserva una de sus pieles y donde se juntan
+  pieles de lados distintos las superficies medias terminan a ~0,7 espesores la una de la otra: esas grietas de las
+  esquinas se **cosen** (cada vértice del borde se lleva al otro borde, partiendo su arista), porque una esquina abierta
+  deja el cajón sin rigidez (el anillo del balde bajaba 85 mm con su peso propio).
 
 - **Geometría.** Un perfil en I se malla con sus alas y su alma; un rectángulo, con
   su sección. Las barras alineadas con el mismo perfil (la columna partida por una unión)
@@ -277,20 +281,29 @@ y la conserva como **sólido de forma libre**:
   (`tests/test_solidos_libres.py`, `tests/test_c3d10_laminas.py`).
 - **Conectar** (botón de la barra, menú *Asignar → Conectar elementos* o clic derecho) ofrece dos formas:
   **manualmente** (los dos elementos o superficies seleccionados) y **automáticamente** (detecta los
-  elementos que se tocan o están a menos de una separación elegida, los lista para marcar y crea un
-  constraint por pareja; no repite las que ya tienen uno).
+  elementos que se tocan, se solapan o están a menos de una separación elegida, los lista para marcar y crea un
+  constraint por pareja; no repite las que ya tienen uno). Se mide sobre la **geometría real** de cada elemento: se
+  reparten puntos sobre su superficie y se mide su distancia con signo a la superficie del otro (antes se medía sobre
+  una malla gruesa de vóxeles y se perdían los contactos inclinados o curvos). Con «cuerpo rígido», todas las piezas que
+  quedan conectadas entre sí forman un solo cuerpo rígido (el diálogo lo advierte).
 - **Constraints entre superficies o elementos 3D completos.** Con dos superficies (modo **Cara**) o dos
-  elementos (modo **Elemento**) se elige a qué se aplica: *las superficies más cercanas* (a igual distancia, las
-  que se miran) o *los elementos completos* (soldadura por donde se tocan o a menos de la separación máxima;
+  elementos (modo **Elemento**) se elige a qué se aplica: *las superficies más cercanas* (la distancia se mide entre
+  las superficies de las caras, no entre sus vértices; a igual distancia, la de mayor área en contacto y la que se mira)
+  o *los elementos completos* (soldadura por donde se tocan o a menos de la separación máxima;
   cuerpo rígido o articulación de los dos cuerpos enteros). Tipos, como los *joint constraints* de SAP:
   **soldadura** (`*TIE`, une punto a punto y cierra la holgura; sustituye a la unión automática entre
   esas dos piezas), **cuerpo rígido** (las dos superficies se mueven juntas, `*RIGID BODY`),
-  **igualar movimientos** (cada nodo sigue al más cercano de la otra superficie en Ux, Uy, Uz
-  marcados, `*EQUATION`) y **articulación** (superficies rígidas con los centros igualados en las tres
-  traslaciones y en los giros marcados). Aparecen en el árbol (*Constraints*), se dibujan en el visor
+  **igualar movimientos** (cada nodo de la superficie más fina sigue al punto más cercano de la otra, interpolado en su
+  cara, en Ux, Uy, Uz marcados, `*EQUATION`) y **articulación** (superficies rígidas con los centros de su área
+  igualados en las tres traslaciones y en los giros marcados). Aparecen en el árbol (*Constraints*), se dibujan en el visor
   y se guardan en el proyecto. Solo se aplican en el análisis 3D. Entre dos barras, *Conectar manualmente*
   pregunta si se quiere la conexión del modelo de barras (articulación o enlace rígido) o el constraint 3D.
-  Un nodo con un apoyo propio queda fuera de los cuerpos rígidos, y no puede ser esclavo de dos soldaduras.
+  Un grado de libertad solo puede depender de una cosa: los nodos con apoyo propio y los esclavos de una soldadura
+  (`*TIE`, también las uniones automáticas) quedan fuera de los cuerpos rígidos y de las igualaciones, y los cuerpos
+  rígidos que comparten nodos (una pieza unida a dos con «cuerpo rígido») se funden en uno; antes, CalculiX no avisaba y
+  daba desplazamientos absurdos. La tolerancia de una soldadura entre superficies sale de la holgura del 95 % de los
+  nodos (no de la mínima) y se avisa si parte de la superficie queda sin unir. Una soldadura con una lámina entre
+  superficies elegidas solo acopla esas superficies.
 - **Selección por zona.** Arrastre un rectángulo con el botón izquierdo (Ctrl o Mayús suma a la selección): de izquierda a derecha (azul, continuo)
   se eligen solo los elementos —o superficies, en modo Cara— que quedan por completo dentro; de derecha
   a izquierda (verde, discontinuo), todo lo que toca. En modo Cara solo cuentan las caras que miran a

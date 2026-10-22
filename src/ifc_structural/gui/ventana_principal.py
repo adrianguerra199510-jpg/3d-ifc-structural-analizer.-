@@ -109,6 +109,21 @@ AYUDA = (
 )
 
 
+def ruta_con_formato(ruta: str, filtro: str) -> str:
+    """Ruta del reporte con la extensión del tipo elegido en el diálogo de guardar. El nombre propuesto termina en
+    «.pdf» y al elegir «Word (*.docx)» el diálogo de Windows no lo cambia: manda el tipo elegido, no el nombre."""
+
+    base, extension = ruta, ""
+    if ruta.lower().endswith((".pdf", ".docx")):
+        base, extension = ruta.rsplit(".", 1)
+        extension = "." + extension.lower()
+    if "docx" in (filtro or "").lower():
+        return base + ".docx"
+    if "pdf" in (filtro or "").lower():
+        return base + ".pdf"
+    return base + (extension or ".pdf")
+
+
 class VentanaPrincipal(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1689,8 +1704,7 @@ class VentanaPrincipal(QMainWindow):
                 self, "Exportar reporte de análisis", f"{nombre}_reporte.pdf", "PDF (*.pdf);;Word (*.docx)")
             if not ruta:
                 return None
-            if not ruta.lower().endswith((".pdf", ".docx")):
-                ruta += ".docx" if "docx" in filtro.lower() else ".pdf"
+            ruta = ruta_con_formato(ruta, filtro)
         parametros = self.panel_esfuerzos.parametros()
         cargas_por_caso: Dict[str, int] = {}
         for por_caso in (self.cargas_area_por_caso, self.cargas_lineales_por_caso, self.cargas_puntuales_por_caso,

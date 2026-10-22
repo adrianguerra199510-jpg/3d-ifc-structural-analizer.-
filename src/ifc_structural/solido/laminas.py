@@ -304,6 +304,111 @@ def _orientacion_coherente(tm: np.ndarray, area: np.ndarray) -> np.ndarray:
     return voltear
 
 
+def _aristas_libres(t: np.ndarray) -> np.ndarray:
+    aristas = np.sort(np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]]), axis=1)
+    unicas, cuenta = np.unique(aristas, axis=0, return_counts=True)
+    return unicas[cuenta == 1]
+
+
+def _cerrar_grietas(v: np.ndarray, t: np.ndarray, atributo: np.ndarray, tolerancia: np.ndarray, pasadas: int = 6):
+    """Cose los bordes libres que corren a menos de ``tolerancia`` (por vértice) de otro borde libre: las grietas de las
+    esquinas donde se conservaron pieles de lados distintos (la cara exterior de una pared y la interior de la vecina:
+    sus superficies medias terminan a ~0,7 espesores la una de la otra, y con vértices a ángulos distintos a lo largo del
+    canto, así que soldar vértices no las cierra). Cada vértice del borde se lleva al punto más cercano del otro borde: si
+    cae cerca de un extremo de esa arista se funde con él y si no la arista se parte allí (el triángulo que la tiene se
+    divide en dos). Repitiendo con los dos bordes, ambos acaban con los mismos vértices y la grieta desaparece."""
+
+    v = np.array(v, dtype=float)
+    t = np.array(t, dtype=np.int64)
+    atributo = np.array(atributo)
+    tolerancia = np.asarray(tolerancia, dtype=float)
+    for _ in range(pasadas):
+        libres = _aristas_libres(t)
+        if len(libres) == 0:
+            break
+        a, b = v[libres[:, 0]], v[libres[:, 1]]
+        largo = np.linalg.norm(b - a, axis=1)
+        arbol = cKDTree(0.5 * (a + b))
+        radio = 0.5 * float(largo.max()) + float(tolerancia.max())
+        destino = np.arange(len(v))  # fusiones: vértice -> vértice
+        partidas = {}  # arista libre (índice en ``libres``) -> [(s, vértice), ...]
+        ocupado = np.zeros(len(v), dtype=bool)
+        # vecinos a lo largo del propio borde: un vértice no se cose con sus propias aristas ni se funde con un vecino
+        contiguos: Dict[int, set] = {}
+        for x0, x1 in libres.tolist():
+            contiguos.setdefault(x0, set()).add(x1)
+            contiguos.setdefault(x1, set()).add(x0)
+        for i in np.unique(libres):
+            if ocupado[i]:
+                continue
+            cerca = arbol.query_ball_point(v[i], radio)
+            propios = {int(i)} | contiguos.get(int(i), set())
+            mejor = None
+            for k in cerca:
+                p0, p1 = libres[k]
+                if i == p0 or i == p1:
+                    continue
+                d = b[k] - a[k]
+                s_ = float(np.clip(np.dot(v[i] - a[k], d) / max(float(np.dot(d, d)), 1e-300), 0.0, 1.0))
+                dist = float(np.linalg.norm(a[k] + s_ * d - v[i]))
+                if dist > tolerancia[i] or (mejor is not None and dist >= mejor[0]):
+                    continue
+                extremo = p0 if s_ < 0.5 else p1
+                fundir = np.linalg.norm(v[extremo] - v[i]) <= max(0.25 * largo[k], 1e-9) or s_ in (0.0, 1.0)
+                if fundir and extremo in propios:
+                    continue  # fundirse con un vecino del propio borde cerraría una arista suya, no la grieta
+                mejor = (dist, k, s_)
+            if mejor is None:
+                continue
+            _, k, s_ = mejor
+            p0, p1 = libres[k]
+            extremo = p0 if s_ < 0.5 else p1
+            if np.linalg.norm(v[extremo] - v[i]) <= max(0.25 * largo[k], 1e-9) or s_ in (0.0, 1.0):
+                if not ocupado[extremo]:
+                    destino[extremo] = i
+                    v[i] = 0.5 * (v[i] + v[extremo])
+                    ocupado[i] = ocupado[extremo] = True
+            else:
+                partidas.setdefault(k, []).append((s_, i))
+                v[i] = 0.5 * (v[i] + a[k] + s_ * (b[k] - a[k]))
+                ocupado[i] = True
+        if not partidas and np.all(destino == np.arange(len(v))):
+            break
+        # partir las aristas: el triángulo con la arista (p0, p1) se abre en abanico desde su tercer vértice
+        dueno = {}
+        for j, tri in enumerate(t):
+            for x0, x1 in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+                dueno[(min(x0, x1), max(x0, x1))] = j
+        nuevos, nuevos_atr, quitar = [], [], set()
+        for k, puntos in partidas.items():
+            p0, p1 = libres[k]
+            j = dueno.get((min(p0, p1), max(p0, p1)))
+            if j is None or j in quitar:
+                continue
+            tri = list(t[j])
+            pos = [tri.index(p0), tri.index(p1)]
+            # orden de la arista tal como la recorre el triángulo, para conservar la orientación
+            if (pos[0] + 1) % 3 == pos[1]:
+                ini, fin = p0, p1
+            else:
+                ini, fin = p1, p0
+            tercero = [x for x in tri if x not in (p0, p1)][0]
+            cadena = [ini] + [vi for _, vi in sorted((s if ini == p0 else 1.0 - s, vi) for s, vi in puntos)] + [fin]
+            for x0, x1 in zip(cadena[:-1], cadena[1:]):
+                nuevos.append([x0, x1, tercero])
+                nuevos_atr.append(atributo[j])
+            quitar.add(j)
+        conservar = np.array([j not in quitar for j in range(len(t))], dtype=bool)
+        if nuevos:
+            t = np.vstack([t[conservar], np.array(nuevos, dtype=np.int64)])
+            atributo = np.concatenate([atributo[conservar], np.array(nuevos_atr, dtype=atributo.dtype)])
+        nt = destino[t]
+        bien = (nt[:, 0] != nt[:, 1]) & (nt[:, 1] != nt[:, 2]) & (nt[:, 0] != nt[:, 2])
+        t, atributo = nt[bien], atributo[bien]
+    usados, inverso = np.unique(t, return_inverse=True)
+    return v[usados], inverso.reshape(-1, 3), atributo, tolerancia[usados]
+
+
 def superficie_media(solido: SolidoGeneral, tamano: float) -> SuperficieMedia:
     """Superficie media del sólido (todavía con los triángulos de su piel). Lanza ``ErrorLamina`` si no se puede obtener
     y ``NoEsLamina`` si la pieza es maciza."""
@@ -350,6 +455,11 @@ def superficie_media(solido: SolidoGeneral, tamano: float) -> SuperficieMedia:
     vm, local, origen = _soldar(vm, local, np.arange(len(conservados)), tolerancia)
     if len(local) == 0:
         raise ErrorLamina("la superficie media quedó vacía")
+    # grietas en las esquinas entre pieles de lados distintos (un cajón: la cara exterior del fondo y la interior de la
+    # pared): se cosen los bordes libres que corren a menos de un espesor uno del otro
+    espesor_vertice = np.zeros(len(vm))
+    np.maximum.at(espesor_vertice, local.ravel(), np.repeat(espesores[origen], 3))
+    vm, local, origen, _ = _cerrar_grietas(vm, local, origen, 1.05 * espesor_vertice)
     return SuperficieMedia(vertices=vm, triangulos=local, origen=origen, espesores=espesores, normales=n[conservados])
 
 

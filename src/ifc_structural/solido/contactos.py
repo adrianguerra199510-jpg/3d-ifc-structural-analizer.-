@@ -218,12 +218,13 @@ def _nodos_de_borde(malla: MallaSolida, indice: int) -> np.ndarray:
 
 def detectar_acoples(malla: MallaSolida, tamano: float, ya_acopladas: Sequence[Tuple[int, int]] = (),
                      prohibidos: Optional[Set[int]] = None,
-                     tolerancias: Optional[Dict[frozenset, float]] = None) -> Tuple[List["Acople"], List[str]]:
+                     tolerancias: Optional[Dict[frozenset, object]] = None) -> Tuple[List["Acople"], List[str]]:
     """Acoples de las láminas con las piezas vecinas: cada nodo de la lámina a menos de ``tol`` de un nodo del borde de
     la otra pieza (``tol`` = 0,6 veces el tamaño de elemento más medio espesor) se une a él por ``*EQUATION``
     (traslaciones; también giros si la otra pieza es una lámina). Un nodo solo depende de otro una vez.
     ``prohibidos`` son nodos que no pueden depender de otro (los que tienen apoyo); ``tolerancias`` da, por pareja de
-    partes, una tolerancia mayor pedida por un constraint manual."""
+    partes, una tolerancia mayor pedida por un constraint manual: un número, o (tolerancia, nodos) para que la tolerancia
+    mayor valga solo en esos nodos (las superficies elegidas en el constraint; el resto, con la normal)."""
 
     from .generador import Acople
 
@@ -242,7 +243,10 @@ def detectar_acoples(malla: MallaSolida, tamano: float, ya_acopladas: Sequence[T
             if j == i or (pj.lamina and j < i) or frozenset((i, j)) in saltadas:
                 continue
             espesor_j = float(malla.espesor_de_lamina[pj.primer_lamina: pj.ultimo_lamina].max()) if pj.lamina else 0.0
-            tol = max(0.6 * tamano + 0.5 * (espesor_i + espesor_j), (tolerancias or {}).get(frozenset((i, j)), 0.0))
+            tol_normal = 0.6 * tamano + 0.5 * (espesor_i + espesor_j)
+            pedido = (tolerancias or {}).get(frozenset((i, j)), 0.0)
+            tol_pedida, permitidos = pedido if isinstance(pedido, tuple) else (pedido, None)
+            tol = max(tol_normal, tol_pedida)
             nodos_j = _nodos_de_borde(malla, j)
             cj = malla.coordenadas[nodos_j]
             if np.any(caja_i[0] - tol > cj.max(axis=0)) or np.any(caja_i[1] + tol < cj.min(axis=0)):
@@ -254,6 +258,9 @@ def detectar_acoples(malla: MallaSolida, tamano: float, ya_acopladas: Sequence[T
             distancia, vecino = cKDTree(malla.coordenadas[maestros_posibles]).query(
                 malla.coordenadas[esclavos_posibles], distance_upper_bound=tol)
             bien = np.isfinite(distancia)
+            if permitidos is not None and tol > tol_normal:  # la tolerancia mayor, solo en las superficies del constraint
+                en_superficie = np.isin(esclavos_posibles, list(permitidos))
+                bien &= (distancia <= tol_normal) | en_superficie
             if bien.sum() < 3:
                 continue
             a, b = esclavos_posibles[bien], maestros_posibles[vecino[bien]]

@@ -289,9 +289,11 @@ AYUDA_UNION = {
                  "se cierra. Entre elementos completos se sueldan por todas las superficies en que se tocan (o están a "
                  "menos de la separación máxima). Sustituye a la unión automática entre esas dos piezas.",
     "CUERPO_RIGIDO": "Los nodos de las dos superficies (o de los dos elementos completos) forman un único cuerpo rígido: "
-                     "no se deforman y se mueven juntos (como el constraint «Body» de SAP).",
-    "IGUALAR": "Cada nodo de una superficie iguala el movimiento del nodo más cercano de la otra en las traslaciones "
-               "marcadas; las demás quedan libres (deslizamiento). Como el constraint «Equal» de SAP.",
+                     "no se deforman y se mueven juntos (como el constraint «Body» de SAP). Si otro cuerpo rígido comparte "
+                     "nodos con este, los dos se funden en uno.",
+    "IGUALAR": "Cada nodo de la superficie más fina iguala, en las traslaciones marcadas, el movimiento del punto más "
+               "cercano de la otra (interpolado en su cara, como una soldadura); las demás quedan libres (deslizamiento). "
+               "Como el constraint «Equal» de SAP.",
     "ARTICULACION": "Cada superficie (o elemento completo) se vuelve rígida y los centros de las dos se igualan en las tres "
                     "traslaciones. Marque los giros que se igualan (los demás quedan libres): una rótula, una bisagra o una unión con un solo giro.",
 }

@@ -30,7 +30,8 @@ from ..solver.ejecutor_ccx import ejecutar_ccx_todos_los_casos
 from ..solver.generador_inp import ElementoMalla, MallaAnalisis
 from ..solver.lector_resultados import leer_desplazamientos_frd, leer_malla_frd, leer_tensiones_frd
 from .contactos import Union, _caras_cercanas, _caras_en_contacto, detectar_acoples, detectar_uniones, partes_sin_conexion
-from .generador import Acople, Apoyo3D, CargasCaso, Enlace3D, ModeloSolido, escribir, escribir_caso, escribir_comun, etiqueta
+from .generador import (Acople, Apoyo3D, CargasCaso, Enlace3D, ModeloSolido, distancias_a_caras, escribir, escribir_caso,
+                        escribir_comun, etiqueta)
 from .malla import ErrorMalla, MallaSolida, ParteMalla, construir_malla_solida, estimar_hexaedros
 from .miembros import MiembroBarra, barras_de_longitud_cero, construir_miembros, recortar_uniones
 from .superficies import _parte_de, fuerzas_nodales, superficie_en_malla
@@ -344,14 +345,14 @@ def _cargas_del_caso(proyecto: Proyecto, miembros: Sequence[MiembroBarra], malla
 
 def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence[UnionSuperficie], tamano: float,
                       avisos: List[str]) -> Tuple[List[Union], List[Enlace3D], List[Tuple[int, int]], Dict[frozenset, float]]:
-    """Constraints manuales: soldaduras (``*TIE``), cuerpos rígidos, igualaciones y articulaciones."""
-
-    from scipy.spatial import cKDTree
+    """Constraints manuales: soldaduras (``*TIE``), cuerpos rígidos, igualaciones y articulaciones. Las soldaduras con
+    una lámina se resuelven como acoples por nodos (``pedidos``: por pareja de partes, la tolerancia y, si se eligieron
+    superficies, los nodos de esas superficies, los únicos que se acoplan con esa tolerancia mayor)."""
 
     ties: List[Union] = []
     enlaces: List[Enlace3D] = []
     partes: List[Tuple[int, int]] = []
-    pedidos: Dict[frozenset, float] = {}  # soldaduras con láminas: se resuelven como acoples por nodos con esta tolerancia
+    pedidos: Dict[frozenset, Tuple[float, Optional[set]]] = {}  # soldaduras con láminas: (tolerancia, nodos permitidos)
     for u in manuales:
         if u.es_completa:  # constraint entre elementos 3D completos
             pa, pb = _parte_de(malla, u.a_tipo, u.a_id), _parte_de(malla, u.b_tipo, u.b_id)
@@ -363,7 +364,7 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
                 avisos.append(f"El constraint «{u.nombre}» une un elemento consigo mismo y se ignora.")
                 continue
             if u.tipo == "SOLDADURA" and (pa.lamina or pb.lamina):
-                pedidos[frozenset((ia, ib))] = max(u.tolerancia, 2e-3 + 0.25 * tamano)
+                pedidos[frozenset((ia, ib))] = (max(u.tolerancia, 2e-3 + 0.25 * tamano), None)
                 partes.append((ia, ib))
                 continue
             if u.tipo == "SOLDADURA":
@@ -394,21 +395,36 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
             continue
         partes.append((sa.parte, sb.parte))
         if u.tipo == "SOLDADURA" and (malla.partes[sa.parte].lamina or malla.partes[sb.parte].lamina) and sa.parte != sb.parte:
-            pedidos[frozenset((sa.parte, sb.parte))] = max(u.tolerancia, 2e-3 + 0.25 * tamano)
+            # solo las superficies elegidas, no todo lo que esté cerca entre las dos piezas
+            nodos = set(int(n) for n in sa.nodos_unicos) | set(int(n) for n in sb.nodos_unicos)
+            par = frozenset((sa.parte, sb.parte))
+            previo = pedidos.get(par)
+            tol = max(u.tolerancia, 2e-3 + 0.25 * tamano)
+            if previo is not None:
+                tol = max(tol, previo[0])
+                nodos = None if previo[1] is None else nodos | previo[1]
+            pedidos[par] = (tol, nodos)
             continue
         if u.tipo == "SOLDADURA":
             if sa.parte == sb.parte:
                 avisos.append(f"El constraint «{u.nombre}» une dos superficies de la misma pieza y se ignora.")
                 continue
-            na, nb = sa.nodos_unicos, sb.nodos_unicos
-            holgura = float(cKDTree(malla.coordenadas[nb]).query(malla.coordenadas[na])[0].min())  # distancia entre las superficies
             esclava_es_a = sa.area_total <= sb.area_total
             esc, mae = (sa, sb) if esclava_es_a else (sb, sa)
+            # holgura: la de casi todos los nodos esclavos (el 95 %) hasta la superficie maestra, no la mínima (dos caras
+            # que se tocan en un borde y se abren en el otro daban una tolerancia casi nula y el resto quedaba sin soldar)
+            distancia = distancias_a_caras(malla.coordenadas, malla.coordenadas[esc.nodos_unicos], mae.nodos)
+            holgura = float(np.percentile(distancia, 95))
+            tolerancia_tie = 1.5 * holgura + 2e-3 + 0.25 * tamano
+            lejos = float((distancia > tolerancia_tie).mean())
+            if lejos > 0.02:
+                avisos.append(f"Soldadura «{u.nombre}»: el {lejos:.0%} de la superficie está a más de {tolerancia_tie * 1000:.0f} mm "
+                              "de la otra y esa parte no se une.")
             ties.append(Union(
                 f"UM{len(ties) + 1}", esc.parte, mae.parte,
                 [(int(h), int(c)) for h, c in zip(esc.hexaedro, esc.cara)],
                 [(int(h), int(c)) for h, c in zip(mae.hexaedro, mae.cara)],
-                1.5 * holgura + 2e-3 + 0.25 * tamano))
+                tolerancia_tie))
             continue
         enlaces.append(Enlace3D(u.tipo, sa.nodos_unicos, sb.nodos_unicos, set(u.grados()), u.nombre,
                                 caras_a=sa.nodos, caras_b=sb.nodos))
@@ -656,6 +672,7 @@ def ejecutar_analisis_solido(
                               acoples=acoples)
         avanzar("Generando los archivos de CalculiX...")
         comun = escribir_comun(modelo, proyecto)
+        advertencias.extend(a for a in modelo.avisos if a not in advertencias)
         avisos_cargas: List[str] = []
         rutas: Dict[str, Path] = {}
         for caso_id in casos:

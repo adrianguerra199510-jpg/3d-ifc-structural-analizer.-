@@ -47,6 +47,12 @@ class DialogoConexionAutomatica(QDialog):
         self.combo_tipo = QComboBox()
         self.combo_tipo.addItems(list(TIPOS_AUTOMATICOS))
         formulario.addRow("Tipo de unión:", self.combo_tipo)
+        self.aviso_rigido = QLabel("<span style='color:#9a6700'>Con «cuerpo rígido», todas las piezas que queden conectadas "
+                                   "entre sí forman un único cuerpo rígido: no se deforman ni dan esfuerzos.</span>")
+        self.aviso_rigido.setWordWrap(True)
+        formulario.addRow(self.aviso_rigido)
+        self.combo_tipo.currentIndexChanged.connect(
+            lambda _i: self.aviso_rigido.setVisible(TIPOS_AUTOMATICOS[self.combo_tipo.currentText()] == "CUERPO_RIGIDO"))
         self.spin_tolerancia = QDoubleSpinBox()
         self.spin_tolerancia.setRange(0.0, 500.0)
         self.spin_tolerancia.setDecimals(1)
@@ -75,8 +81,10 @@ class DialogoConexionAutomatica(QDialog):
         marcar.addStretch(1)
         layout.addLayout(marcar)
         nota = QLabel(
-            "Las parejas que ya tienen un constraint no se repiten. En el análisis 3D, dos elementos que se tocan ya se unen "
-            "solos; el constraint hace la unión visible y editable, y la extiende a elementos con una pequeña holgura."
+            "Se mide sobre la geometría real de cada elemento (sus superficies): se unen las partes que se tocan, se solapan "
+            "o están a menos de la separación máxima. Las parejas que ya tienen un constraint no se repiten. En el análisis "
+            "3D, dos elementos que se tocan ya se unen solos; el constraint hace la unión visible y editable, y la extiende a "
+            "elementos con una pequeña holgura."
         )
         nota.setWordWrap(True)
         layout.addWidget(nota)
@@ -84,6 +92,7 @@ class DialogoConexionAutomatica(QDialog):
         self.botones.accepted.connect(self.accept)
         self.botones.rejected.connect(self.reject)
         layout.addWidget(self.botones)
+        self.aviso_rigido.setVisible(TIPOS_AUTOMATICOS[self.combo_tipo.currentText()] == "CUERPO_RIGIDO")
         self.buscar()
 
     def buscar(self) -> None:

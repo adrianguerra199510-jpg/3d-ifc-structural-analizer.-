@@ -68,6 +68,7 @@ class ModeloSolido:
     materiales: Dict[str, str]  # material del proyecto -> etiqueta ccx
     enlaces: List[Enlace3D] = field(default_factory=list)
     acoples: List[Acople] = field(default_factory=list)
+    avisos: List[str] = field(default_factory=list)  # los deja ``escribir_comun`` (constraints que hubo que ajustar)
 
     @property
     def n_nodos(self) -> int:
@@ -172,13 +173,20 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         condiciones += [f"{ref},{g},{g}" for g in traslaciones] + [f"{rot},{g},{g}" for g in giros]
     ecuaciones: List[List[Tuple[int, int, float]]] = []  # términos (nodo 1-based, grado, coeficiente); el primero depende
     apoyados = np.unique(np.concatenate([a.nodos for a in modelo.apoyos])) if modelo.apoyos else np.zeros(0, dtype=np.int64)
-    for k, enlace in enumerate(modelo.enlaces):
-        # un nodo con apoyo propio no puede además depender de un cuerpo rígido o una ecuación: se deja fuera
-        enlace = Enlace3D(enlace.tipo, np.setdiff1d(enlace.nodos_a, apoyados), np.setdiff1d(enlace.nodos_b, apoyados),
-                          enlace.grados, enlace.nombre, enlace.caras_a, enlace.caras_b)
-        if len(enlace.nodos_a) == 0 or len(enlace.nodos_b) == 0:
+    # Un grado de libertad solo puede depender de una cosa: un nodo con apoyo propio o esclavo de un *TIE (unión
+    # automática o soldadura) no puede además depender de un cuerpo rígido o de una ecuación; se deja fuera.
+    esclavos_tie = _nodos_esclavos_tie(modelo)
+    modelo.avisos.clear()
+    enlaces = []
+    for enlace in modelo.enlaces:
+        fuera = np.union1d(apoyados, esclavos_tie)
+        a, b = np.setdiff1d(enlace.nodos_a, fuera), np.setdiff1d(enlace.nodos_b, fuera)
+        if len(a) == 0 or len(b) == 0:
+            modelo.avisos.append(f"El constraint «{enlace.nombre}» no se aplicó: todos los nodos de una de sus superficies tienen "
+                                 "apoyo o ya están soldados a otra pieza.")
             continue
-        siguiente = _escribir_enlace(enlace, k, c, siguiente, lineas, ecuaciones)
+        enlaces.append(Enlace3D(enlace.tipo, a, b, enlace.grados, enlace.nombre, enlace.caras_a, enlace.caras_b))
+    siguiente = _escribir_enlaces(enlaces, c, siguiente, lineas, ecuaciones, modelo.avisos)
     for acople in modelo.acoples:
         # un nodo con apoyo propio no puede además depender de otro: se deja fuera
         libres = ~np.isin(acople.nodos_a, apoyados)
@@ -223,11 +231,13 @@ def _ecuaciones_validas(ecuaciones: List[List[Tuple[int, int, float]]], lineas: 
     return ["*EQUATION"] + texto if texto else []
 
 
-def _cuerpo_rigido(nombre: str, nodos: np.ndarray, coordenadas: np.ndarray, siguiente: int, lineas: List[str]):
-    """Escribe un ``*RIGID BODY`` con nodo de referencia y de giro en el centro. Devuelve (ref, rot, siguiente)."""
+def _cuerpo_rigido(nombre: str, nodos: np.ndarray, coordenadas: np.ndarray, siguiente: int, lineas: List[str],
+                   centro: Optional[np.ndarray] = None):
+    """Escribe un ``*RIGID BODY`` con nodo de referencia y de giro en ``centro`` (por defecto, el de los nodos).
+    Devuelve (ref, rot, siguiente)."""
 
     ref, rot = siguiente, siguiente + 1
-    centro = coordenadas[nodos].mean(axis=0)
+    centro = coordenadas[nodos].mean(axis=0) if centro is None else np.asarray(centro, dtype=float)
     lineas += ["*NODE", f"{ref},{centro[0]:.7g},{centro[1]:.7g},{centro[2]:.7g}",
                f"{rot},{centro[0]:.7g},{centro[1]:.7g},{centro[2]:.7g}", f"*NSET,NSET={nombre}"]
     lineas += _numeros([int(n) + 1 for n in nodos])
@@ -235,37 +245,117 @@ def _cuerpo_rigido(nombre: str, nodos: np.ndarray, coordenadas: np.ndarray, sigu
     return ref, rot, siguiente + 2
 
 
-def _escribir_enlace(enlace: Enlace3D, k: int, c: np.ndarray, siguiente: int, lineas: List[str], ecuaciones: list) -> int:
+def _nodos_esclavos_tie(modelo: ModeloSolido) -> np.ndarray:
+    """Nodos (0-based) de las caras esclavas de los ``*TIE``: dependen ya de la superficie maestra."""
+
+    malla, nodos = modelo.malla, []
+    for u in modelo.uniones:
+        frontera = malla.fronteras(malla.partes[u.parte_esclava])
+        mapa = {(int(h), int(k)): i for i, (h, k) in enumerate(zip(frontera.hexaedro, frontera.cara))}
+        filas = [mapa[(int(h), int(k))] for h, k in u.esclava if (int(h), int(k)) in mapa]
+        if filas:
+            nodos.append(np.asarray(frontera.nodos[filas]).ravel())
+    return np.unique(np.concatenate(nodos)).astype(np.int64) if nodos else np.zeros(0, dtype=np.int64)
+
+
+def _centro(c: np.ndarray, nodos: np.ndarray, caras: Optional[np.ndarray]) -> np.ndarray:
+    """Centro de una superficie: el de su área si se conocen sus caras (con malla desigual o nodos medios, el promedio de
+    los nodos se desplaza hacia donde hay más), y si no el promedio de sus nodos."""
+
+    if caras is not None and np.asarray(caras).ndim == 2 and np.asarray(caras).shape[1] in (3, 4, 6, 8):
+        caras = np.asarray(caras)
+        k = 4 if caras.shape[1] in (4, 8) else 3
+        p = c[caras[:, :k]]
+        if k == 3:
+            area = 0.5 * np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+        else:
+            area = 0.5 * np.linalg.norm(np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 1]), axis=1)
+        if area.sum() > 0:
+            return (p.mean(axis=1) * area[:, None]).sum(axis=0) / area.sum()
+    return c[nodos].mean(axis=0)
+
+
+def _escribir_enlaces(enlaces: Sequence[Enlace3D], c: np.ndarray, siguiente: int, lineas: List[str], ecuaciones: list,
+                      avisos: List[str]) -> int:
+    """Cuerpos rígidos, articulaciones e igualaciones. Los cuerpos rígidos que comparten nodos (una pieza unida a dos
+    con «cuerpo rígido», o una articulación junto a un cuerpo rígido) se funden en uno solo: un nodo no puede depender
+    de dos ``*RIGID BODY``."""
+
     from scipy.spatial import cKDTree
 
-    a, b = np.unique(enlace.nodos_a), np.unique(enlace.nodos_b)
-    if enlace.tipo == "CUERPO_RIGIDO":
-        _, _, siguiente = _cuerpo_rigido(f"CR{k}", np.union1d(a, b), c, siguiente, lineas)
-    elif enlace.tipo == "ARTICULACION":
-        ref_a, rot_a, siguiente = _cuerpo_rigido(f"ARA{k}", a, c, siguiente, lineas)
-        ref_b, rot_b, siguiente = _cuerpo_rigido(f"ARB{k}", b, c, siguiente, lineas)
-        for g in sorted(enlace.grados):
-            na, nb = (ref_a, ref_b) if g <= 3 else (rot_a, rot_b)
-            gl = g if g <= 3 else g - 3
-            ecuaciones.append([(na, gl, 1.0), (nb, gl, -1.0)])
-    elif enlace.tipo == "IGUALAR":
-        grados = sorted(g for g in enlace.grados if g <= 3)
-        # cada nodo de la superficie con más nodos (la más fina) sigue al punto más cercano de la otra, interpolado con las
-        # funciones de forma de su cara (como *TIE): con mallas distintas a cada lado, seguir al nodo más cercano deja
-        # nodos sin unir y ablanda la unión
-        esclava, maestra, caras_maestra = (a, b, enlace.caras_b) if len(a) >= len(b) else (b, a, enlace.caras_a)
-        if caras_maestra is not None and np.asarray(caras_maestra).ndim == 2 and np.asarray(caras_maestra).shape[1] in (3, 4, 6, 8):
-            for n, (nodos, pesos) in zip(esclava, interpolar_en_caras(c, c[esclava], np.asarray(caras_maestra))):
-                if int(n) in set(nodos.tolist()):
-                    continue
+    # conjuntos rígidos: (nodos, centro, peso); cada enlace dice cuáles usa
+    conjuntos: List[Tuple[set, np.ndarray, float]] = []
+    usa: Dict[int, Tuple[int, ...]] = {}
+    for k, e in enumerate(enlaces):
+        a, b = np.unique(e.nodos_a), np.unique(e.nodos_b)
+        if e.tipo == "CUERPO_RIGIDO":
+            todos = np.union1d(a, b)
+            conjuntos.append((set(todos.tolist()), c[todos].mean(axis=0), float(len(todos))))
+            usa[k] = (len(conjuntos) - 1,)
+        elif e.tipo == "ARTICULACION":
+            conjuntos.append((set(a.tolist()), _centro(c, a, e.caras_a), float(len(a))))
+            conjuntos.append((set(b.tolist()), _centro(c, b, e.caras_b), float(len(b))))
+            usa[k] = (len(conjuntos) - 2, len(conjuntos) - 1)
+    padre = list(range(len(conjuntos)))
+
+    def raiz(x: int) -> int:
+        while padre[x] != x:
+            padre[x] = padre[padre[x]]
+            x = padre[x]
+        return x
+
+    duenos: Dict[int, int] = {}
+    for i, (nodos, _, _) in enumerate(conjuntos):
+        for n in nodos:
+            if n in duenos:
+                padre[raiz(i)] = raiz(duenos[n])
+            else:
+                duenos[n] = i
+    grupos: Dict[int, List[int]] = {}
+    for i in range(len(conjuntos)):
+        grupos.setdefault(raiz(i), []).append(i)
+    if any(len(g) > 1 for g in grupos.values()):
+        avisos.append("Algunos cuerpos rígidos compartían nodos (una pieza unida a dos con «cuerpo rígido», o una articulación "
+                      "junto a un cuerpo rígido) y se fundieron en uno solo.")
+    nodo_ref: Dict[int, Tuple[int, int]] = {}
+    for numero, (r, miembros) in enumerate(sorted(grupos.items())):
+        nodos = np.array(sorted(set().union(*(conjuntos[i][0] for i in miembros))), dtype=np.int64)
+        pesos = np.array([conjuntos[i][2] for i in miembros])
+        centro = (np.array([conjuntos[i][1] for i in miembros]) * pesos[:, None]).sum(axis=0) / pesos.sum()
+        ref, rot, siguiente = _cuerpo_rigido(f"CR{numero + 1}", nodos, c, siguiente, lineas, centro)
+        for i in miembros:
+            nodo_ref[i] = (ref, rot)
+    for k, e in enumerate(enlaces):
+        if e.tipo == "ARTICULACION":
+            ia, ib = usa[k]
+            if raiz(ia) == raiz(ib):
+                avisos.append(f"La articulación «{e.nombre}» une dos superficies que ya forman un mismo cuerpo rígido: no gira.")
+                continue
+            (ref_a, rot_a), (ref_b, rot_b) = nodo_ref[ia], nodo_ref[ib]
+            for g in sorted(e.grados):
+                na, nb = (ref_a, ref_b) if g <= 3 else (rot_a, rot_b)
+                gl = g if g <= 3 else g - 3
+                ecuaciones.append([(na, gl, 1.0), (nb, gl, -1.0)])
+        elif e.tipo == "IGUALAR":
+            a, b = np.unique(e.nodos_a), np.unique(e.nodos_b)
+            grados = sorted(g for g in e.grados if g <= 3)
+            # cada nodo de la superficie con más nodos (la más fina) sigue al punto más cercano de la otra, interpolado con
+            # las funciones de forma de su cara (como *TIE): con mallas distintas a cada lado, seguir al nodo más cercano
+            # deja nodos sin unir y ablanda la unión
+            esclava, caras_maestra = (a, e.caras_b) if len(a) >= len(b) else (b, e.caras_a)
+            maestra = b if esclava is a else a
+            if caras_maestra is not None and np.asarray(caras_maestra).ndim == 2 and np.asarray(caras_maestra).shape[1] in (3, 4, 6, 8):
+                for n, (nodos, pesos) in zip(esclava, interpolar_en_caras(c, c[esclava], np.asarray(caras_maestra))):
+                    if int(n) in set(nodos.tolist()):
+                        continue
+                    for g in grados:
+                        ecuaciones.append([(int(n) + 1, g, 1.0)] + [(int(m) + 1, g, -float(w)) for m, w in zip(nodos, pesos)])
+            else:  # sin caras (canto de una lámina): cada nodo sigue al nodo más cercano de la otra
+                corto, largo = (a, b) if len(a) <= len(b) else (b, a)
+                _, vecino = cKDTree(c[largo]).query(c[corto])
                 for g in grados:
-                    ecuaciones.append([(int(n) + 1, g, 1.0)] + [(int(m) + 1, g, -float(w)) for m, w in zip(nodos, pesos)])
-        else:  # sin caras (canto de una lámina): cada nodo sigue al nodo más cercano de la otra
-            corto, largo = (a, b) if len(a) <= len(b) else (b, a)
-            _, vecino = cKDTree(c[largo]).query(c[corto])
-            for g in grados:
-                for n, m in zip(corto, largo[vecino]):
-                    ecuaciones.append([(int(n) + 1, g, 1.0), (int(m) + 1, g, -1.0)])
+                    for n, m in zip(corto, largo[vecino]):
+                        ecuaciones.append([(int(n) + 1, g, 1.0), (int(m) + 1, g, -1.0)])
     return siguiente
 
 
@@ -323,9 +413,8 @@ def _proyectar_en_caras(c: np.ndarray, puntos: np.ndarray, caras: np.ndarray):
     return xi, eta, np.linalg.norm(puntos - x, axis=1)
 
 
-def interpolar_en_caras(c: np.ndarray, puntos: np.ndarray, caras: np.ndarray, candidatas: int = 8):
-    """Para cada punto, (nodos, pesos) del punto más cercano de las caras: los nodos de esa cara y sus funciones de forma
-    allí (los pesos de valor casi nulo se omiten)."""
+def _cara_mas_cercana(c: np.ndarray, puntos: np.ndarray, caras: np.ndarray, candidatas: int = 8):
+    """(cara elegida, coordenadas naturales, distancia) del punto de las caras más cercano a cada punto."""
 
     from scipy.spatial import cKDTree
 
@@ -344,6 +433,21 @@ def interpolar_en_caras(c: np.ndarray, puntos: np.ndarray, caras: np.ndarray, ca
         mas_cerca = d < mejor - 1e-12
         mejor[mas_cerca], eleccion[mas_cerca] = d[mas_cerca], f[mas_cerca]
         coords[mas_cerca] = np.stack([xi, eta], axis=1)[mas_cerca]
+    return eleccion, coords, mejor
+
+
+def distancias_a_caras(c: np.ndarray, puntos: np.ndarray, caras: np.ndarray) -> np.ndarray:
+    """Distancia de cada punto a la superficie formada por las caras (triángulos o cuadriláteros de 3, 4, 6 u 8 nodos)."""
+
+    return _cara_mas_cercana(c, np.asarray(puntos, dtype=float), np.asarray(caras))[2]
+
+
+def interpolar_en_caras(c: np.ndarray, puntos: np.ndarray, caras: np.ndarray, candidatas: int = 8):
+    """Para cada punto, (nodos, pesos) del punto más cercano de las caras: los nodos de esa cara y sus funciones de forma
+    allí (los pesos de valor casi nulo se omiten)."""
+
+    k = caras.shape[1]
+    eleccion, coords, _ = _cara_mas_cercana(c, puntos, caras, candidatas)
     formas = _formas(k, coords[:, 0], coords[:, 1])
     resultado = []
     for i in range(len(puntos)):

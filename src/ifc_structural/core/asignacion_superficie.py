@@ -113,21 +113,51 @@ def _caras_con_puntos(proyecto: Proyecto, tipo: str, id_: str):
 
 
 def caras_mas_cercanas(proyecto: Proyecto, a: Objetivo, b: Objetivo) -> Tuple[Objetivo, Objetivo]:
-    """Cuando se eligen elementos enteros: las dos caras (una de cada uno) más cercanas entre sí; a igual
-    distancia, las que se miran (normales opuestas)."""
+    """Cuando se eligen elementos enteros: la cara de cada uno por la que se tocan. Se mide la distancia de la
+    **superficie** de cada cara a la de la otra (no entre sus vértices: una placa pequeña apoyada en el centro de una
+    losa grande está lejos de los vértices de la cara superior de la losa); entre las parejas igual de cercanas se elige
+    la de mayor área en contacto y, a igualdad, la que se mira (normales opuestas)."""
 
-    from scipy.spatial import cKDTree
+    from ..solido.deteccion import Superficie, distancia_con_signo, muestras, superficie_de
 
-    caras_a = [c for c in _caras_con_puntos(proyecto, a.tipo, a.id) if a.cara is None or c[0] == a.cara]
-    caras_b = [c for c in _caras_con_puntos(proyecto, b.tipo, b.id) if b.cara is None or c[0] == b.cara]
-    mejor = None
-    for ia, pa, na in caras_a:
-        arbol = cKDTree(pa)
-        for ib, pb, nb in caras_b:
-            puntuacion = float(arbol.query(pb)[0].min()) + 1e-4 * float(np.dot(na, nb))
-            if mejor is None or puntuacion < mejor[0]:
-                mejor = (puntuacion, ia, ib)
-    return Objetivo(a.tipo, a.id, mejor[1]), Objetivo(b.tipo, b.id, mejor[2])
+    def caras(objetivo: Objetivo):
+        sup = superficie_de(proyecto, objetivo.tipo, objetivo.id)
+        resultado = []
+        for indice in np.unique(sup.cara):
+            if objetivo.cara is not None and int(indice) != int(objetivo.cara):
+                continue
+            sub = Superficie(sup.vertices, sup.triangulos[sup.cara == indice], sup.cara[sup.cara == indice])
+            p = sub.vertices[sub.triangulos]
+            n = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]).sum(axis=0)
+            usados = sub.vertices[np.unique(sub.triangulos)]
+            resultado.append((int(indice), sub, n / max(float(np.linalg.norm(n)), 1e-300), usados.min(axis=0), usados.max(axis=0)))
+        return resultado
+
+    caras_a, caras_b = caras(a), caras(b)
+    if not caras_a or not caras_b:
+        raise ErrorAsignacion("No se encontraron las caras de los elementos elegidos.")
+
+    def hueco(x, y) -> float:  # distancia entre las cajas de dos caras (0 si se cruzan)
+        return float(np.linalg.norm(np.maximum(0.0, np.maximum(x[3] - y[4], y[3] - x[4]))))
+
+    parejas = [(hueco(x, y), x, y) for x in caras_a for y in caras_b]
+    corte = min(h for h, _, _ in parejas)
+    candidatas = []
+    datos = {}
+    for h, x, y in sorted(parejas, key=lambda q: q[0]):
+        if h > corte + 0.05 and len(candidatas) >= 4:
+            break
+        if id(x[1]) not in datos:
+            datos[id(x[1])] = muestras(x[1], 600)
+        puntos, peso, _ = datos[id(x[1])]
+        d = np.abs(distancia_con_signo(puntos, y[1]))
+        dmin = float(d.min())
+        en_contacto = float(peso[d <= dmin + max(1e-3, 0.1 * dmin)].sum())
+        candidatas.append((dmin, en_contacto, float(np.dot(x[2], y[2])), x[0], y[0]))
+    mejor_d = min(c[0] for c in candidatas)
+    cercanas = [c for c in candidatas if c[0] <= mejor_d + max(1e-3, 0.1 * mejor_d)]
+    _, _, _, ia, ib = max(cercanas, key=lambda c: (round(c[1], 6), -c[2]))
+    return Objetivo(a.tipo, a.id, ia), Objetivo(b.tipo, b.id, ib)
 
 
 def union_para(proyecto: Proyecto, a: Objetivo, b: Objetivo, id_: str, tipo: str, grados: Sequence[bool],
