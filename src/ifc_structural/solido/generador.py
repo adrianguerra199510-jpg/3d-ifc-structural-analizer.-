@@ -28,6 +28,8 @@ class Apoyo3D:
     rigido: bool = False  # True: la cara se mueve como cuerpo rígido (con giros libres o restringidos aparte)
     nombre: str = ""
     directo: bool = False  # True: nodos de láminas, que tienen giros propios: se restringen los 6 grados directamente
+    pasador: bool = False  # True: se fija el promedio de las traslaciones de los nodos (acople distribuido), no cada nodo
+    pesos: Optional[np.ndarray] = None  # pasador: peso (área) de cada nodo de ``nodos``
 
 
 @dataclass
@@ -154,6 +156,8 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         nodos = [int(n) + 1 for n in apoyo.nodos]
         traslaciones = sorted(g for g in apoyo.grados if g <= 3)
         giros = sorted(g - 3 for g in apoyo.grados if g > 3)
+        if apoyo.pasador:  # ecuaciones más abajo, cuando se sabe qué nodos dependen ya de otra cosa
+            continue
         if apoyo.directo:  # láminas: los 6 grados de libertad existen en cada nodo
             for g in sorted(apoyo.grados):
                 condiciones += [f"{n},{g},{g}" for n in nodos]
@@ -177,6 +181,7 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
     # automática o soldadura) no puede además depender de un cuerpo rígido o de una ecuación; se deja fuera.
     esclavos_tie = _nodos_esclavos_tie(modelo)
     modelo.avisos.clear()
+    _ecuaciones_de_pasadores(modelo, condiciones, esclavos_tie, ecuaciones)
     enlaces = []
     for enlace in modelo.enlaces:
         fuera = np.union1d(apoyados, esclavos_tie)
@@ -199,6 +204,54 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
     if condiciones:
         lineas += ["*BOUNDARY"] + list(dict.fromkeys(condiciones))
     return lineas
+
+
+def _ecuaciones_de_pasadores(modelo: ModeloSolido, condiciones: List[str], esclavos_tie: np.ndarray,
+                             ecuaciones: list) -> None:
+    """Pasadores: el promedio de las traslaciones de los nodos de la superficie, ponderado por su área, es cero en cada
+    traslación restringida (Σ wᵢ·uᵢ = 0). Es un acople distribuido (RBE3) con el nodo de referencia fijo: la reacción se
+    reparte por la superficie sin rigidizarla, que se deforma y gira libremente alrededor de su centro.
+
+    El nodo dependiente de cada ecuación es el de mayor peso que no tenga ya un apoyo ni sea esclavo de un *TIE; las
+    ecuaciones van primero, para que ninguna otra les quite el dependiente."""
+
+    fijos = {tuple(int(v) for v in x.split(",")[:2]) for x in condiciones}  # (nodo 1-based, grado)
+    esclavos = {int(n) + 1 for n in esclavos_tie}
+    centros = []
+    for apoyo in modelo.apoyos:
+        if not apoyo.pasador:
+            continue
+        nodos = np.asarray(apoyo.nodos, dtype=np.int64)
+        pesos = np.ones(len(nodos)) if apoyo.pesos is None else np.asarray(apoyo.pesos, dtype=float)
+        if pesos.sum() <= 0:
+            continue
+        pesos = pesos / pesos.sum()
+        aplicado = False
+        for g in sorted(x for x in apoyo.grados if x <= 3):
+            con_apoyo = np.array([(int(n) + 1, g) in fijos for n in nodos])
+            if con_apoyo.all():  # ese grado ya está fijo en toda la superficie
+                aplicado = True
+                continue
+            libres = ~con_apoyo & ~np.isin(nodos + 1, list(esclavos))
+            if not libres.any():
+                continue
+            dependiente = int(np.flatnonzero(libres)[np.argmax(pesos[libres])])
+            orden = [dependiente] + [i for i in range(len(nodos)) if i != dependiente and pesos[i] > 0]
+            ecuaciones.insert(0, [(int(nodos[i]) + 1, g, float(pesos[i])) for i in orden])
+            aplicado = True
+        if not aplicado:
+            modelo.avisos.append(f"El pasador «{apoyo.nombre}» no se aplicó: todos los nodos de su superficie están soldados a "
+                                 "otra pieza.")
+            continue
+        centros.append(pesos @ modelo.malla.coordenadas[nodos])
+    if centros and len(centros) == sum(1 for a in modelo.apoyos if not a.nombre.startswith("pieza")):
+        # solo pasadores: con uno, o con todos sus centros en una recta, el modelo gira alrededor de ellos
+        x = np.asarray(centros) - np.mean(centros, axis=0)
+        largo = np.linalg.norm(np.ptp(np.asarray(modelo.malla.coordenadas), axis=0))
+        if len(centros) < 3 or np.linalg.svd(x, compute_uv=False)[1] < 1e-3 * largo:
+            modelo.avisos.append("Todos los apoyos son pasadores y sus centros están en una misma recta: el modelo puede girar "
+                                 "alrededor de esa recta (como un balde colgado de dos orejas) y el análisis lineal no lo "
+                                 "impide. Añada un apoyo que impida ese giro.")
 
 
 def _ecuaciones_validas(ecuaciones: List[List[Tuple[int, int, float]]], lineas: List[str], condiciones: List[str]) -> List[str]:

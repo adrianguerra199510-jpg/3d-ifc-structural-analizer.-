@@ -247,6 +247,10 @@ y la conserva como **sólido de forma libre**:
 - **Apoyos.** *Asignar → Apoyo* sobre una superficie de un sólido (o, con clic derecho, «Asignar
   apoyo en la superficie…» sobre la cara de una viga, losa o muro): empotrada, deslizante en X, Y o Z,
   cuerpo rígido o cualquier combinación de Ux, Uy, Uz, Rx, Ry, Rz.
+  **Pasador** (el agujero de una oreja o cartela): en vez de fijar cada nodo de la superficie (que pega
+  el agujero a un perno infinitamente rígido), fija el **centro** de la superficie, el promedio de sus
+  desplazamientos ponderado por el área (acople distribuido, como el RBE3): el agujero se deforma y la
+  pieza gira alrededor del perno. Con todos los apoyos pasadores alineados el modelo puede girar y se avisa.
 - **Cargas.** *Asignar → Carga* sobre una superficie: **presión** (kPa, por defecto normal a la
   superficie y hacia dentro), **fuerza total** (kN repartida por área) o **momento total** (kN·m,
   repartido con fuerzas proporcionales a la distancia al centro), en la dirección elegida (normal,

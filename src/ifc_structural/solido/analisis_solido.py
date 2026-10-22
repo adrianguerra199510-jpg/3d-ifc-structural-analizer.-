@@ -205,6 +205,20 @@ def puntos_especiales(proyecto: Proyecto, miembros: Sequence[MiembroBarra], apoy
 # ---------------------------------------------------------------------------
 
 
+def _pesos_de_nodos(sup) -> Tuple[np.ndarray, np.ndarray]:
+    """(nodos únicos, área que representa cada uno) de una superficie mallada: el área de cada cara a partes iguales
+    entre sus nodos (siempre positiva, también con los nodos medios de los elementos cuadráticos)."""
+
+    if sup.nodos_solo is not None and len(sup.nodos_solo):  # canto de una lámina: todos igual
+        nodos = np.unique(sup.nodos_solo)
+        return nodos, np.ones(len(nodos))
+    caras = np.asarray(sup.nodos, dtype=np.int64)
+    nodos, inverso = np.unique(caras, return_inverse=True)
+    pesos = np.bincount(inverso.ravel(), weights=np.repeat(np.asarray(sup.area, float) / caras.shape[1], caras.shape[1]),
+                        minlength=len(nodos))
+    return nodos, pesos
+
+
 def _apoyos_3d(proyecto: Proyecto, miembros: Sequence[MiembroBarra], malla: MallaSolida, apoyos: Sequence,
                avisos: List[str], tamano: float = TAMANO_POR_DEFECTO) -> Tuple[List[Apoyo3D], Set[int]]:
     resultado: List[Apoyo3D] = []
@@ -217,6 +231,11 @@ def _apoyos_3d(proyecto: Proyecto, miembros: Sequence[MiembroBarra], malla: Mall
                 continue
             grados = set(a.grados_restringidos())
             lamina = malla.partes[sup.parte].lamina
+            if getattr(a, "pasador", False):
+                nodos, pesos = _pesos_de_nodos(sup)
+                resultado.append(Apoyo3D(nodos, {g for g in grados if g <= 3}, nombre=a.nombre, pasador=True, pesos=pesos))
+                partes_apoyadas.add(sup.parte)
+                continue
             resultado.append(Apoyo3D(sup.nodos_unicos, grados, rigido=any(g > 3 for g in grados) and not lamina, nombre=a.nombre,
                                      directo=lamina))
             partes_apoyadas.add(sup.parte)

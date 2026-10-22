@@ -96,6 +96,11 @@ class ApoyoSuperficie:
     traslaciones restringidas la superficie queda empotrada; con solo una (p. ej. Uz) es un apoyo
     deslizante sobre el terreno o sobre otra pieza. Los giros (Rx, Ry, Rz) hacen que la superficie
     se mueva como cuerpo rígido con esos giros impedidos. Solo se usa en el análisis 3D.
+
+    Con ``pasador`` (el perno de una oreja dentro de su agujero) no se fija cada nodo: se fija el **centro** de la
+    superficie, el promedio de sus desplazamientos ponderado por el área (un acople distribuido, como el RBE3), en las
+    traslaciones marcadas. La superficie se deforma (el agujero se ovaliza) y gira libremente alrededor del centro; los
+    giros marcados no se usan.
     """
 
     id: str
@@ -110,6 +115,7 @@ class ApoyoSuperficie:
     rz: bool = False
     nombre: str = ""
     nodo_id: Optional[str] = None  # sin uso: lo leen por compatibilidad los apoyos nodales del análisis de barras
+    pasador: bool = False
 
     def __post_init__(self) -> None:
         if not self.nombre:

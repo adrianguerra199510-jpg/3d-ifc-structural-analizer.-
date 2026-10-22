@@ -922,7 +922,8 @@ class Visor3D(QtInteractor):
                 for color, mallas in simbolo_apoyo(grados, punto, largo_apoyo * 0.7).items():
                     por_color_sup.setdefault(color, []).extend(mallas)
             etiquetas_apoyo.append(centro + normal * largo_apoyo * 0.4)
-            textos_apoyo.append("empotrada" if all(grados[:3]) else nombre_apoyo(grados))
+            textos_apoyo.append("pasador" if getattr(apoyo, "pasador", False)
+                                else "empotrada" if all(grados[:3]) else nombre_apoyo(grados))
         if caras_apoyo and self._apoyos_visibles:
             self.add_mesh(pv.merge(caras_apoyo), color=COLOR_APOYO_AREA, opacity=0.65, name="ASIG_SUPERFICIE_APOYO",
                           pickable=False, show_scalar_bar=False)

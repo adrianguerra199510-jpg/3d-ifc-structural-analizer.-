@@ -34,6 +34,15 @@ PRESETS_APOYO = {
     "Cuerpo rígido con giros impedidos (los 6)": (True, True, True, True, True, True),
     "Personalizado": None,
 }
+#: Preset del pasador: fija las tres traslaciones del centro de la superficie (no las de cada nodo)
+PRESET_PASADOR = "Pasador en un agujero (centro fijo, giros libres)"
+AYUDA_PASADOR = (
+    "<b>Pasador</b>: para el agujero de una oreja o de una cartela por donde pasa un perno. No se fija cada nodo de la "
+    "superficie (eso pega el agujero a un perno infinitamente rígido y crea picos de esfuerzo): se fija el <b>centro</b> "
+    "de la superficie, el promedio de sus desplazamientos ponderado por el área (acople distribuido, como el RBE3). El "
+    "agujero se deforma y la pieza gira libremente alrededor del perno; la reacción se reparte por toda la superficie. "
+    "Elija la superficie completa del agujero. Con un solo pasador, o con todos alineados, el modelo puede girar "
+    "alrededor de ellos: añada otro apoyo que lo impida.")
 PRESET_PERSONALIZADO = "Personalizado"
 NOMBRES_GDL = ("Ux (traslación en X)", "Uy (traslación en Y)", "Uz (traslación en Z)",
                "Rx (giro alrededor de X)", "Ry (giro alrededor de Y)", "Rz (giro alrededor de Z)")
@@ -73,6 +82,7 @@ class DialogoApoyoSuperficie(QDialog):
             "Restringe el movimiento de todos los nodos de la superficie (análisis 3D)."))
         self.combo_preset = QComboBox()
         self.combo_preset.addItems(list(PRESETS_APOYO))
+        self.combo_preset.insertItem(1, PRESET_PASADOR)
         formulario = QFormLayout()
         formulario.addRow("Tipo de apoyo:", self.combo_preset)
         self.checks: List[QCheckBox] = []
@@ -90,6 +100,7 @@ class DialogoApoyoSuperficie(QDialog):
         )
         nota.setWordWrap(True)
         layout.addWidget(nota)
+        self.nota = nota
         layout.addWidget(QLabel("<b>Se crearán estos apoyos:</b>"))
         self.vista_previa = QPlainTextEdit()
         self.vista_previa.setReadOnly(True)
@@ -99,12 +110,22 @@ class DialogoApoyoSuperficie(QDialog):
         self.botones.rejected.connect(self.reject)
         layout.addWidget(self.botones)
 
+        self._nota_general = nota.text()
         self.combo_preset.currentIndexChanged.connect(self._al_cambiar_preset)
         self._al_cambiar_preset()
 
+    @property
+    def pasador(self) -> bool:
+        return self.combo_preset.currentText() == PRESET_PASADOR
+
     def _al_cambiar_preset(self) -> None:
-        valores = PRESETS_APOYO[self.combo_preset.currentText()]
+        pasador = self.pasador
+        self.nota.setText(AYUDA_PASADOR if pasador else self._nota_general)
+        for check in self.checks[3:]:  # el pasador deja los giros libres
+            check.setEnabled(not pasador)
+        valores = (True, True, True, False, False, False) if pasador else PRESETS_APOYO[self.combo_preset.currentText()]
         if valores is None:
+            self._actualizar_vista_previa()
             return
         for check, valor in zip(self.checks, valores):
             check.blockSignals(True)
@@ -113,6 +134,9 @@ class DialogoApoyoSuperficie(QDialog):
         self._actualizar_vista_previa()
 
     def _al_cambiar_check(self) -> None:
+        if self.pasador:  # elegir qué traslaciones del centro se fijan no cambia el tipo de apoyo
+            self._actualizar_vista_previa()
+            return
         actuales = tuple(c.isChecked() for c in self.checks)
         nombre = next((n for n, v in PRESETS_APOYO.items() if v == actuales), PRESET_PERSONALIZADO)
         self.combo_preset.blockSignals(True)
@@ -121,11 +145,13 @@ class DialogoApoyoSuperficie(QDialog):
         self._actualizar_vista_previa()
 
     def restricciones(self) -> Tuple[bool, ...]:
-        return tuple(c.isChecked() for c in self.checks)
+        valores = tuple(c.isChecked() for c in self.checks)
+        return valores[:3] + (False, False, False) if self.pasador else valores
 
     def _actualizar_vista_previa(self) -> None:
         marcados = any(self.restricciones())
-        lineas = [f"{'✓' if marcados else '✗'} {s.nombre} (área {s.area:.4g} m²)" for s in self._superficies]
+        tipo = " — pasador" if self.pasador else ""
+        lineas = [f"{'✓' if marcados else '✗'} {s.nombre} (área {s.area:.4g} m²){tipo}" for s in self._superficies]
         lineas += [f"✗ {e}" for e in self._errores]
         if not marcados:
             lineas.append("Marque al menos un grado de libertad.")
@@ -138,7 +164,8 @@ class DialogoApoyoSuperficie(QDialog):
         creados, errores = [], list(self._errores)
         for objetivo in self._objetivos:
             try:
-                creados.append(apoyo_superficie_para(self._proyecto, objetivo, siguiente_id(), self.restricciones()))
+                creados.append(apoyo_superficie_para(self._proyecto, objetivo, siguiente_id(), self.restricciones(),
+                                                     pasador=self.pasador))
             except ErrorAsignacion as exc:
                 if str(exc) not in errores:
                     errores.append(str(exc))

@@ -44,18 +44,24 @@ def superficie_de(proyecto: Proyecto, objetivo: Objetivo) -> Superficie:
     )
 
 
-def apoyo_superficie_para(proyecto: Proyecto, objetivo: Objetivo, id_: str, grados: Sequence[bool]) -> ApoyoSuperficie:
-    """Apoyo sobre la superficie elegida con los grados de libertad (Ux, Uy, Uz, Rx, Ry, Rz) restringidos."""
+def apoyo_superficie_para(proyecto: Proyecto, objetivo: Objetivo, id_: str, grados: Sequence[bool],
+                          pasador: bool = False) -> ApoyoSuperficie:
+    """Apoyo sobre la superficie elegida con los grados de libertad (Ux, Uy, Uz, Rx, Ry, Rz) restringidos; con
+    ``pasador``, solo las traslaciones del centro de la superficie (los giros quedan libres)."""
 
     sup = superficie_de(proyecto, objetivo)
+    if pasador:
+        grados = tuple(grados[:3]) + (False, False, False)
     if not any(grados):
         raise ErrorAsignacion(f"{sup.nombre}: marque al menos un grado de libertad restringido.")
     nombres = "".join(n for n, g in zip(("Ux", "Uy", "Uz", "Rx", "Ry", "Rz"), grados) if g)
+    if pasador:
+        nombres = f"pasador {nombres}"
     return ApoyoSuperficie(
         id=id_, elemento_tipo=sup.tipo, elemento_id=sup.elemento_id, cara=sup.cara,
         ux=bool(grados[0]), uy=bool(grados[1]), uz=bool(grados[2]),
         rx=bool(grados[3]), ry=bool(grados[4]), rz=bool(grados[5]),
-        nombre=f"{sup.nombre}: apoyo {nombres}",
+        nombre=f"{sup.nombre}: apoyo {nombres}", pasador=bool(pasador),
     )
 
 

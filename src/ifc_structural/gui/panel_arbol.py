@@ -252,6 +252,8 @@ class PanelArbol(QWidget):
             if isinstance(obj, ApoyoSuperficie):
                 cabeza = obj.nombre.split(": ")[0]
                 detalle = "empotrada" if obj.ux and obj.uy and obj.uz else _gdl(obj.grados_restringidos())  # una cara fija es un empotramiento
+                if obj.pasador:
+                    detalle = "pasador" + ("" if obj.ux and obj.uy and obj.uz else f" ({_gdl(obj.grados_restringidos())})")
                 return ("Apoyo en superficie" if bajo_elemento else cabeza), detalle
             if isinstance(obj, CargaSuperficie):
                 cabeza, cola = _partir_nombre(obj.nombre)
