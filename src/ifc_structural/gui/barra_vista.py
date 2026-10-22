@@ -3,7 +3,7 @@ elemento y leyenda de colores."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QLabel, QToolButton, QWidget
 
 from .iconos import icono
@@ -41,6 +41,8 @@ class BarraVista(QWidget):
         fila.setSpacing(2)
 
         self.botones_vista = {}
+        self._con_texto = []  # botones con nombre: lo pierden (queda el icono y la ayuda) si la barra no cabe
+        self._anchos = None  # (con texto, solo iconos)
         for clave, texto, ayuda in VISTAS:
             boton = QToolButton()
             boton.setText(texto)
@@ -50,6 +52,7 @@ class BarraVista(QWidget):
             boton.clicked.connect(lambda _=False, c=clave: self.vista_solicitada.emit(c))
             fila.addWidget(boton)
             self.botones_vista[clave] = boton
+            self._con_texto.append(boton)
 
         separador = QFrame()
         separador.setFrameShape(QFrame.VLine)
@@ -134,6 +137,43 @@ class BarraVista(QWidget):
         boton.setDefaultAction(accion)
         boton.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self._fila.addWidget(boton)
+        self._con_texto.append(boton)
+        self._anchos = None
+
+    # La barra no debe imponer su ancho a la ventana: con los paneles laterales abiertos, los nombres de los botones
+    # la hacían más ancha que una pantalla de 1920 px (la ventana maximizada quedaba recortada a la derecha).
+    def _estilo(self, compacto: bool) -> None:
+        estilo = Qt.ToolButtonIconOnly if compacto else Qt.ToolButtonTextBesideIcon
+        for boton in self._con_texto:
+            if boton.toolButtonStyle() != estilo:
+                boton.setToolButtonStyle(estilo)
+
+    def _medir(self):
+        if self._anchos is None:
+            actual = bool(self._con_texto) and self._con_texto[0].toolButtonStyle() == Qt.ToolButtonIconOnly
+            anchos = []
+            for compacto in (False, True):
+                self._estilo(compacto)
+                self._fila.invalidate()
+                anchos.append(self._fila.sizeHint().width())
+            self._estilo(actual)
+            self._fila.invalidate()
+            self._anchos = tuple(anchos)
+        return self._anchos
+
+    @property
+    def compacta(self) -> bool:
+        return bool(self._con_texto) and self._con_texto[0].toolButtonStyle() == Qt.ToolButtonIconOnly
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(self._medir()[1], super().minimumSizeHint().height())
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._medir()[0], super().sizeHint().height())
+
+    def resizeEvent(self, evento) -> None:
+        self._estilo(evento.size().width() < self._medir()[0])
+        super().resizeEvent(evento)
 
     def fijar_visibilidad(self, tipo: str, visible: bool) -> None:
         self.botones_tipo[tipo].blockSignals(True)

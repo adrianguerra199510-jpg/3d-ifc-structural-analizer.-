@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDockWidget,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QSizePolicy,
+    QScrollArea,
     QStackedWidget,
     QTabWidget,
     QToolBar,
@@ -79,7 +81,7 @@ from .estilo import etiqueta_logo
 from .iconos import icono, icono_aplicacion, icono_blanco
 from .pagina_bienvenida import PaginaBienvenida
 from .panel_arbol import PanelArbol
-from .panel_resultados import ENVOLVENTE, PanelEsfuerzos
+from .panel_resultados import DESPLAZAMIENTO, ENVOLVENTE, PanelEsfuerzos
 from .trabajador_analisis import TrabajadorAnalisis
 from .visor_3d import ESTILO_ALAMBRE, ESTILO_SOLIDO, ESTILO_TRANSPARENTE, MODO_CARA, MODO_ELEMENTO, Visor3D
 
@@ -169,7 +171,23 @@ class VentanaPrincipal(QMainWindow):
         capa = QVBoxLayout(self.contenedor_visor)
         capa.setContentsMargins(0, 0, 0, 0)
         capa.setSpacing(0)
-        capa.addWidget(self.barra_vista)
+        # en una ventana estrecha la barra pierde los nombres de los botones y, si aun así no cabe, se desplaza: nunca
+        # obliga a la ventana a ser más ancha que la pantalla
+        desplazable = QScrollArea(self.contenedor_visor)
+        desplazable.setWidget(self.barra_vista)
+        desplazable.setWidgetResizable(True)
+        desplazable.setFrameShape(QFrame.NoFrame)
+        desplazable.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        desplazable.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        desplazable.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        def ajustar_alto(_minimo=0, maximo=0):
+            barra = desplazable.horizontalScrollBar()
+            desplazable.setFixedHeight(self.barra_vista.sizeHint().height() + (barra.sizeHint().height() if maximo > 0 else 0))
+
+        desplazable.horizontalScrollBar().rangeChanged.connect(ajustar_alto)
+        ajustar_alto()
+        self._barra_vista_desplazable = desplazable
+        capa.addWidget(desplazable)
         capa.addWidget(self.visor, 1)
         self.paginas = QStackedWidget(self)
         self.paginas.addWidget(self.pagina_bienvenida)
@@ -1534,14 +1552,26 @@ class VentanaPrincipal(QMainWindow):
             return
         self.accion_ver_esfuerzos.setChecked(True)
 
-        magnitud = esfuerzos.MAGNITUDES[parametros.magnitud]
-        if parametros.resultado == ENVOLVENTE:
-            envolvente = calcular_envolvente(resultado.tensiones_por_combinacion, parametros.magnitud)
-            valores_kpa, origen = envolvente.valores, "Envolvente de combinaciones"
+        por_desplazamiento = parametros.magnitud == DESPLAZAMIENTO
+        unidad = "mm" if por_desplazamiento else "MPa"
+        if por_desplazamiento:
+            nombre_magnitud, buscar_minimo = "Desplazamiento total", False
+            valores, combinacion_por_nodo, origen = self._desplazamiento_total(resultado, parametros.resultado)
+            if valores is None:
+                self.panel_esfuerzos.mostrar_resumen("Este resultado no tiene desplazamientos.", {})
+                return
+            origen = origen or self.panel_esfuerzos.combo_resultado.currentText()
         else:
-            valores_kpa = esfuerzos.calcular(parametros.magnitud, resultado.resultados_disponibles()[parametros.resultado])
-            envolvente, origen = None, self.panel_esfuerzos.combo_resultado.currentText()
-        valores = valores_kpa * esfuerzos.FACTOR_KPA_A_MPA
+            magnitud = esfuerzos.MAGNITUDES[parametros.magnitud]
+            nombre_magnitud, buscar_minimo = magnitud.nombre, magnitud.envolvente == "min"
+            if parametros.resultado == ENVOLVENTE:
+                envolvente = calcular_envolvente(resultado.tensiones_por_combinacion, parametros.magnitud)
+                valores_kpa, origen = envolvente.valores, "Envolvente de combinaciones"
+                combinacion_por_nodo = envolvente.combinacion_por_nodo
+            else:
+                valores_kpa = esfuerzos.calcular(parametros.magnitud, resultado.resultados_disponibles()[parametros.resultado])
+                combinacion_por_nodo, origen = None, self.panel_esfuerzos.combo_resultado.currentText()
+            valores = valores_kpa * esfuerzos.FACTOR_KPA_A_MPA
 
         if parametros.escala_automatica:
             minimo, maximo = float(valores.min()), float(valores.max())
@@ -1553,16 +1583,16 @@ class VentanaPrincipal(QMainWindow):
             if maximo <= minimo:
                 maximo = minimo + 1e-6
 
-        i_critico = int(np.argmin(valores) if magnitud.envolvente == "min" else np.argmax(valores))
+        i_critico = int(np.argmin(valores) if buscar_minimo else np.argmax(valores))
         valor_critico = float(valores[i_critico])
         celda_critica = next(
             (c for c, conectividad in enumerate(resultado.malla_tensiones.conectividad) if i_critico in conectividad), 0
         )
         barra_critica = resultado.barra_de_cada_celda()[celda_critica]
         resumen = (
-            f"{magnitud.nombre} — {origen}\n"
-            f"Valor más desfavorable: {valor_critico:.3f} MPa en la barra {barra_critica}"
-            + (f" (combinación {envolvente.combinacion_por_nodo[i_critico]})" if envolvente is not None else "")
+            f"{nombre_magnitud} — {origen}\n"
+            f"Valor más desfavorable: {valor_critico:.3f} {unidad} en la barra {barra_critica}"
+            + (f" (combinación {combinacion_por_nodo[i_critico]})" if combinacion_por_nodo is not None else "")
             + ".\nHaga clic en el visor para leer el valor en un punto."
         )
         if self._resultado_desactualizado:
@@ -1577,8 +1607,8 @@ class VentanaPrincipal(QMainWindow):
                             f"dibujada ×{parametros.escala_deformada:g}.")
         self.visor.mostrar_esfuerzos(
             resultado.malla_tensiones, valores, resultado.barra_de_cada_celda(),
-            titulo=f"{magnitud.nombre} [MPa]", rango=(minimo, maximo), cmap=parametros.colormap,
-            texto=f"{origen}\n{magnitud.nombre}" + (" (modelo sólido 3D)" if resultado.es_solido else "")
+            titulo=f"{nombre_magnitud} [{unidad}]", rango=(minimo, maximo), cmap=parametros.colormap, unidad=unidad,
+            texto=f"{origen}\n{nombre_magnitud}" + (" (modelo sólido 3D)" if resultado.es_solido else "")
             + (f"\nDeformada ×{parametros.escala_deformada:g}" if desplazamientos is not None else ""),
             ocultar_planos=resultado.es_solido,
             desplazamientos=desplazamientos, escala_deformada=parametros.escala_deformada,
@@ -1589,6 +1619,24 @@ class VentanaPrincipal(QMainWindow):
     # ------------------------------------------------------------------
     # Deformada, animación y video
     # ------------------------------------------------------------------
+    @staticmethod
+    def _desplazamiento_total(resultado: ResultadoAnalisis, id_resultado: str):
+        """(|u| en mm por nodo, combinación de cada nodo o None, texto) del caso o combinación elegidos; con la
+        envolvente, el mayor |u| de cada nodo entre todas las combinaciones."""
+
+        if id_resultado == ENVOLVENTE:
+            ids = list(resultado.desplazamientos_por_combinacion)
+            if not ids:
+                return None, None, ""
+            normas = np.vstack([np.linalg.norm(resultado.desplazamientos_por_combinacion[i], axis=1) for i in ids])
+            indice = np.argmax(normas, axis=0)
+            return (normas[indice, np.arange(normas.shape[1])] * 1000.0, np.array(ids, dtype=object)[indice],
+                    "Envolvente de combinaciones")
+        u = resultado.desplazamientos_por_combinacion.get(id_resultado, resultado.desplazamientos_por_caso.get(id_resultado))
+        if u is None:
+            return None, None, ""
+        return np.linalg.norm(np.asarray(u, dtype=float), axis=1) * 1000.0, None, ""
+
     @staticmethod
     def _desplazamientos_de(resultado: ResultadoAnalisis, id_resultado: str):
         """(desplazamientos (N, 3), texto) del caso o combinación elegidos; con la envolvente,

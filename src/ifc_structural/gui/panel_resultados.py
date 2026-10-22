@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
 from ..combinaciones.esfuerzos import MAGNITUDES
 
 ENVOLVENTE = "__ENVOLVENTE__"
+#: Clave del combo «Esfuerzo» para colorear por el desplazamiento total |u| (mm), como la deformada del reporte.
+DESPLAZAMIENTO = "__DESPLAZAMIENTO__"
 COLORMAPS = ["turbo", "jet", "viridis", "coolwarm", "rainbow", "plasma"]
 
 
@@ -40,8 +42,8 @@ class ParametrosVista:
     resultado: str  # id de caso/combinación o ENVOLVENTE
     magnitud: str  # clave de esfuerzos.MAGNITUDES
     escala_automatica: bool
-    minimo: float  # MPa
-    maximo: float  # MPa
+    minimo: float  # MPa (mm con DESPLAZAMIENTO)
+    maximo: float  # MPa (mm con DESPLAZAMIENTO)
     colormap: str
     deformada: bool = False
     escala_deformada: float = 1.0  # factor de ampliación de los desplazamientos
@@ -66,6 +68,7 @@ class PanelEsfuerzos(QWidget):
         self.combo_magnitud = QComboBox()
         for magnitud in MAGNITUDES.values():
             self.combo_magnitud.addItem(magnitud.nombre, magnitud.clave)
+        self.combo_magnitud.addItem("Desplazamiento total", DESPLAZAMIENTO)
 
         self.check_escala_automatica = QCheckBox("Escala automática")
         self.check_escala_automatica.setChecked(True)
@@ -105,10 +108,11 @@ class PanelEsfuerzos(QWidget):
 
         formulario = QFormLayout()
         formulario.addRow("Resultado:", self.combo_resultado)
-        formulario.addRow("Esfuerzo:", self.combo_magnitud)
+        formulario.addRow("Colorear por:", self.combo_magnitud)
         formulario.addRow(self.check_escala_automatica)
-        formulario.addRow("Mínimo [MPa]:", self.spin_minimo)
-        formulario.addRow("Máximo [MPa]:", self.spin_maximo)
+        self.etiqueta_minimo, self.etiqueta_maximo = QLabel("Mínimo [MPa]:"), QLabel("Máximo [MPa]:")
+        formulario.addRow(self.etiqueta_minimo, self.spin_minimo)
+        formulario.addRow(self.etiqueta_maximo, self.spin_maximo)
         formulario.addRow("Colores:", self.combo_colormap)
 
         grupo = QGroupBox("Deformada")
@@ -141,6 +145,7 @@ class PanelEsfuerzos(QWidget):
             self.spin_maximo.editingFinished,
         ):
             senal.connect(self.cambio)
+        self.combo_magnitud.currentIndexChanged.connect(self._actualizar_unidades)
         self.check_escala_automatica.toggled.connect(self._al_cambiar_escala_automatica)
         self.boton_volver.clicked.connect(self.volver_al_modelo)
         self.check_deformada.toggled.connect(self._al_cambiar_deformada)
@@ -185,6 +190,16 @@ class PanelEsfuerzos(QWidget):
         self.spin_escala_deformada.blockSignals(True)
         self.spin_escala_deformada.setValue(valor)
         self.spin_escala_deformada.blockSignals(False)
+
+    @property
+    def unidad(self) -> str:
+        return "mm" if self.combo_magnitud.currentData() == DESPLAZAMIENTO else "MPa"
+
+    def _actualizar_unidades(self) -> None:
+        unidad = self.unidad
+        self.etiqueta_minimo.setText(f"Mínimo [{unidad}]:")
+        self.etiqueta_maximo.setText(f"Máximo [{unidad}]:")
+        self.tabla.setHorizontalHeaderLabels(["Barra", f"Mínimo [{unidad}]", f"Máximo [{unidad}]"])
 
     def _actualizar_escala_habilitada(self) -> None:
         manual = not self.check_escala_automatica.isChecked()

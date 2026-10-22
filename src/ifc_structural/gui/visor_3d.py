@@ -1009,6 +1009,7 @@ class Visor3D(QtInteractor):
         titulo: str,
         rango: Optional[Tuple[float, float]] = None,
         cmap: str = "turbo",
+        unidad: str = "MPa",
         texto: str = "",
         ocultar_planos: bool = False,
         desplazamientos: Optional[np.ndarray] = None,
@@ -1066,7 +1067,7 @@ class Visor3D(QtInteractor):
             show_edges=False,
             name="ESFUERZOS",
             pickable=True,
-            scalar_bar_args={"title": "MPa", "vertical": True, "n_labels": 8, "fmt": "%.2f",
+            scalar_bar_args={"title": unidad, "vertical": True, "n_labels": 8, "fmt": "%.2f",
                              "title_font_size": 16, "label_font_size": 14},
         )
         self._grid_esfuerzos = grid
