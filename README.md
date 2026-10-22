@@ -160,9 +160,10 @@ por cortante), ver `tests/test_solido.py`.
 Un solo botón **ANALIZAR** (F5): el programa decide qué análisis corresponde. Si el modelo tiene sólidos de
 forma libre, apoyos o cargas sobre superficies, constraints o ninguna barra, lo resuelve como **sólido 3D**
 (el diálogo pregunta el tamaño de elemento y dice por qué); si son solo barras (con o sin losas), como barras.
-*Analizar → Modo de análisis* permite forzar uno de los dos. El análisis 3D usa solo dos elementos de CalculiX:
-**tetraedros cuadráticos `C3D10`** (los de *Placa Base Pro*) en todas las piezas macizas y **láminas `S6`** en las piezas
-que son láminas. Las vigas, columnas, losas y muros se mallan con su geometría real (un barrido de la sección de cada
+*Analizar → Modo de análisis* permite forzar uno de los dos. El análisis 3D usa tres elementos de CalculiX:
+**tetraedros cuadráticos `C3D10`** (los de *Placa Base Pro*) en las piezas macizas, **hexaedros cuadráticos `C3D20R`
+barridos** en las piezas prismáticas (casilla del diálogo, activada por defecto) y **láminas `S6`** en las piezas que
+son láminas. Las vigas, columnas, losas y muros se mallan con su geometría real (un barrido de la sección de cada
 barra) en hexaedros que al final se parten en 5 o 6 tetraedros cuadráticos conformes; los sólidos de forma libre, con
 Gmsh. La versión portable lleva CalculiX y Gmsh incluidos, así que no hay nada que instalar.
 
@@ -171,6 +172,15 @@ láminas en ocre, con las aristas de cada elemento), para revisarla y ajustar el
 La vista *Malla* de la barra del visor vuelve a mostrarla. ANALIZAR usa esa misma malla si el tamaño es el mismo y la
 geometría, los perfiles, los materiales y los apoyos o cargas puntuales en barras no cambiaron; si cambió algo, vuelve
 a mallar sola.
+
+- **Hexaedros barridos (`C3D20R`).** Una pieza es prismática cuando es la extrusión recta de una sección constante
+  (columnas, pernos, tubos, barras, placas gruesas): sus caras son dos tapas perpendiculares a un eje y caras laterales
+  paralelas a él. Su sección se malla con cuadriláteros (Gmsh, con al menos unos 3 elementos a lo ancho) y se extruye en
+  capas (al menos 2, y de largo ≤ 4 veces el lado de la sección): cada cuadrilátero de cada capa es un hexaedro de 20
+  nodos con integración reducida, que da mejores esfuerzos con menos nodos (voladizo de 1 m: flecha y esfuerzo de
+  flexión iguales a la teoría con 320 hexaedros). Las piezas que solapan con otras mayores o con barras, y las secciones
+  que Gmsh no puede pasar a cuadriláteros sanos, siguen con `C3D10` (se avisa). Se unen a las demás con `*TIE` como el
+  resto; las cargas de superficie se reparten con los pesos consistentes de una cara de 8 nodos.
 
 - **¿Cuándo es lámina?** Cuando su espesor medio `t = 2·V/A` (V el volumen y A el área de toda su superficie) es como
   mucho **1/20 de su tamaño en planta** `L = √(A/2)` (el criterio habitual de placa o cáscara delgada): el cuerpo y el
@@ -408,15 +418,16 @@ src/ifc_structural/
 ├── solido/                        # análisis 3D como modelo sólido
 │   ├── seccion2d.py               # malla de cuadriláteros de la sección (rectángulo, doble T)
 │   ├── miembros.py                # barras fundidas y recortadas en las uniones
-│   ├── malla.py                   # malla de todo el modelo (C3D10 + S6); caras frontera; estimación
+│   ├── malla.py                   # malla de todo el modelo (C3D10 + C3D20R + S6); caras frontera; estimación
 │   ├── hex_a_tet.py               # hexaedros -> tetraedros cuadráticos C3D10 conformes
 │   ├── libres.py                  # voxelización de un sólido de forma libre (celdas dentro + superficies)
 │   ├── tetraedros.py              # C3D10 de los sólidos libres: un solo proceso de Gmsh para todas las piezas
+│   ├── barridos.py                # C3D20R barridos de las piezas prismáticas: detección, extrusión, caras
 │   ├── laminas.py                 # láminas S6: criterio, superficie media, remallado con Gmsh, espesor
 │   ├── proceso_gmsh.py            # proceso hijo que malla con Gmsh (límite de tiempo)
 │   ├── superficies.py             # caras de hexaedro de una superficie; reparto de presión, fuerza y momento
 │   ├── contactos.py               # *TIE entre caras coplanares enfrentadas
-│   ├── generador.py               # .inp (C3D10 y S6, TIE, EQUATION, apoyos, cargas)
+│   ├── generador.py               # .inp (C3D10, C3D20R y S6, TIE, EQUATION, apoyos, cargas)
 │   └── analisis_solido.py         # orquestación y resultados
 ├── combinaciones/
 │   ├── motor_superposicion.py     # superposición lineal de tensores → combinaciones

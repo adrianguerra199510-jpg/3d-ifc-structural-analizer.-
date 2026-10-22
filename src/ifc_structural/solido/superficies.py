@@ -18,6 +18,7 @@ from ..core.asignacion_superficie import direccion_efectiva
 from ..core.cargas import ApoyoSuperficie, CargaSuperficie
 from ..core.geometria import area_poligono, solido_elemento
 from ..core.modelo import Proyecto
+from .barridos import CARAS_HEX20, MEDIOS_CARA_HEX20, PESOS_CARA_HEX20
 from .malla import CARAS_HEXAEDRO, MallaSolida, ParteMalla
 from .tetraedros import CARAS_TETRAEDRO, MEDIOS_CARA
 
@@ -75,9 +76,26 @@ def _geometria_lamina(malla: MallaSolida, parte: ParteMalla, local: np.ndarray, 
                              pesos_nodo=np.array([0, 0, 0, 1 / 3, 1 / 3, 1 / 3]))
 
 
+def _geometria_hex20(malla: MallaSolida, parte: ParteMalla, local: np.ndarray, cara: np.ndarray) -> SuperficieMallada:
+    hexa = malla.hexaedros20[parte.primer_hex20 + np.asarray(local, dtype=np.int64)]
+    nodos = np.array([np.concatenate([hexa[k, list(CARAS_HEX20[int(c) - 1])], hexa[k, list(MEDIOS_CARA_HEX20[int(c) - 1])]])
+                      for k, c in enumerate(cara)], dtype=np.int64).reshape(-1, 8)
+    p = malla.coordenadas[nodos[:, :4]]
+    centro = p.mean(axis=1)
+    normal = np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 1])
+    area = 0.5 * np.linalg.norm(normal, axis=1)
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-30)
+    normal[np.einsum("ij,ij->i", normal, centro - malla.coordenadas[hexa[:, :8]].mean(axis=1)) < 0] *= -1.0
+    return SuperficieMallada(parte=malla.partes.index(parte), nodos=nodos, centro=centro, normal=normal, area=area,
+                             hexaedro=malla.inicio_hex20 + parte.primer_hex20 + np.asarray(local), cara=np.asarray(cara),
+                             pesos_nodo=PESOS_CARA_HEX20)
+
+
 def _geometria(malla: MallaSolida, parte: ParteMalla, hexaedro_local: np.ndarray, cara: np.ndarray) -> SuperficieMallada:
     if parte.lamina:
         return _geometria_lamina(malla, parte, hexaedro_local, cara)
+    if parte.hex20:
+        return _geometria_hex20(malla, parte, hexaedro_local, cara)
     if parte.tetra:
         return _geometria_tetra(malla, parte, hexaedro_local, cara)
     hexa = malla.hexaedros[parte.primer_hexaedro + hexaedro_local]
@@ -205,7 +223,10 @@ def fuerzas_nodales(malla: MallaSolida, sup: SuperficieMallada, carga: CargaSupe
     reparto = np.full(k, 1.0 / k) if sup.pesos_nodo is None else np.asarray(sup.pesos_nodo, dtype=float)  # fracción del área por nodo
     if carga.tipo == "MOMENTO":
         nodos = sup.nodos.ravel()
-        pesos = (sup.area[:, None] * reparto[None, :]).ravel()
+        # pesos positivos para el reparto del momento (las cargas consistentes de una cara de 8 nodos son negativas en
+        # los vértices): todos los nodos de cada cara por igual
+        positivo = reparto if np.all(reparto >= 0) else np.full(k, 1.0 / k)
+        pesos = (sup.area[:, None] * positivo[None, :]).ravel()
         unicos, inverso = np.unique(nodos, return_inverse=True)
         w = np.bincount(inverso, weights=pesos)
         w /= w.sum()

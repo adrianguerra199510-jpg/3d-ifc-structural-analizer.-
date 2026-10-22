@@ -94,7 +94,8 @@ OBJETIVO_ELEMENTOS = 60_000
 TAMANOS = (0.01, 0.012, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2, 0.25)
 
 
-def tamano_sugerido(proyecto: Proyecto, objetivo: int = OBJETIVO_ELEMENTOS, elemento_solido: Optional[str] = None) -> float:
+def tamano_sugerido(proyecto: Proyecto, objetivo: int = OBJETIVO_ELEMENTOS, elemento_solido: Optional[str] = None,
+                    barridos: bool = True) -> float:
     """Tamaño de elemento (m) más fino que no pasa de ``objetivo`` elementos.
 
     Las piezas pequeñas (pernos, tuercas, arandelas) no bajan de un mínimo de elementos aunque el tamaño crezca: si ni el
@@ -104,18 +105,20 @@ def tamano_sugerido(proyecto: Proyecto, objetivo: int = OBJETIVO_ELEMENTOS, elem
     elemento_solido = elemento_solido or elemento_solido_por_defecto()
     miembros = construir_miembros(proyecto)
     recortar_uniones(proyecto, miembros)
-    estimados = [estimar_hexaedros(proyecto, miembros, h, elemento_solido == "TETRA") for h in TAMANOS]
+    estimados = [estimar_hexaedros(proyecto, miembros, h, elemento_solido == "TETRA", barridos) for h in TAMANOS]
     for h, n in zip(TAMANOS, estimados):
         if n <= objetivo:
             return h  # el más fino que no pasa del objetivo
     return next(h for h, n in zip(TAMANOS, estimados) if n <= 1.15 * estimados[-1])
 
 
-def estimar(proyecto: Proyecto, tamano: float, elemento_solido: Optional[str] = None) -> int:
+def estimar(proyecto: Proyecto, tamano: float, elemento_solido: Optional[str] = None, barridos: bool = True) -> int:
+    """Elementos aproximados (los hexaedros barridos de 20 nodos cuentan como varios tetraedros: es el coste)."""
+
     elemento_solido = elemento_solido or elemento_solido_por_defecto()
     miembros = construir_miembros(proyecto)
     recortar_uniones(proyecto, miembros)
-    return estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA")
+    return estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA", barridos)
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +410,8 @@ def _enlaces_manuales(proyecto: Proyecto, malla: MallaSolida, manuales: Sequence
                 [(int(h), int(c)) for h, c in zip(mae.hexaedro, mae.cara)],
                 1.5 * holgura + 2e-3 + 0.25 * tamano))
             continue
-        enlaces.append(Enlace3D(u.tipo, sa.nodos_unicos, sb.nodos_unicos, set(u.grados()), u.nombre))
+        enlaces.append(Enlace3D(u.tipo, sa.nodos_unicos, sb.nodos_unicos, set(u.grados()), u.nombre,
+                                caras_a=sa.nodos, caras_b=sb.nodos))
     return ties, enlaces, partes, pedidos
 
 
@@ -471,10 +475,11 @@ class MallaPrevia:
     miembros: List[MiembroBarra]
     malla: MallaSolida
     advertencias: List[str] = field(default_factory=list)
+    barridos: bool = True
 
     def sirve_para(self, proyecto: Proyecto, tamano: float, elemento_solido: str,
-                   especiales: Dict[str, List[float]]) -> bool:
-        return (abs(self.tamano - tamano) < 1e-9 and self.elemento_solido == elemento_solido
+                   especiales: Dict[str, List[float]], barridos: bool = True) -> bool:
+        return (abs(self.tamano - tamano) < 1e-9 and self.elemento_solido == elemento_solido and self.barridos == barridos
                 and self.especiales == especiales and self.huella == huella_geometria(proyecto))
 
     def resumen(self) -> str:
@@ -485,6 +490,8 @@ class MallaPrevia:
         partes = []
         if len(m.tetraedros):
             partes.append(f"{n(len(m.tetraedros))} tetraedros cuadráticos C3D10")
+        if len(m.hexaedros20):
+            partes.append(f"{n(len(m.hexaedros20))} hexaedros cuadráticos C3D20R")
         if len(m.hexaedros):
             partes.append(f"{n(len(m.hexaedros))} hexaedros")
         if len(m.laminas):
@@ -494,10 +501,12 @@ class MallaPrevia:
 
 
 def celdas_vtk_de_malla(malla: MallaSolida) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(celdas, tipos, es_lamina) de VTK para dibujar ``malla``: hexaedros, tetraedros (sus 4 vértices) y triángulos."""
+    """(celdas, tipos, es_lamina) de VTK para dibujar ``malla``: hexaedros, tetraedros (sus 4 vértices), triángulos y
+    hexaedros de 20 nodos (sus 8 vértices), en el orden de la numeración de CalculiX."""
 
     bloques, tipos = [], []
-    for conectividad, columnas, codigo in ((malla.hexaedros, 8, 12), (malla.tetraedros, 4, 10), (malla.laminas, 3, 5)):
+    for conectividad, columnas, codigo in ((malla.hexaedros, 8, 12), (malla.tetraedros, 4, 10), (malla.laminas, 3, 5),
+                                           (malla.hexaedros20, 8, 12)):
         if len(conectividad) == 0:
             continue
         c = np.asarray(conectividad, dtype=np.int64)[:, :columnas]
@@ -517,8 +526,10 @@ def mallar_modelo(
     cargas_lineales_por_caso: Optional[Dict[str, List[CargaLineal]]] = None,
     elemento_solido: Optional[str] = None,
     al_avanzar: Optional[Callable[[str], None]] = None,
+    barridos: bool = True,
 ) -> MallaPrevia:
-    """Malla de elementos finitos del modelo sólido, sin resolverlo (la que usará el análisis)."""
+    """Malla de elementos finitos del modelo sólido, sin resolverlo (la que usará el análisis). Con ``barridos`` las
+    piezas prismáticas van con hexaedros C3D20R barridos."""
 
     def avanzar(mensaje: str) -> None:
         if al_avanzar is not None:
@@ -532,16 +543,17 @@ def mallar_modelo(
     miembros = construir_miembros(proyecto)
     advertencias.extend(recortar_uniones(proyecto, miembros))
     elemento_solido = elemento_solido or elemento_solido_por_defecto()
-    estimados = estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA")
+    estimados = estimar_hexaedros(proyecto, miembros, tamano, elemento_solido == "TETRA", barridos)
 
     avanzar(f"Mallando (unos {estimados:,} elementos)...".replace(",", " "))
     especiales = puntos_especiales(proyecto, miembros, apoyos, cargas_puntuales_por_caso or {}, cargas_lineales_por_caso or {})
     try:
         malla = construir_malla_solida(proyecto, miembros, tamano, especiales, elemento_solido, usar_laminas=True,
-                                       al_avanzar=avanzar)
+                                       al_avanzar=avanzar, barridos=barridos)
     except ErrorMalla as exc:
         raise ErrorAnalisis(str(exc)) from exc
-    return MallaPrevia(huella_geometria(proyecto), tamano, elemento_solido, especiales, miembros, malla, advertencias)
+    return MallaPrevia(huella_geometria(proyecto), tamano, elemento_solido, especiales, miembros, malla, advertencias,
+                       barridos)
 
 
 def ejecutar_analisis_solido(
@@ -561,6 +573,7 @@ def ejecutar_analisis_solido(
     uniones_manuales: Sequence[UnionSuperficie] = (),
     elemento_solido: Optional[str] = None,
     malla_previa: Optional[MallaPrevia] = None,
+    barridos: bool = True,
 ) -> ResultadoAnalisis:
     def avanzar(mensaje: str) -> None:
         if al_avanzar is not None:
@@ -580,12 +593,12 @@ def ejecutar_analisis_solido(
     previa = None
     if malla_previa is not None:
         especiales = puntos_especiales(proyecto, malla_previa.miembros, apoyos, cargas_puntuales_por_caso, cargas_lineales_por_caso)
-        if malla_previa.sirve_para(proyecto, tamano, elemento_solido, especiales):
+        if malla_previa.sirve_para(proyecto, tamano, elemento_solido, especiales, barridos):
             previa = malla_previa
             avanzar("Usando la malla ya generada...")
     if previa is None:
         previa = mallar_modelo(proyecto, tamano, apoyos, cargas_puntuales_por_caso, cargas_lineales_por_caso, elemento_solido,
-                               avanzar)
+                               avanzar, barridos)
     advertencias.extend(previa.advertencias)
     miembros, malla = previa.miembros, previa.malla
 
@@ -725,11 +738,17 @@ def ejecutar_analisis_solido(
         "pernos, contacto con separación ni fricción. Los esfuerzos junto a apoyos y cargas puntuales son locales y "
         "dependen del tamaño de elemento.")
 
-    if len(malla.tetraedros) or len(malla.laminas):
-        partes_malla = [f"{len(malla.tetraedros):,} tetraedros cuadráticos C3D10"] if len(malla.tetraedros) else []
+    if len(malla.tetraedros) or len(malla.laminas) or len(malla.hexaedros20):
+        def n(valor: int) -> str:
+            return f"{valor:,}".replace(",", " ")
+
+        partes_malla = [f"{n(len(malla.tetraedros))} tetraedros cuadráticos C3D10"] if len(malla.tetraedros) else []
+        if len(malla.hexaedros20):
+            partes_malla.append(f"{n(len(malla.hexaedros20))} hexaedros cuadráticos C3D20R")
         if len(malla.laminas):
-            partes_malla.append(f"{len(malla.laminas):,} láminas S6")
-        advertencias.insert(0, f"Malla: {' y '.join(partes_malla)} ({len(malla.coordenadas):,} nodos).".replace(",", " "))
+            partes_malla.append(f"{n(len(malla.laminas))} láminas S6")
+        texto_malla = " y ".join([", ".join(partes_malla[:-1]), partes_malla[-1]] if len(partes_malla) > 1 else partes_malla)
+        advertencias.insert(0, f"Malla: {texto_malla} ({n(len(malla.coordenadas))} nodos).")
     equivalente = MallaAnalisis()
     for i, id_ in enumerate(malla.elementos_en_orden, start=1):
         equivalente.elementos[i] = ElementoMalla(id=i, barra_id=id_, nodo_i=0, nodo_f=0, s_inicio=0.0, s_fin=1.0)

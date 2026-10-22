@@ -1333,10 +1333,11 @@ class VentanaPrincipal(QMainWindow):
                                 "• No hay apoyos asignados: seleccione una superficie (modo «Cara») o la cara extrema de una columna o viga y asigne un apoyo.")
             return
         previa = self._malla_previa
-        dialogo = DialogoAnalisis3D(self.proyecto, self, motivo, tamano_inicial=previa.tamano if previa else None)
+        dialogo = DialogoAnalisis3D(self.proyecto, self, motivo, tamano_inicial=previa.tamano if previa else None,
+                                    barridos=previa.barridos if previa else True)
         if not dialogo.exec():
             return
-        self._iniciar_hilo(solido=True, tamano=dialogo.tamano(), elemento_solido=dialogo.elemento())
+        self._iniciar_hilo(solido=True, tamano=dialogo.tamano(), elemento_solido=dialogo.elemento(), barridos=dialogo.barridos())
 
     def mallar(self) -> None:
         """Botón Mallar: genera la malla del análisis sólido sin resolverlo, para revisarla antes de ANALIZAR."""
@@ -1347,15 +1348,17 @@ class VentanaPrincipal(QMainWindow):
             QMessageBox.information(self, "Mallar", "El modelo no tiene elementos que mallar.")
             return
         previa = self._malla_previa
-        dialogo = DialogoAnalisis3D(self.proyecto, self, para_mallar=True, tamano_inicial=previa.tamano if previa else None)
+        dialogo = DialogoAnalisis3D(self.proyecto, self, para_mallar=True, tamano_inicial=previa.tamano if previa else None,
+                                    barridos=previa.barridos if previa else True)
         if not dialogo.exec():
             return
         proyecto, apoyos, tamano, elemento = self.proyecto, list(self.apoyos), dialogo.tamano(), dialogo.elemento()
+        barridos = dialogo.barridos()
         puntuales = {k: list(v) for k, v in self.cargas_puntuales_por_caso.items()}
         lineales = {k: list(v) for k, v in self.cargas_lineales_por_caso.items()}
 
         def trabajo(avanzar):
-            return mallar_modelo(proyecto, tamano, apoyos, puntuales, lineales, elemento, avanzar)
+            return mallar_modelo(proyecto, tamano, apoyos, puntuales, lineales, elemento, avanzar, barridos)
 
         self._lanzar_trabajo(trabajo, "Mallando", "Preparando la malla...", self._al_terminar_mallado,
                              "No se pudo generar la malla")
@@ -1385,7 +1388,8 @@ class VentanaPrincipal(QMainWindow):
         self.visor.mostrar_malla(celdas, tipos, previa.malla.coordenadas, es_lamina, texto)
         self.accion_ver_malla.setChecked(True)
 
-    def _iniciar_hilo(self, solido: bool = False, tamano: float = 0.05, elemento_solido: Optional[str] = None) -> None:
+    def _iniciar_hilo(self, solido: bool = False, tamano: float = 0.05, elemento_solido: Optional[str] = None,
+                      barridos: bool = True) -> None:
         proyecto, casos, combinaciones, apoyos = self.proyecto, dict(self.casos), dict(self.combinaciones), list(self.apoyos)
         conexiones = list(self.conexiones)
         area = {k: list(v) for k, v in self.cargas_area_por_caso.items()}
@@ -1403,6 +1407,7 @@ class VentanaPrincipal(QMainWindow):
                     configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx_efectiva, avanzar,
                     tamano=tamano, conexiones=conexiones, cargas_superficie_por_caso=superficiales,
                     uniones_manuales=uniones, elemento_solido=elemento_solido, malla_previa=malla_previa,
+                    barridos=barridos,
                 )
             return ejecutar_analisis(
                 proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,

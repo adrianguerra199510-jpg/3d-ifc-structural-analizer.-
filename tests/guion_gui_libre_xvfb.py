@@ -361,7 +361,7 @@ def main(salida: Path) -> None:
     verificar(not [m for m in mensajes if m[0] == "critical"], f"mallar sin errores: {mensajes}")
     verificar(ventana.visor.vista == "MALLA" and "MALLA" in visor.actors and ventana.accion_ver_malla.isChecked(),
               "el visor muestra la malla")
-    verificar("C3D10" in ventana.statusBar().currentMessage(), ventana.statusBar().currentMessage())
+    verificar("C3D20R" in ventana.statusBar().currentMessage(), ventana.statusBar().currentMessage())  # columna y placas: prismas
     ventana.grab().save(str(salida / "04a_malla.png"))
     ventana.volver_al_modelo()
     verificar("MALLA" not in visor.actors and visor.vista == "MODELO", "se vuelve al modelo")

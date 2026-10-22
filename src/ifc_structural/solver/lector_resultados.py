@@ -33,6 +33,7 @@ _ANCHO_CAMPO = 12
 _INICIO_VALORES = 13
 _LARGO_ID = 10
 _TIPO_HEXAEDRO_8 = 1
+_TIPO_HEXAEDRO_20 = 4
 _TIPO_TETRAEDRO_10 = 6
 _TIPOS_CUNA = (2, 5)  # cuña de 6 o 15 nodos: lámina expandida (``S3``/``S6``)
 
@@ -144,9 +145,9 @@ def leer_malla_frd(ruta_frd: Path) -> MallaTensiones:
             if linea.startswith(" -1"):
                 id_el = int(linea[3 : 3 + _LARGO_ID])
                 tipo = int(linea[13:18])
-                if tipo not in (_TIPO_HEXAEDRO_8, _TIPO_TETRAEDRO_10) + _TIPOS_CUNA:
+                if tipo not in (_TIPO_HEXAEDRO_8, _TIPO_HEXAEDRO_20, _TIPO_TETRAEDRO_10) + _TIPOS_CUNA:
                     raise ErrorLecturaResultados(
-                        f"Tipo de elemento no soportado en el .frd: {tipo} (se esperaba 1, hexaedro; 6, tetraedro; 2 o 5, cuña de lámina)"
+                        f"Tipo de elemento no soportado en el .frd: {tipo} (se esperaba 1 o 4, hexaedro; 6, tetraedro; 2 o 5, cuña de lámina)"
                     )
                 elemento_actual = id_el
                 elementos[id_el] = []
@@ -169,14 +170,14 @@ def leer_malla_frd(ruta_frd: Path) -> MallaTensiones:
     # malla tiene el mismo número de nodos por celda. Los nodos medios quedan como puntos con resultados.
     # Una cuña (lámina expandida: tres nodos abajo y tres arriba) se dibuja como (a, b, c, c, d, e, f, f).
     def celda(e):
-        if len(e) == 8:
-            return e
+        if len(e) in (8, 20):  # hexaedro de 20 nodos: se dibuja con sus vértices
+            return e[:8]
         if len(e) == 10:
             return [e[0], e[1], e[2], e[2], e[3], e[3], e[3], e[3]]
         return [e[0], e[1], e[2], e[2], e[3], e[4], e[5], e[5]]
 
     conectividad = np.array([celda(elementos[i]) for i in ids_el], dtype=np.int64)
-    tipos = np.array([TIPO_HEXAEDRO if len(elementos[i]) == 8 else TIPO_TETRAEDRO if len(elementos[i]) == 10 else TIPO_CUNA
+    tipos = np.array([TIPO_HEXAEDRO if len(elementos[i]) in (8, 20) else TIPO_TETRAEDRO if len(elementos[i]) == 10 else TIPO_CUNA
                       for i in ids_el], dtype=np.int64)
     indices = np.searchsorted(ids, conectividad)
     if not np.array_equal(ids[indices], conectividad):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel, QVBoxLayout
 
 from ..core.modelo import Proyecto
 from ..solido.analisis_solido import ELEMENTOS_CALCULO_LARGO, estimar, memoria_disponible, memoria_solver, tamano_sugerido
@@ -13,7 +13,7 @@ from .estilo import EncabezadoDialogo
 
 class DialogoAnalisis3D(QDialog):
     def __init__(self, proyecto: Proyecto, parent=None, motivo: str = "", para_mallar: bool = False,
-                 tamano_inicial: Optional[float] = None):
+                 tamano_inicial: Optional[float] = None, barridos: bool = True):
         super().__init__(parent)
         self.setWindowTitle("Mallar el modelo sólido (3D)" if para_mallar else "Analizar como modelo sólido (3D)")
         self.resize(560, 420)
@@ -32,6 +32,9 @@ class DialogoAnalisis3D(QDialog):
             "• Elementos: <b>tetraedros cuadráticos C3D10</b> en todas las piezas macizas (también vigas, columnas, losas "
             "y muros gruesos) y <b>láminas S6</b> (cáscaras en la superficie media, con su espesor) en las piezas que son "
             "láminas: espesor ≤ 1/20 de su tamaño en planta (chapas, paredes de depósitos, losas y muros delgados).<br>"
+            "• Con la casilla de abajo, las piezas <b>prismáticas</b> (sección constante a lo largo de un eje: columnas, "
+            "pernos, tubos, placas gruesas) se mallan con <b>hexaedros cuadráticos C3D20R barridos</b>: su sección en "
+            "cuadriláteros, extruida en capas.<br>"
             "• Las vigas y columnas se mallan con su forma real (un perfil en I tiene alas y alma); las piezas se unen "
             "por las superficies que se tocan, como una soldadura continua.<br>"
             "• Los apoyos y las cargas asignados se aplican sobre la <b>cara o la sección</b> elegida.<br>"
@@ -50,6 +53,11 @@ class DialogoAnalisis3D(QDialog):
         self.spin_tamano.setValue(round(tamano_inicial * 1000.0))
         formulario.addRow("Tamaño de elemento:", self.spin_tamano)
         layout.addLayout(formulario)
+        self.check_barridos = QCheckBox("Hexaedros barridos (C3D20R) en las piezas prismáticas")
+        self.check_barridos.setChecked(barridos)
+        self.check_barridos.setToolTip("Mejores esfuerzos con menos nodos que los tetraedros. Las piezas que no son prismas, "
+                                       "o que solapan con otras, siguen con tetraedros C3D10.")
+        layout.addWidget(self.check_barridos)
 
         self.estimacion = QLabel()
         self.estimacion.setWordWrap(True)
@@ -63,6 +71,7 @@ class DialogoAnalisis3D(QDialog):
 
         self._libre = memoria_disponible()
         self.spin_tamano.valueChanged.connect(self._actualizar)
+        self.check_barridos.toggled.connect(self._actualizar)
         self._actualizar()
 
     def elemento(self) -> str:
@@ -70,13 +79,18 @@ class DialogoAnalisis3D(QDialog):
 
         return "TETRA"
 
+    def barridos(self) -> bool:
+        """Mallar las piezas prismáticas con hexaedros C3D20R barridos."""
+
+        return self.check_barridos.isChecked()
+
     def tamano(self) -> float:
         """Tamaño de elemento en metros."""
 
         return self.spin_tamano.value() / 1000.0
 
     def _actualizar(self) -> None:
-        n = estimar(self._proyecto, self.tamano(), self.elemento())
+        n = estimar(self._proyecto, self.tamano(), self.elemento(), self.barridos())
         memoria = memoria_solver(n)
         texto = f"Unos <b>{n:,}</b> elementos (estimación aproximada), unos {memoria / 1e9:.1f} GB de memoria".replace(",", " ")
         if self._libre is not None and memoria > 0.8 * self._libre:

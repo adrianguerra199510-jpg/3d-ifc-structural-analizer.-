@@ -196,8 +196,11 @@ def test_perno_cilindrico_en_traccion_apoyado_en_su_tapa(tmp_path: Path):
     u = r.desplazamientos_por_caso["L"]
     from ifc_structural.solido.tetraedros import volumenes_firmados
 
-    malla = construir_malla_solida(p, [], 0.05, None, "TETRA")
-    area = volumenes_firmados(malla.coordenadas, malla.tetraedros).sum() / 0.2  # sección poligonal de la malla
+    from ifc_structural.solido.barridos import volumen
+
+    malla = construir_malla_solida(p, [], 0.05, None, "TETRA", barridos=True)  # la misma malla del análisis
+    vol = volumenes_firmados(malla.coordenadas, malla.tetraedros).sum() + volumen(malla.coordenadas, malla.hexaedros20)
+    area = vol / 0.2  # sección poligonal de la malla
     assert area == pytest.approx(np.pi * 0.015**2, rel=0.1)  # la superficie curva no se recorta a pocos lados
     assert u[np.isclose(x[:, 2], 0.2), 2].mean() == pytest.approx(5.0 * 0.2 / (E * area), rel=0.03)
 
@@ -544,25 +547,30 @@ requiere_gmsh = pytest.mark.skipif(not __import__("ifc_structural.solido.tetraed
                                    reason="Gmsh no está disponible")
 
 
-def _analizar_con(elemento, p, apoyos, cargas, tmp_path, tamano=0.05, uniones=()):
+def _analizar_con(elemento, p, apoyos, cargas, tmp_path, tamano=0.05, uniones=(), barridos=False):
     casos, combinaciones = _casos()
     return ejecutar_analisis_solido(p, casos, combinaciones, apoyos, {}, {}, {}, tmp_path, tamano=tamano,
-                                    cargas_superficie_por_caso={"L": cargas}, uniones_manuales=uniones, elemento_solido=elemento)
+                                    cargas_superficie_por_caso={"L": cargas}, uniones_manuales=uniones, elemento_solido=elemento,
+                                    barridos=barridos)
 
 
 @requiere_ccx
 @requiere_gmsh
-@pytest.mark.parametrize("elemento, tolerancia", [("TETRA", 0.05), ("HEXA", 0.08)])
-def test_voladizo_con_cada_tipo_de_elemento(tmp_path: Path, elemento, tolerancia):
+@pytest.mark.parametrize("elemento, tolerancia, barridos", [("TETRA", 0.05, False), ("HEXA", 0.08, False), ("TETRA", 0.01, True)])
+def test_voladizo_con_cada_tipo_de_elemento(tmp_path: Path, elemento, tolerancia, barridos):
     L, b, h, F = 1.0, 0.1, 0.1, 10.0
     s = caja("S1", 0, 0, 0, L, b, h)
     p = proyecto_con(s)
     apoyo = ApoyoSuperficie(id="AP1", elemento_tipo="SOLIDO", elemento_id="S1", cara=cara_hacia(s, (-1, 0, 0)), ux=True, uy=True, uz=True)
-    r = _analizar_con(elemento, p, [apoyo], [_carga(s, (1, 0, 0), "FUERZA", F, (0, 0, -1))], tmp_path, tamano=0.05)
+    r = _analizar_con(elemento, p, [apoyo], [_carga(s, (1, 0, 0), "FUERZA", F, (0, 0, -1))], tmp_path, tamano=0.05,
+                      barridos=barridos)
     x, u = r.malla_tensiones.coordenadas, r.desplazamientos_por_caso["L"]
     flecha = -u[np.isclose(x[:, 0], L), 2].mean()
     assert flecha == pytest.approx(F * L**3 / (3 * E * b * h**3 / 12), rel=tolerancia)
-    assert any(("C3D10" in a) == (elemento == "TETRA") for a in r.advertencias[:1]) or elemento == "HEXA"
+    if barridos:  # la caja es un prisma: hexaedros C3D20R barridos
+        assert "C3D20R" in r.advertencias[0] and "C3D10" not in r.advertencias[0]
+    else:
+        assert any(("C3D10" in a) == (elemento == "TETRA") for a in r.advertencias[:1]) or elemento == "HEXA"
 
 
 @requiere_gmsh

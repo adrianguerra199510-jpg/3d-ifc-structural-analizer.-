@@ -159,11 +159,14 @@ def _distancia_a_borde(malla: MallaSolida, puntos: np.ndarray, borde: CarasFront
     k = min(vecinas, len(borde.centro))
     _, idx = cKDTree(borde.centro).query(puntos, k=k)
     idx = np.asarray(idx).reshape(len(puntos), k)
-    esquinas = malla.coordenadas[borde.nodos[:, :3]]
+    # caras triangulares (tetraedros: vértices 0-2) o cuadriláteros (hexaedros de 20 nodos: vértices 0-3, en 2 triángulos)
+    triangulos = ((0, 1, 2), (0, 2, 3)) if borde.nodos.shape[1] == 8 else ((0, 1, 2),)
     distancia = np.full(len(puntos), np.inf)
     for columna in range(k):
-        t = esquinas[idx[:, columna]]
-        distancia = np.minimum(distancia, _distancia_a_triangulos(puntos, t[:, 0], t[:, 1], t[:, 2]))
+        caras = borde.nodos[idx[:, columna]]
+        for a, b, c in triangulos:
+            distancia = np.minimum(distancia, _distancia_a_triangulos(puntos, malla.coordenadas[caras[:, a]],
+                                                                      malla.coordenadas[caras[:, b]], malla.coordenadas[caras[:, c]]))
     return distancia
 
 
@@ -171,11 +174,11 @@ def _caras_cercanas(malla: MallaSolida, i: int, j: int, tol: float):
     """Como ``_caras_en_contacto`` pero sin exigir caras planas enfrentadas: las caras de borde de cada parte cuyo centro
     está a menos de ``tol`` de las caras de borde de la otra. Para superficies curvas que se tocan (un perno en su
     agujero) o cortadas por un solape; ``*TIE`` proyecta cada nodo esclavo sobre la cara más cercana. Solo para caras
-    triangulares (tetraedros); con hexaedros no se usa."""
+    triangulares (tetraedros) o cuadriláteros de 8 nodos (hexaedros barridos); con hexaedros lineales no se usa."""
 
     a: CarasFrontera = malla.fronteras(malla.partes[i])
     b: CarasFrontera = malla.fronteras(malla.partes[j])
-    if len(a.area) == 0 or len(b.area) == 0 or a.nodos.shape[1] != 6 or b.nodos.shape[1] != 6:
+    if len(a.area) == 0 or len(b.area) == 0 or a.nodos.shape[1] not in (6, 8) or b.nodos.shape[1] not in (6, 8):
         return None
     en_a = _distancia_a_borde(malla, a.centro, b) <= tol
     en_b = _distancia_a_borde(malla, b.centro, a) <= tol

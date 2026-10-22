@@ -145,8 +145,9 @@ def _orientar(coordenadas: np.ndarray, tetraedros: np.ndarray) -> np.ndarray:
 #: Segundos que se le dan a Gmsh por pieza antes de pasar a hexaedros (hay superficies con las que se queda colgado).
 TIEMPO_LIMITE_GMSH = 60.0
 #: Veces que se relanza el proceso de Gmsh si una pieza lo cuelga o lo cierra; después, las piezas que faltan van a
-#: hexaedros. Cada lanzamiento es un proceso nuevo, y muchos seguidos hacen saltar a los antivirus.
-MAXIMO_RELANZAMIENTOS = 3
+#: hexaedros. Cada lanzamiento es un proceso nuevo, y muchos seguidos hacen saltar a los antivirus (una pieza por
+#: proceso, con 70 piezas, los hacía saltar); los pernos repetidos de un modelo pueden cerrarlo varias veces.
+MAXIMO_RELANZAMIENTOS = 8
 
 
 def _comando_hijo(argumentos: Sequence[str]) -> Tuple[list, dict]:
@@ -178,23 +179,26 @@ def _leer_entero(ruta: Path) -> Optional[int]:
 def mallar_lote_gmsh(piezas: Sequence[Tuple], tamano: float, angulo: float = 40.0,
                      tiempo_por_pieza: Optional[float] = None,
                      al_avanzar: Optional[Callable[[int, int], None]] = None) -> Dict[str, object]:
-    """Malla con Gmsh varias piezas ``(id, vértices, triángulos[, dimensión])`` con **un solo** proceso.
+    """Malla con Gmsh varias piezas ``(id, vértices, triángulos[, dimensión[, tamaño]])`` con **un solo** proceso.
 
     Dimensión 3 (por defecto): tetraedros cuadráticos dentro de la superficie cerrada; devuelve, por id,
     ``(coordenadas, tetraedros (M, 10) de CalculiX)``. Dimensión 2: la superficie vuelta a mallar con triángulos casi
     equiláteros de lado ``tamano`` (la superficie media de una lámina); devuelve ``(coordenadas, triángulos (M, 3))``.
+    Dimensión 4: una tapa plana mallada con cuadriláteros (la sección de una pieza prismática); devuelve
+    ``(coordenadas, cuadriláteros (M, 4))``.
     Si no se pudo, el motivo (texto). Si una pieza cuelga Gmsh más de ``tiempo_por_pieza`` segundos (o lo cierra), se
     termina el proceso y se relanza desde la pieza siguiente, como mucho ``MAXIMO_RELANZAMIENTOS`` veces."""
 
     resultado: Dict[str, object] = {}
     if not piezas:
         return resultado
+    tamanos = {p[0]: float(p[4]) for p in piezas if len(p) > 4}
     piezas = [(p[0], p[1], p[2], int(p[3]) if len(p) > 3 else 3) for p in piezas]
     if not gmsh_disponible():
         return {p[0]: "Gmsh no está disponible" for p in piezas}
     validas = []
     for id_, vertices, triangulos, dimension in piezas:
-        if dimension == 2 or _es_variedad(np.asarray(triangulos)):
+        if dimension in (2, 4) or _es_variedad(np.asarray(triangulos)):
             validas.append((id_, vertices, triangulos, dimension))
         else:
             resultado[id_] = "la superficie tiene aristas compartidas por más de dos triángulos"
@@ -206,10 +210,12 @@ def mallar_lote_gmsh(piezas: Sequence[Tuple], tamano: float, angulo: float = 40.
         carpeta = Path(nombre)
         entrada = carpeta / "entrada.npz"
         datos = {"n": n, "tamano": tamano, "angulo": angulo}
-        for i, (_, vertices, triangulos, dimension) in enumerate(validas):
+        for i, (id_, vertices, triangulos, dimension) in enumerate(validas):
             datos[f"v{i}"] = np.asarray(vertices, float)
             datos[f"t{i}"] = np.asarray(triangulos, np.int64)
             datos[f"d{i}"] = dimension
+            if id_ in tamanos:
+                datos[f"h{i}"] = tamanos[id_]
         np.savez(entrada, **datos)
         actual = carpeta / "actual.txt"
         desde, lanzamientos = 0, 0
@@ -266,8 +272,9 @@ def mallar_lote_gmsh(piezas: Sequence[Tuple], tamano: float, angulo: float = 40.
                 # se lee entero y se cierra antes de borrar la carpeta: en Windows un archivo abierto no se puede borrar
                 with np.load(res) as d:
                     coordenadas = np.array(d["coordenadas"])
-                    elementos = np.array(d["triangulos" if dimension == 2 else "tetraedros"], dtype=np.int64)
-                resultado[id_] = (coordenadas, elementos if dimension == 2 else _orientar(coordenadas, elementos))
+                    clave = {2: "triangulos", 4: "cuadrilateros"}.get(dimension, "tetraedros")
+                    elementos = np.array(d[clave], dtype=np.int64)
+                resultado[id_] = (coordenadas, _orientar(coordenadas, elementos) if dimension == 3 else elementos)
             elif err.exists():
                 resultado[id_] = err.read_text(encoding="utf-8").strip() or "error de Gmsh"
             else:

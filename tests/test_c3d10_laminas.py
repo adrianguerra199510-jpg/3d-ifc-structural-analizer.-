@@ -267,7 +267,14 @@ def test_la_estimacion_se_parece_a_la_malla_real():
     for h in (0.03, 0.06):
         malla = construir_malla_solida(p, [], h, None, "TETRA", usar_laminas=True)
         real = len(malla.tetraedros) + len(malla.laminas)
-        assert 0.6 * real <= estimar(p, h) <= 1.6 * real
+        assert 0.6 * real <= estimar(p, h, barridos=False) <= 1.6 * real
+        # con hexaedros barridos (el bloque y el perno son prismas): cada C3D20R cuenta como varios tetraedros
+        from ifc_structural.solido.barridos import EQUIVALENTE_TETRAEDROS
+
+        malla = construir_malla_solida(p, [], h, None, "TETRA", usar_laminas=True, barridos=True)
+        assert len(malla.hexaedros20) > 0
+        real = len(malla.tetraedros) + len(malla.laminas) + EQUIVALENTE_TETRAEDROS * len(malla.hexaedros20)
+        assert 0.5 * real <= estimar(p, h) <= 2.0 * real
 
 
 def test_el_tamano_sugerido_no_engorda_los_elementos_sin_ganar_nada(monkeypatch):
@@ -275,7 +282,7 @@ def test_el_tamano_sugerido_no_engorda_los_elementos_sin_ganar_nada(monkeypatch)
 
     # muchas piezas pequeñas: el número de elementos casi no baja a partir de cierto tamaño
     cuenta = {h: int(50_000 + 1e3 / h) for h in TAMANOS}
-    monkeypatch.setattr(A, "estimar_hexaedros", lambda proyecto, miembros, h, tetra: cuenta[h])
+    monkeypatch.setattr(A, "estimar_hexaedros", lambda proyecto, miembros, h, *_: cuenta[h])
     h = tamano_sugerido(proyecto_con(), objetivo=40_000)
     assert h < TAMANOS[-1] and cuenta[h] <= 1.15 * cuenta[TAMANOS[-1]]
     assert tamano_sugerido(proyecto_con(), objetivo=10**9) == TAMANOS[0]
