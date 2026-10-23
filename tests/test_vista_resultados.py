@@ -55,3 +55,50 @@ def test_la_barra_de_vista_no_ensancha_la_ventana(app):
         app.processEvents()
     assert v.width() == 1366 and v.barra_vista.compacta
     v.close()
+
+
+def test_el_plano_de_la_seccion_recorre_el_modelo():
+    from ifc_structural.gui.visor_3d import Seccion
+
+    puntos = np.array([[0.0, 0, 0], [2.0, 1, 3]])
+    n, o = Seccion(activa=True, eje="X", posicion=0.25).plano(puntos)
+    assert np.allclose(n, [1, 0, 0]) and o[0] == pytest.approx(0.5)
+    n, o = Seccion(activa=True, eje="Z", posicion=1.0).plano(puntos)
+    assert o[2] == pytest.approx(3.0)
+    libre = Seccion(activa=True, eje="LIBRE", normal_libre=(1.0, 1.0, 0.0))
+    assert np.allclose(libre.normal, np.array([1, 1, 0]) / np.sqrt(2))
+    assert Seccion.posicion_de(puntos, (0, 0, 1), (0, 0, 1.5)) == pytest.approx(0.5)
+
+
+def test_la_seccion_corta_la_malla_y_colorea_la_cara_con_valores_interpolados(app):
+    import pyvista as pv
+
+    from ifc_structural.gui.panel_resultados import PanelEsfuerzos
+    from ifc_structural.gui.ventana_principal import VentanaPrincipal
+
+    v = VentanaPrincipal()
+    visor = v.visor
+    grid = pv.ImageData(dimensions=(11, 11, 11), spacing=(0.1, 0.1, 0.1)).cast_to_unstructured_grid()
+    grid.point_data["esfuerzo"] = grid.points[:, 2] * 10.0  # campo lineal en z
+    visor._puntos_sin_deformar = np.asarray(grid.points)
+    panel = PanelEsfuerzos()
+    panel.check_seccion.setChecked(True)
+    panel.combo_eje.setCurrentIndex(panel.combo_eje.findData("Z"))
+    panel.slider_seccion.setValue(250)
+    visor._seccion = panel.seccion()
+    cortado = visor._recortar(grid)
+    zs = np.asarray(cortado.points)[:, 2]
+    # queda el lado opuesto a la normal (la cara del corte mira a la cámara en la vista isométrica), cortado en z = 0.25
+    assert zs.min() == pytest.approx(0.0) and zs.max() == pytest.approx(0.25)
+    panel.boton_invertir.setChecked(True)
+    visor._seccion = panel.seccion()
+    zs = np.asarray(visor._recortar(grid).points)[:, 2]
+    assert zs.min() == pytest.approx(0.25) and zs.max() == pytest.approx(1.0)
+    panel.combo_modo_seccion.setCurrentIndex(1)  # solo la cara: valores interpolados en el plano
+    visor._seccion = panel.seccion()
+    cara = visor._recortar(grid)
+    assert np.allclose(cara.points[:, 2], 0.25) and np.allclose(cara.point_data["esfuerzo"], 2.5)
+    panel.check_seccion.setChecked(False)
+    visor._seccion = panel.seccion()
+    assert visor._recortar(grid) is grid
+    v.close()

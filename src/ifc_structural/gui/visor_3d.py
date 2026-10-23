@@ -117,11 +117,50 @@ def conserva_camara(funcion):
     return envuelta
 
 
+@dataclass
+class Seccion:
+    """Plano de corte de la vista de resultados. ``eje`` "X", "Y", "Z" o "LIBRE" (normal ``normal_libre``, la que deja
+    el plano movido con el ratón); ``posicion`` de 0 a 1 a lo largo del modelo en la dirección de la normal."""
+
+    activa: bool = False
+    eje: str = "X"
+    posicion: float = 0.5
+    invertir: bool = False
+    solo_cara: bool = False  # True: solo la rebanada del plano; False: el modelo cortado, con la cara del corte
+    con_raton: bool = False  # plano 3D que se arrastra y se gira con el ratón
+    normal_libre: Tuple[float, float, float] = (1.0, 0.0, 0.0)
+
+    @property
+    def normal(self) -> np.ndarray:
+        if self.eje == "LIBRE":
+            n = np.asarray(self.normal_libre, dtype=float)
+            return n / max(float(np.linalg.norm(n)), 1e-12)
+        return np.eye(3)[{"X": 0, "Y": 1, "Z": 2}[self.eje]]
+
+    def plano(self, puntos: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """(normal, origen) del plano sobre los ``puntos`` del modelo (sin deformar)."""
+
+        n = self.normal
+        d = np.asarray(puntos, dtype=float) @ n
+        dmin, dmax = float(d.min()), float(d.max())
+        centro = np.asarray(puntos, dtype=float).mean(axis=0)
+        objetivo = dmin + min(max(self.posicion, 0.0), 1.0) * (dmax - dmin)
+        return n, centro + (objetivo - float(centro @ n)) * n
+
+    @staticmethod
+    def posicion_de(puntos: np.ndarray, normal: np.ndarray, origen: np.ndarray) -> float:
+        n = np.asarray(normal, dtype=float) / max(float(np.linalg.norm(normal)), 1e-12)
+        d = np.asarray(puntos, dtype=float) @ n
+        dmin, dmax = float(d.min()), float(d.max())
+        return 0.5 if dmax - dmin < 1e-12 else float(np.clip((float(np.asarray(origen) @ n) - dmin) / (dmax - dmin), 0, 1))
+
+
 class Visor3D(QtInteractor):
     """Widget 3D con selección de elementos y caras por clic."""
 
     seleccion_cambiada = Signal(list)  # list[Objetivo]
     punto_sondeado = Signal(str)  # texto para mostrar al hacer clic en la vista de esfuerzos
+    seccion_movida = Signal(object)  # Seccion: el plano de corte se movió con el ratón
     menu_contextual = Signal()  # clic derecho sobre el modelo (la selección ya está actualizada)
     menu_fondo = Signal()  # clic derecho sobre el fondo (sin ningún elemento debajo)
 
@@ -155,6 +194,10 @@ class Visor3D(QtInteractor):
         self._puntos_sin_deformar: Optional[np.ndarray] = None
         self._desplazamientos: Optional[np.ndarray] = None
         self._escala_deformada = 1.0
+        self._seccion = Seccion()
+        self._malla_visible = None  # lo que se dibuja de la malla de esfuerzos (cortada o entera)
+        self._opciones_esfuerzos: dict = {}
+        self._widget_seccion = False
 
         # navegación y selección por zona (arrastrar un rectángulo)
         self._navegacion = NAV_SELECCION
@@ -1017,6 +1060,7 @@ class Visor3D(QtInteractor):
         escala_deformada: float = 1.0,
         factor_deformada: float = 1.0,
         mostrar_original: bool = True,
+        seccion: Optional[Seccion] = None,
     ) -> None:
         """Mapa de contorno de ``valores`` (uno por nodo de ``malla``). Con ``ocultar_planos``
         (análisis sólido) las losas y los muros tampoco se dibujan: ya están en la malla.
@@ -1026,6 +1070,8 @@ class Visor3D(QtInteractor):
         factor, de 0 a 1, es el de la animación) y, si se pide, se deja el contorno sin deformar."""
 
         self._vista = "ESFUERZOS"
+        if seccion is not None:
+            self._seccion = seccion
         for nombre in ("MALLA", "MALLA_LAMINAS"):
             self.remove_actor(nombre, render=False)
         for visual in self._visuales.values():
@@ -1058,20 +1104,13 @@ class Visor3D(QtInteractor):
                               show_scalar_bar=False)
         self._mostrar_asignaciones(self._desplazamientos is None)
 
-        self.remove_actor("ESFUERZOS", render=False)
-        self.remove_scalar_bar_si_existe()
-        self._actor_esfuerzos = self.add_mesh(
-            grid,
-            scalars="esfuerzo",
-            cmap=cmap,
-            clim=list(rango) if rango else None,
-            show_edges=False,
-            name="ESFUERZOS",
-            pickable=True,
-            scalar_bar_args={"title": unidad, "vertical": True, "n_labels": 8, "fmt": "%.2f",
-                             "title_font_size": 16, "label_font_size": 14},
-        )
+        grid.cell_data["celda_original"] = np.arange(grid.n_cells)
         self._grid_esfuerzos = grid
+        self._opciones_esfuerzos = dict(
+            scalars="esfuerzo", cmap=cmap, clim=list(rango) if rango else None, show_edges=False, name="ESFUERZOS",
+            pickable=True, scalar_bar_args={"title": unidad, "vertical": True, "n_labels": 8, "fmt": "%.2f",
+                                            "title_font_size": 16, "label_font_size": 14})
+        self._dibujar_esfuerzos()
         self._valores_esfuerzos = np.asarray(valores, dtype=float)
         self._barra_de_celda = list(barra_de_celda)
         self._titulo_esfuerzos = titulo
@@ -1079,6 +1118,115 @@ class Visor3D(QtInteractor):
         if texto:
             self.add_text(texto, position="upper_left", font_size=11, color="black", name="TEXTO_ESFUERZOS")
         self.render()
+
+    # ------------------------------------------------------------------
+    # Sección (plano de corte) de la vista de resultados
+    # ------------------------------------------------------------------
+    @property
+    def seccion(self) -> Seccion:
+        return self._seccion
+
+    def texto_seccion(self) -> str:
+        """Dónde está el plano de corte, para el panel."""
+
+        sec = self._seccion
+        if not sec.activa or self._puntos_sin_deformar is None:
+            return ""
+        normal, origen = sec.plano(self._puntos_sin_deformar)
+        if sec.eje in ("X", "Y", "Z"):
+            k = "XYZ".index(sec.eje)
+            return f"Plano {sec.eje.lower()} = {origen[k]:.3f} m"
+        return (f"Plano por ({origen[0]:.3f}; {origen[1]:.3f}; {origen[2]:.3f}) m, normal "
+                f"({normal[0]:.2f}; {normal[1]:.2f}; {normal[2]:.2f})")
+
+    def fijar_seccion(self, seccion: Seccion) -> None:
+        """Corta (o deja de cortar) la vista de resultados con el plano de ``seccion``."""
+
+        self._seccion = seccion
+        if self._vista == "ESFUERZOS" and self._grid_esfuerzos is not None:
+            self._dibujar_esfuerzos()
+            self.render()
+
+    def _recortar(self, grid):
+        """La malla de esfuerzos cortada por la sección: el lado que queda (con la cara del corte coloreada por los
+        valores interpolados dentro del sólido) o solo la rebanada del plano."""
+
+        sec = self._seccion
+        if not sec.activa or self._puntos_sin_deformar is None:
+            return grid
+        normal, origen = sec.plano(self._puntos_sin_deformar)
+        if sec.invertir:
+            normal = -normal
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if sec.solo_cara:
+                return grid.slice(normal=normal, origin=origen)
+            return grid.clip(normal=normal, origin=origen, crinkle=False)
+
+    def _dibujar_esfuerzos(self) -> None:
+        grid = self._grid_esfuerzos
+        if grid is None:
+            return
+        visible = self._recortar(grid)
+        self.remove_actor("ESFUERZOS", render=False)
+        self.remove_actor("BORDE_SECCION", render=False)
+        self.remove_scalar_bar_si_existe()
+        self._malla_visible = visible
+        if visible.n_points == 0:  # el plano quedó fuera del modelo
+            self._actor_esfuerzos = None
+        else:
+            self._actor_esfuerzos = self.add_mesh(visible, **self._opciones_esfuerzos)
+            if self._seccion.activa:  # borde de la cara del corte, para leer su forma
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    normal, origen = self._seccion.plano(self._puntos_sin_deformar)
+                    cara = visible if self._seccion.solo_cara else grid.slice(normal=normal, origin=origen)
+                    borde = cara.extract_feature_edges(boundary_edges=True, feature_edges=False, manifold_edges=False,
+                                                       non_manifold_edges=False) if cara.n_points else cara
+                if borde.n_points:
+                    self.add_mesh(borde, color="#1f2a36", line_width=2.0, name="BORDE_SECCION", pickable=False,
+                                  show_scalar_bar=False)
+        if self._vista == "ESFUERZOS":  # apoyos y cargas taparían la cara del corte
+            self._mostrar_asignaciones(self._desplazamientos is None and not self._seccion.activa)
+        self._actualizar_widget_seccion()
+
+    def _actualizar_widget_seccion(self) -> None:
+        quiere = self._seccion.activa and self._seccion.con_raton and self._vista == "ESFUERZOS"
+        if self._widget_seccion:
+            self.clear_plane_widgets()
+            self._widget_seccion = False
+        if not quiere or self._puntos_sin_deformar is None:
+            return
+        normal, origen = self._seccion.plano(self._puntos_sin_deformar)
+        minimo, maximo = self._puntos_sin_deformar.min(axis=0), self._puntos_sin_deformar.max(axis=0)
+        holgura = 0.05 * (maximo - minimo) + 1e-6
+        self.add_plane_widget(self._al_mover_plano, normal=normal, origin=origen, assign_to_axis=None,
+                              bounds=np.ravel(np.column_stack([minimo - holgura, maximo + holgura])).tolist(),
+                              interaction_event="end", outline_translation=False, implicit=True, color="#8a96a3")
+        self._widget_seccion = True
+
+    def _al_mover_plano(self, normal, origen) -> None:
+        n = np.asarray(normal, dtype=float)
+        n = n / max(float(np.linalg.norm(n)), 1e-12)
+        base = np.eye(3)
+        eje = next((e for e, v in zip("XYZ", base) if abs(float(n @ v)) > 0.9999), "LIBRE")
+        if eje != "LIBRE" and float(n @ base["XYZ".index(eje)]) < 0:
+            n = -n
+        seccion = Seccion(activa=True, eje=eje, posicion=Seccion.posicion_de(self._puntos_sin_deformar, n, origen),
+                          invertir=self._seccion.invertir, solo_cara=self._seccion.solo_cara, con_raton=True,
+                          normal_libre=tuple(float(c) for c in n))
+        self._seccion = seccion
+        # redibujar el corte sin volver a crear el plano (se está usando)
+        grid = self._grid_esfuerzos
+        if grid is not None:
+            visible = self._recortar(grid)
+            self.remove_actor("ESFUERZOS", render=False)
+            self.remove_actor("BORDE_SECCION", render=False)
+            self.remove_scalar_bar_si_existe()
+            self._malla_visible = visible
+            self._actor_esfuerzos = self.add_mesh(visible, **self._opciones_esfuerzos) if visible.n_points else None
+            self.render()
+        self.seccion_movida.emit(seccion)
 
     def mostrar_malla(self, celdas: np.ndarray, tipos: np.ndarray, coordenadas: np.ndarray, es_lamina: np.ndarray,
                       texto: str = "") -> None:
@@ -1107,8 +1255,12 @@ class Visor3D(QtInteractor):
         self.render()
 
     def _quitar_resultados(self) -> None:
-        for nombre in ("ESFUERZOS", "TEXTO_ESFUERZOS", "SIN_DEFORMAR", "MALLA", "MALLA_LAMINAS"):
+        for nombre in ("ESFUERZOS", "TEXTO_ESFUERZOS", "SIN_DEFORMAR", "MALLA", "MALLA_LAMINAS", "BORDE_SECCION"):
             self.remove_actor(nombre, render=False)
+        self._malla_visible = None
+        if self._widget_seccion:
+            self.clear_plane_widgets()
+            self._widget_seccion = False
         self.remove_scalar_bar_si_existe()
 
     # ------------------------------------------------------------------
@@ -1241,6 +1393,8 @@ class Visor3D(QtInteractor):
             return
         self._grid_esfuerzos.points = self._puntos_sin_deformar + self._escala_deformada * factor * self._desplazamientos
         self._grid_esfuerzos.Modified()
+        if self._seccion.activa:  # el corte se rehace sobre la malla movida
+            self._dibujar_esfuerzos()
         self.render()
 
     @property
@@ -1300,17 +1454,22 @@ class Visor3D(QtInteractor):
     def _sondear(self, x: int, y: int) -> None:
         """Muestra el valor del esfuerzo en el punto bajo el cursor."""
 
-        if self._grid_esfuerzos is None or self._actor_esfuerzos is None:
+        malla = self._malla_visible if self._malla_visible is not None else self._grid_esfuerzos
+        if malla is None or self._actor_esfuerzos is None:
             return
         if not self._picker.Pick(x, y, 0, self.renderer) or self._picker.GetActor() is not self._actor_esfuerzos:
             return
         celda = self._picker.GetCellId()
         punto = np.array(self._picker.GetPickPosition())
-        ids = np.array(self._grid_esfuerzos.get_cell(celda).point_ids)
-        cercano = ids[np.argmin(np.linalg.norm(self._grid_esfuerzos.points[ids] - punto, axis=1))]
-        barra = self._barra_de_celda[celda] if celda < len(self._barra_de_celda) else "?"
+        if celda < 0 or celda >= malla.n_cells:
+            return
+        ids = np.array(malla.get_cell(celda).point_ids)
+        cercano = ids[np.argmin(np.linalg.norm(malla.points[ids] - punto, axis=1))]
+        valor = float(np.asarray(malla.point_data["esfuerzo"])[cercano])  # en el corte: el valor interpolado
+        original = int(np.asarray(malla.cell_data["celda_original"])[celda]) if "celda_original" in malla.cell_data else celda
+        barra = self._barra_de_celda[original] if 0 <= original < len(self._barra_de_celda) else "?"
         self.punto_sondeado.emit(
-            f"{self._titulo_esfuerzos}: {self._valores_esfuerzos[cercano]:.3f} — barra {barra} "
+            f"{self._titulo_esfuerzos}: {valor:.3f} — barra {barra} "
             f"(en x={punto[0]:.2f}, y={punto[1]:.2f}, z={punto[2]:.2f} m)"
         )
 

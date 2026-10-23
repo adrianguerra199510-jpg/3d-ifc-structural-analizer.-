@@ -251,6 +251,11 @@ y la conserva como **sólido de forma libre**:
   el agujero a un perno infinitamente rígido), fija el **centro** de la superficie, el promedio de sus
   desplazamientos ponderado por el área (acople distribuido, como el RBE3): el agujero se deforma y la
   pieza gira alrededor del perno. Con todos los apoyos pasadores alineados el modelo puede girar y se avisa.
+- **Sección (corte).** En el panel de Resultados, «Cortar con un plano» corta la vista con un plano de normal
+  X, Y o Z que se mueve con un deslizador (o libre, arrastrándolo y girándolo con el ratón): la cara del
+  corte se colorea con los valores interpolados dentro del sólido (p. ej. una zapata por la mitad, para ver
+  cómo baja la carga). Se puede ver el modelo cortado o solo la cara del corte, invertir el lado y leer el
+  valor con un clic; funciona con la deformada, la animación y todas las magnitudes.
 - **Material elastoplástico (bilineal).** En *Materiales* se indica la fluencia **fy** y, si se quiere, el
   módulo tangente **Et** (por defecto E/100; las plantillas de acero y aluminio traen su fy). En el diálogo de
   ANALIZAR, la casilla «Material elastoplástico (análisis no lineal)» escribe `*PLASTIC` (endurecimiento

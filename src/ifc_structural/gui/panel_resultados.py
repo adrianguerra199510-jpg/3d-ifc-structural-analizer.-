@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QSlider,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..combinaciones.esfuerzos import MAGNITUDES
+from .visor_3d import Seccion
 
 ENVOLVENTE = "__ENVOLVENTE__"
 #: Clave del combo «Esfuerzo» para colorear por el desplazamiento total |u| (mm), como la deformada del reporte.
@@ -63,6 +65,7 @@ class PanelEsfuerzos(QWidget):
     video_solicitado = Signal()
     reporte_solicitado = Signal()
     escala_automatica_solicitada = Signal()
+    seccion_cambiada = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -95,6 +98,30 @@ class PanelEsfuerzos(QWidget):
         self.boton_animar.setCheckable(True)
         self.boton_video = QPushButton("Guardar video…")
         self.boton_video.setToolTip("Graba la deformada animada en un video MP4 (o GIF) con la vista actual")
+
+        # Sección: un plano que corta el modelo para ver los esfuerzos por dentro
+        self.check_seccion = QCheckBox("Cortar con un plano")
+        self.check_seccion.setToolTip("Corta la vista de resultados con un plano: la cara del corte se colorea con los "
+                                      "valores dentro del sólido (p. ej. una zapata por la mitad, para ver cómo baja la carga)")
+        self.combo_eje = QComboBox()
+        for texto, eje in (("Normal X (plano YZ)", "X"), ("Normal Y (plano XZ)", "Y"), ("Normal Z (plano XY, horizontal)", "Z"),
+                           ("Libre (movido con el ratón)", "LIBRE")):
+            self.combo_eje.addItem(texto, eje)
+        self.slider_seccion = QSlider(Qt.Horizontal)
+        self.slider_seccion.setRange(0, 1000)
+        self.slider_seccion.setValue(500)
+        self.slider_seccion.setToolTip("Posición del plano a lo largo del modelo")
+        self.etiqueta_seccion = QLabel("")
+        self.etiqueta_seccion.setWordWrap(True)
+        self.boton_invertir = QPushButton("Invertir lado")
+        self.boton_invertir.setCheckable(True)
+        self.boton_invertir.setToolTip("Muestra la otra mitad del modelo")
+        self.combo_modo_seccion = QComboBox()
+        self.combo_modo_seccion.addItem("Modelo cortado (con la cara del corte)", False)
+        self.combo_modo_seccion.addItem("Solo la cara del corte", True)
+        self.check_seccion_raton = QCheckBox("Mover y girar el plano con el ratón")
+        self.check_seccion_raton.setToolTip("Muestra el plano en el visor: arrastre su centro para moverlo y su normal "
+                                            "(la flecha) para girarlo a cualquier orientación")
 
         self.boton_reporte = QPushButton("Exportar reporte (PDF / Word)…")
         self.boton_reporte.setToolTip("Reporte del análisis con la malla, los esfuerzos de Von Mises y la deformada de cada caso "
@@ -131,9 +158,23 @@ class PanelEsfuerzos(QWidget):
         botones.addWidget(self.boton_video)
         capa.addLayout(botones)
 
+        grupo_seccion = QGroupBox("Sección")
+        capa_s = QVBoxLayout(grupo_seccion)
+        capa_s.addWidget(self.check_seccion)
+        capa_s.addWidget(self.combo_eje)
+        capa_s.addWidget(self.slider_seccion)
+        capa_s.addWidget(self.etiqueta_seccion)
+        fila_s = QHBoxLayout()
+        fila_s.addWidget(self.combo_modo_seccion, 1)
+        fila_s.addWidget(self.boton_invertir)
+        capa_s.addLayout(fila_s)
+        capa_s.addWidget(self.check_seccion_raton)
+        self.grupo_seccion = grupo_seccion
+
         layout = QVBoxLayout(self)
         layout.addLayout(formulario)
         layout.addWidget(grupo)
+        layout.addWidget(grupo_seccion)
         layout.addWidget(self.etiqueta_resumen)
         layout.addWidget(self.tabla)
         layout.addWidget(self.boton_reporte)
@@ -159,6 +200,11 @@ class PanelEsfuerzos(QWidget):
         self.boton_video.clicked.connect(self.video_solicitado)
         self.boton_reporte.clicked.connect(self.reporte_solicitado)
         self._actualizar_deformada_habilitada()
+        for senal in (self.check_seccion.toggled, self.combo_eje.currentIndexChanged, self.slider_seccion.valueChanged,
+                      self.boton_invertir.toggled, self.combo_modo_seccion.currentIndexChanged, self.check_seccion_raton.toggled):
+            senal.connect(self._al_cambiar_seccion)
+        self._normal_libre = (1.0, 0.0, 0.0)
+        self._actualizar_seccion_habilitada()
 
     @staticmethod
     def _spin() -> QDoubleSpinBox:
@@ -188,6 +234,41 @@ class PanelEsfuerzos(QWidget):
         activa = self.check_deformada.isChecked()
         for w in (self.spin_escala_deformada, self.boton_escala_auto, self.check_original):
             w.setEnabled(activa)
+
+    # -- sección -----------------------------------------------------------
+    def _actualizar_seccion_habilitada(self) -> None:
+        activa = self.check_seccion.isChecked()
+        for w in (self.combo_eje, self.slider_seccion, self.boton_invertir, self.combo_modo_seccion, self.check_seccion_raton,
+                  self.etiqueta_seccion):
+            w.setEnabled(activa)
+
+    def _al_cambiar_seccion(self, *_args) -> None:
+        self._actualizar_seccion_habilitada()
+        self.seccion_cambiada.emit()
+
+    def seccion(self) -> Seccion:
+        return Seccion(activa=self.check_seccion.isChecked(), eje=self.combo_eje.currentData(),
+                       posicion=self.slider_seccion.value() / 1000.0, invertir=self.boton_invertir.isChecked(),
+                       solo_cara=bool(self.combo_modo_seccion.currentData()), con_raton=self.check_seccion_raton.isChecked(),
+                       normal_libre=self._normal_libre)
+
+    def fijar_seccion(self, seccion: Seccion) -> None:
+        """Muestra en los controles el plano que se movió con el ratón (sin emitir ``seccion_cambiada``)."""
+
+        self._normal_libre = tuple(seccion.normal_libre)
+        controles = (self.check_seccion, self.combo_eje, self.slider_seccion, self.boton_invertir, self.combo_modo_seccion,
+                     self.check_seccion_raton)
+        for w in controles:
+            w.blockSignals(True)
+        self.check_seccion.setChecked(seccion.activa)
+        self.combo_eje.setCurrentIndex(max(0, self.combo_eje.findData(seccion.eje)))
+        self.slider_seccion.setValue(int(round(seccion.posicion * 1000)))
+        for w in controles:
+            w.blockSignals(False)
+        self._actualizar_seccion_habilitada()
+
+    def mostrar_plano(self, texto: str) -> None:
+        self.etiqueta_seccion.setText(texto)
 
     def fijar_escala_deformada(self, valor: float) -> None:
         self.spin_escala_deformada.blockSignals(True)

@@ -490,6 +490,8 @@ class VentanaPrincipal(QMainWindow):
         self.panel_esfuerzos.video_solicitado.connect(self._guardar_video)
         self.panel_esfuerzos.reporte_solicitado.connect(self.exportar_reporte)
         self.panel_esfuerzos.escala_automatica_solicitada.connect(self._aplicar_escala_automatica)
+        self.panel_esfuerzos.seccion_cambiada.connect(self._aplicar_seccion)
+        self.visor.seccion_movida.connect(self._al_mover_seccion)
         self.panel_esfuerzos.volver_al_modelo.connect(self.volver_al_modelo)
 
     # ------------------------------------------------------------------
@@ -1635,7 +1637,9 @@ class VentanaPrincipal(QMainWindow):
             ocultar_planos=resultado.es_solido,
             desplazamientos=desplazamientos, escala_deformada=parametros.escala_deformada,
             factor_deformada=self._factor_animacion(), mostrar_original=parametros.mostrar_original,
+            seccion=self.panel_esfuerzos.seccion(),
         )
+        self.panel_esfuerzos.mostrar_plano(self.visor.texto_seccion())
         self.panel_esfuerzos.mostrar_resumen(resumen, resultado.resumen_por_barra(valores))
 
     # ------------------------------------------------------------------
@@ -1708,6 +1712,14 @@ class VentanaPrincipal(QMainWindow):
         bruta = 0.08 * tamano / u_max
         cifras = 10 ** (math.floor(math.log10(bruta)) - 1)  # dos cifras significativas
         return float(min(1e7, max(1.0, round(bruta / cifras) * cifras)))
+
+    def _aplicar_seccion(self) -> None:
+        self.visor.fijar_seccion(self.panel_esfuerzos.seccion())
+        self.panel_esfuerzos.mostrar_plano(self.visor.texto_seccion())
+
+    def _al_mover_seccion(self, seccion) -> None:
+        self.panel_esfuerzos.fijar_seccion(seccion)
+        self.panel_esfuerzos.mostrar_plano(self.visor.texto_seccion())
 
     def _aplicar_escala_automatica(self) -> None:
         if self.resultado is not None:
