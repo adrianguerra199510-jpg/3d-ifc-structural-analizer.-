@@ -71,6 +71,7 @@ class ModeloSolido:
     enlaces: List[Enlace3D] = field(default_factory=list)
     acoples: List[Acople] = field(default_factory=list)
     avisos: List[str] = field(default_factory=list)  # los deja ``escribir_comun`` (constraints que hubo que ajustar)
+    no_lineal: bool = False  # True: los materiales con fluencia se escriben elastoplásticos (``*PLASTIC``)
 
     @property
     def n_nodos(self) -> int:
@@ -133,6 +134,8 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
         etq = modelo.materiales[material]
         lineas += [f"*MATERIAL,NAME={etq}", "*ELASTIC", f"{m.modulo_elasticidad:.8g},{m.modulo_poisson:.5f}",
                    "*DENSITY", f"{m.densidad:.8g}"]
+        if modelo.no_lineal and getattr(m, "es_plastico", False):  # bilineal: endurecimiento isótropo lineal
+            lineas += ["*PLASTIC"] + [f"{sigma:.8g},{ep:.8g}" for sigma, ep in m.curva_plastica()]
         if por_material.get(material):
             lineas.append(f"*SOLID SECTION,ELSET=E_{etq},MATERIAL={etq}")
         if material in por_material_tetra:
@@ -513,6 +516,27 @@ def interpolar_en_caras(c: np.ndarray, puntos: np.ndarray, caras: np.ndarray, ca
 class CargasCaso:
     nodales: Dict[int, np.ndarray] = field(default_factory=dict)  # nodo 0-based -> (fx, fy, fz)
     peso_propio: bool = False
+    factor_peso_propio: float = 1.0  # una combinación resuelta directamente: suma de los factores de sus casos con peso propio
+
+    @staticmethod
+    def combinar(por_caso: Dict[str, "CargasCaso"], factores: Dict[str, float]) -> "CargasCaso":
+        """Cargas de una combinación (Σ factor · cargas de cada caso), para resolverla como un caso más: con plasticidad
+        los resultados no se pueden sumar."""
+
+        total = CargasCaso()
+        gravedad = 0.0
+        for caso, factor in factores.items():
+            cargas = por_caso.get(caso)
+            if cargas is None or factor == 0:
+                continue
+            for n, f in cargas.nodales.items():
+                acumulada = total.nodales.setdefault(n, np.zeros(3))
+                acumulada += factor * np.asarray(f, dtype=float)
+            if cargas.peso_propio:
+                gravedad += factor * cargas.factor_peso_propio
+        total.peso_propio = abs(gravedad) > 1e-12
+        total.factor_peso_propio = gravedad if total.peso_propio else 1.0
+        return total
 
     def sumar(self, nodos: np.ndarray, fuerzas: np.ndarray) -> None:
         for n, f in zip(nodos, fuerzas):
@@ -520,9 +544,22 @@ class CargasCaso:
             acumulada += f
 
 
-def escribir_caso(comun: List[str], cargas: CargasCaso, caso_id: str) -> List[str]:
+#: Paso no lineal: incremento inicial, tiempo total, incremento mínimo y máximo (la carga crece de 0 a 1 en ese tiempo).
+INCREMENTOS_NO_LINEAL = "0.25,1.0,1e-5,0.5"
+#: Iteraciones de equilibrio por incremento antes de reducirlo (CalculiX: I0, IR, IP, IC, IL, IG, IS, IA).
+CONTROL_NO_LINEAL = "4,8,9,200,10,4,,5"
+
+
+def escribir_caso(comun: List[str], cargas: CargasCaso, caso_id: str, no_lineal: bool = False) -> List[str]:
+    """Paso de carga de un caso. ``no_lineal``: la carga se aplica en incrementos (plasticidad) y se guardan además las
+    deformaciones plásticas equivalentes (PEEQ)."""
+
     lineas = list(comun)
-    lineas += ["*STEP", "*STATIC"]
+    if no_lineal:
+        lineas += ["*STEP,INC=200", "*STATIC", INCREMENTOS_NO_LINEAL, "*CONTROLS,PARAMETERS=TIME INCREMENTATION",
+                   CONTROL_NO_LINEAL]
+    else:
+        lineas += ["*STEP", "*STATIC"]
     if cargas.nodales:
         lineas.append("*CLOAD")
         for n in sorted(cargas.nodales):
@@ -530,8 +567,11 @@ def escribir_caso(comun: List[str], cargas: CargasCaso, caso_id: str) -> List[st
                 if abs(valor) > 1e-12:
                     lineas.append(f"{n + 1},{g},{valor:.8g}")
     if cargas.peso_propio:
-        lineas += ["*DLOAD", "EALL,GRAV,1.0,0.0,0.0,-1.0"]
-    lineas += ["*NODE FILE", "U", "*EL FILE", "S", "*END STEP"]
+        lineas += ["*DLOAD", f"EALL,GRAV,{cargas.factor_peso_propio:.8g},0.0,0.0,-1.0"]
+    if no_lineal:  # solo el último incremento: el estado con toda la carga
+        lineas += ["*NODE FILE,FREQUENCY=1000", "U", "*EL FILE,FREQUENCY=1000", "S,PEEQ", "*END STEP"]
+    else:
+        lineas += ["*NODE FILE", "U", "*EL FILE", "S", "*END STEP"]
     return lineas
 
 

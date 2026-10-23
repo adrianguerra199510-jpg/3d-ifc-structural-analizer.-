@@ -32,9 +32,22 @@ PLANTILLAS_MATERIALES: Dict[str, Tuple[float, float, float]] = {
 }
 
 
-def material_desde_valores(nombre: str, e_mpa: float, poisson: float, peso_especifico: float) -> Material:
+#: nombre de plantilla -> esfuerzo de fluencia fy [MPa] (las que no están son elásticas)
+FLUENCIA_PLANTILLAS: Dict[str, float] = {
+    "Acero estructural A36": 250.0,
+    "Acero estructural A572 Gr. 50": 345.0,
+    "Aluminio 6061-T6": 240.0,
+}
+
+
+def material_desde_valores(nombre: str, e_mpa: float, poisson: float, peso_especifico: float,
+                           fy_mpa: float = 0.0, et_mpa: float = 0.0) -> Material:
+    """Material con E en MPa; con ``fy_mpa`` > 0, elastoplástico bilineal (``et_mpa`` = 0: Et = E/100)."""
+
     return Material(
-        nombre=nombre, modulo_elasticidad=e_mpa * KPA_POR_MPA, modulo_poisson=poisson, densidad=peso_especifico
+        nombre=nombre, modulo_elasticidad=e_mpa * KPA_POR_MPA, modulo_poisson=poisson, densidad=peso_especifico,
+        fluencia=fy_mpa * KPA_POR_MPA if fy_mpa > 0 else None,
+        modulo_tangente=et_mpa * KPA_POR_MPA if fy_mpa > 0 and et_mpa > 0 else None,
     )
 
 
@@ -43,10 +56,14 @@ def modulo_en_mpa(material: Material) -> float:
 
 
 def descripcion_material(material: Material) -> str:
-    return (
+    texto = (
         f"{material.nombre} — E = {modulo_en_mpa(material):,.0f} MPa, ν = {material.modulo_poisson:g}, "
         f"γ = {material.densidad:g} kN/m³"
     )
+    if material.es_plastico:
+        texto += (f", fy = {material.fluencia / KPA_POR_MPA:,.0f} MPa (bilineal, Et = "
+                  f"{material.tangente / KPA_POR_MPA:,.0f} MPa)")
+    return texto
 
 
 def usos_de_material(proyecto: Proyecto, nombre: str) -> list:

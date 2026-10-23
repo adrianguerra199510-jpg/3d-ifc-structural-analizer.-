@@ -28,7 +28,7 @@ from ..solver.analisis import (
 )
 from ..solver.ejecutor_ccx import ejecutar_ccx_todos_los_casos
 from ..solver.generador_inp import ElementoMalla, MallaAnalisis
-from ..solver.lector_resultados import leer_desplazamientos_frd, leer_malla_frd, leer_tensiones_frd
+from ..solver.lector_resultados import leer_desplazamientos_frd, leer_escalar_frd, leer_malla_frd, leer_tensiones_frd
 from .contactos import Union, _caras_cercanas, _caras_en_contacto, detectar_acoples, detectar_uniones, partes_sin_conexion
 from .generador import (Acople, Apoyo3D, CargasCaso, Enlace3D, ModeloSolido, distancias_a_caras, escribir, escribir_caso,
                         escribir_comun, etiqueta)
@@ -47,6 +47,16 @@ MEMORIA_DIRECTO_REFERENCIA = (193_000, 2.95e9)
 EXPONENTE_MEMORIA_DIRECTO = 1.4
 NODOS_POR_ELEMENTO = 2.0
 TIEMPO_LIMITE_CCX = 24 * 3600.0
+#: Clave interna de los pasos que resuelven una combinación directamente (análisis no lineal).
+PREFIJO_COMBINACION = "\x00COMB:"
+#: Deformación plástica equivalente admisible para fluencia local (EN 1993-1-5, anexo C).
+LIMITE_PEEQ = 0.05
+
+
+def _sin_convergencia(salida: str) -> bool:
+    texto = salida.lower()
+    return any(f in texto for f in ("increment size smaller than minimum", "too many cutbacks", "divergence",
+                                    "no convergence"))
 
 
 def memoria_disponible() -> Optional[float]:
@@ -609,7 +619,12 @@ def ejecutar_analisis_solido(
     elemento_solido: Optional[str] = None,
     malla_previa: Optional[MallaPrevia] = None,
     barridos: bool = True,
+    no_lineal: bool = False,
 ) -> ResultadoAnalisis:
+    """Análisis sólido 3D con CalculiX. ``no_lineal``: los materiales con fluencia son elastoplásticos (bilineales), la
+    carga se aplica en incrementos y cada combinación se resuelve como un análisis propio (con plasticidad los
+    resultados de los casos no se pueden sumar)."""
+
     def avanzar(mensaje: str) -> None:
         if al_avanzar is not None:
             al_avanzar(mensaje)
@@ -683,32 +698,68 @@ def ejecutar_analisis_solido(
             "también puede unirlas con un constraint (Conectar).")
 
     materiales = {m: etiqueta(m) for m in {p.material for p in malla.partes}}
+    if no_lineal:
+        plasticos = [m for m in materiales if m in proyecto.materiales and proyecto.materiales[m].es_plastico]
+        elasticos = [m for m in materiales if m not in plasticos]
+        if not plasticos:
+            advertencias.append("Análisis no lineal pedido, pero ningún material tiene esfuerzo de fluencia (fy): se hizo el "
+                                "análisis elástico lineal. Indique fy en Materiales.")
+            no_lineal = False
+        else:
+            if elasticos:
+                advertencias.append(f"Análisis elastoplástico: los materiales {', '.join(elasticos)} no tienen fluencia (fy) "
+                                    "y se tratan como elásticos.")
+            advertencias.append(
+                "Análisis elastoplástico (bilineal, no lineal): la carga se aplica en incrementos y cada combinación se "
+                "resolvió directamente con sus cargas mayoradas (no por suma de casos). Revise la deformación plástica "
+                "equivalente (PEEQ): por encima del 5 % la fluencia local ya no es admisible (EN 1993-1-5, anexo C).")
     con_peso_propio = set(casos_con_peso_propio(casos))
     directorio_trabajo.mkdir(parents=True, exist_ok=True)
 
     def resolver(apoyos_modelo: List[Apoyo3D]):
         modelo = ModeloSolido(malla=malla, uniones=uniones, apoyos=apoyos_modelo, materiales=materiales, enlaces=enlaces,
-                              acoples=acoples)
+                              acoples=acoples, no_lineal=no_lineal)
         avanzar("Generando los archivos de CalculiX...")
         comun = escribir_comun(modelo, proyecto)
         advertencias.extend(a for a in modelo.avisos if a not in advertencias)
         avisos_cargas: List[str] = []
         rutas: Dict[str, Path] = {}
+
+        def escribir_paso(clave: str, archivo: str, cargas: CargasCaso) -> None:
+            ruta = escribir(directorio_trabajo / f"{archivo}.inp", escribir_caso(comun, cargas, clave, no_lineal))
+            for sufijo in (".frd", ".dat"):
+                ruta.with_suffix(sufijo).unlink(missing_ok=True)
+            rutas[clave] = ruta
+
+        cargas_por_caso: Dict[str, CargasCaso] = {}
         for caso_id in casos:
             cargas = _cargas_del_caso(
                 proyecto, miembros, malla, caso_id, cargas_puntuales_por_caso.get(caso_id, []),
                 cargas_lineales_por_caso.get(caso_id, []), cargas_area_por_caso.get(caso_id, []),
                 caso_id in con_peso_propio, avisos_cargas, cargas_superficie_por_caso.get(caso_id, []), tamano)
-            ruta = escribir(directorio_trabajo / f"solido_{caso_id}.inp", escribir_caso(comun, cargas, caso_id))
-            for sufijo in (".frd", ".dat"):
-                ruta.with_suffix(sufijo).unlink(missing_ok=True)
-            rutas[caso_id] = ruta
+            cargas_por_caso[caso_id] = cargas
+            escribir_paso(caso_id, f"solido_{caso_id}", cargas)
+        if no_lineal:  # cada combinación, con sus cargas mayoradas
+            for comb in combinaciones.values():
+                escribir_paso(PREFIJO_COMBINACION + comb.id, f"solido_comb_{comb.id}",
+                              CargasCaso.combinar(cargas_por_caso, comb.factores))
+
+        def nombre(clave: str) -> str:
+            if clave.startswith(PREFIJO_COMBINACION):
+                return f"la combinación {clave[len(PREFIJO_COMBINACION):]}"
+            return f"el caso {clave}"
+
         ejecuciones = ejecutar_ccx_todos_los_casos(
             rutas, ruta_ccx, tiempo_limite=TIEMPO_LIMITE_CCX,
-            al_avanzar=lambda caso, i, total: avanzar(f"Resolviendo el caso {caso} ({i} de {total}) con CalculiX..."))
+            al_avanzar=lambda caso, i, total: avanzar(
+                f"Resolviendo {nombre(caso)} ({i} de {total}) con CalculiX" + (" (no lineal)..." if no_lineal else "...")))
         fallidos = {c: r for c, r in ejecuciones.items() if not r.exitoso}
         if fallidos:
-            detalle = "\n".join(f"Caso {c}: {r.diagnostico()}" for c, r in fallidos.items())
+            detalle = "\n".join(f"{nombre(c).capitalize()}: {r.diagnostico()}" for c, r in fallidos.items())
+            if no_lineal and any(_sin_convergencia(r.salida) for r in fallidos.values()):
+                detalle += ("\n\nEl análisis elastoplástico no convergió: con esas cargas la estructura (o alguna pieza) "
+                            "plastifica hasta formar un mecanismo, es decir, se supera su capacidad. Revise las cargas, los "
+                            "apoyos y las uniones, o compruebe con el análisis elástico qué zonas pasan de fy.")
             raise ErrorAnalisis("CalculiX no pudo resolver el modelo sólido.\n" + detalle)
         avanzar("Leyendo los esfuerzos...")
         primer = next(iter(ejecuciones))
@@ -718,11 +769,18 @@ def ejecutar_analisis_solido(
         for caso_id, ejecucion in ejecuciones.items():
             m_caso = leer_malla_frd(ejecucion.ruta_frd)
             if not np.array_equal(m_caso.ids_nodos, malla_t.ids_nodos):
-                raise ErrorAnalisis(f"La malla de resultados del caso {caso_id} no coincide con la de los demás casos.")
+                raise ErrorAnalisis(f"La malla de resultados de {nombre(caso_id)} no coincide con la de los demás casos.")
             tensiones[caso_id] = leer_tensiones_frd(ejecucion.ruta_frd, malla_t)
             desplazamientos[caso_id] = leer_desplazamientos_frd(ejecucion.ruta_frd, malla_t)
+            if no_lineal:
+                plasticas[caso_id] = leer_escalar_frd(ejecucion.ruta_frd, malla_t, "PE")
+        directas.clear()
+        for clave in [c for c in tensiones if c.startswith(PREFIJO_COMBINACION)]:
+            directas[clave[len(PREFIJO_COMBINACION):]] = (tensiones.pop(clave), desplazamientos.pop(clave))
         return malla_t, tensiones, desplazamientos, avisos_cargas
 
+    directas: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}  # combinaciones resueltas directamente (no lineal)
+    plasticas: Dict[str, np.ndarray] = {}  # PEEQ por caso o PREFIJO_COMBINACION + combinación (no lineal)
     malla_tensiones, tensiones_por_caso, desplazamientos_por_caso, avisos_cargas = resolver(apoyos_3d)
     advertencias.extend(dict.fromkeys(avisos_cargas))
     pieza_de_elemento = malla.elementos_en_orden
@@ -764,8 +822,21 @@ def ejecutar_analisis_solido(
 
     # Solo los hexaedros del modelo (CalculiX no añade otros, pero los nodos de apoyo rígido no se dibujan)
     avanzar("Combinando casos de carga...")
-    tensiones_por_combinacion = superponer_todas_las_combinaciones(tensiones_por_caso, list(combinaciones.values()))
-    desplazamientos_por_combinacion = superponer_todas_las_combinaciones(desplazamientos_por_caso, list(combinaciones.values()))
+    if no_lineal:
+        tensiones_por_combinacion = {c: t for c, (t, _) in directas.items()}
+        desplazamientos_por_combinacion = {c: u for c, (_, u) in directas.items()}
+    else:
+        tensiones_por_combinacion = superponer_todas_las_combinaciones(tensiones_por_caso, list(combinaciones.values()))
+        desplazamientos_por_combinacion = superponer_todas_las_combinaciones(desplazamientos_por_caso, list(combinaciones.values()))
+    plastica_por_caso = {c: v for c, v in plasticas.items() if not c.startswith(PREFIJO_COMBINACION)}
+    plastica_por_combinacion = {c[len(PREFIJO_COMBINACION):]: v for c, v in plasticas.items() if c.startswith(PREFIJO_COMBINACION)}
+    if plasticas:
+        peor = max(plasticas, key=lambda c: float(plasticas[c].max()))
+        maxima = float(plasticas[peor].max())
+        if maxima > LIMITE_PEEQ:
+            texto = peor[len(PREFIJO_COMBINACION):] if peor.startswith(PREFIJO_COMBINACION) else peor
+            advertencias.insert(0, f"Deformación plástica equivalente máxima {maxima * 100:.1f} % en {texto}: supera el 5 % "
+                                   "admisible para fluencia local (EN 1993-1-5, anexo C).")
     maximo = max((float(np.nanmax(esfuerzos.von_mises(t))) for t in tensiones_por_caso.values()), default=0.0)
     if not np.isfinite(maximo) or maximo > LIMITE_ESFUERZO_RAZONABLE_KPA:
         advertencias.append("Los esfuerzos obtenidos no son físicamente razonables: revise los apoyos y las uniones entre piezas.")
@@ -792,4 +863,5 @@ def ejecutar_analisis_solido(
         malla=equivalente, malla_tensiones=malla_tensiones, tensiones_por_caso=tensiones_por_caso,
         tensiones_por_combinacion=tensiones_por_combinacion, advertencias=advertencias, es_solido=True,
         desplazamientos_por_caso=desplazamientos_por_caso, desplazamientos_por_combinacion=desplazamientos_por_combinacion,
+        plastica_por_caso=plastica_por_caso, plastica_por_combinacion=plastica_por_combinacion, no_lineal=no_lineal,
     )

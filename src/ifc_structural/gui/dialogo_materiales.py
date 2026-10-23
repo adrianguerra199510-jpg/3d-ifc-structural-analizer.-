@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 
 from ..core.asignacion import Objetivo, descripcion
 from ..core.materiales import (
+    FLUENCIA_PLANTILLAS,
+    KPA_POR_MPA,
     PLANTILLAS_MATERIALES,
     descripcion_material,
     material_desde_valores,
@@ -72,6 +74,14 @@ class DialogoMateriales(QDialog):
         self.spin_e = self._spin(1.0, 1e7, 0, " MPa")
         self.spin_poisson = self._spin(0.0, 0.499, 3, "")
         self.spin_peso = self._spin(0.0, 1000.0, 2, " kN/m³")
+        self.spin_fy = self._spin(0.0, 1e5, 1, " MPa")
+        self.spin_fy.setSpecialValueText("sin fluencia (elástico)")
+        self.spin_fy.setToolTip("Esfuerzo de fluencia fy. Solo se usa en el análisis 3D con «Material elastoplástico»; "
+                                "0 = el material es siempre elástico.")
+        self.spin_et = self._spin(0.0, 1e7, 0, " MPa")
+        self.spin_et.setSpecialValueText("E/100 (por defecto)")
+        self.spin_et.setToolTip("Módulo tangente Et: pendiente de la curva esfuerzo–deformación después de la fluencia "
+                                "(bilineal). 0 = E/100.")
         self.combo_plantilla = QComboBox()
         self.combo_plantilla.addItem(_SIN_PLANTILLA)
         self.combo_plantilla.addItems(list(PLANTILLAS_MATERIALES))
@@ -81,6 +91,8 @@ class DialogoMateriales(QDialog):
         formulario.addRow("Módulo de elasticidad E:", self.spin_e)
         formulario.addRow("Coeficiente de Poisson ν:", self.spin_poisson)
         formulario.addRow("Peso específico γ:", self.spin_peso)
+        formulario.addRow("Fluencia fy:", self.spin_fy)
+        formulario.addRow("Módulo tangente Et:", self.spin_et)
         self.etiqueta_uso = QLabel()
         self.etiqueta_uso.setWordWrap(True)
         formulario.addRow(self.etiqueta_uso)
@@ -106,8 +118,9 @@ class DialogoMateriales(QDialog):
 
         for editor in (self.edit_nombre,):
             editor.textChanged.connect(self._marcar_sucio)
-        for spin in (self.spin_e, self.spin_poisson, self.spin_peso):
+        for spin in (self.spin_e, self.spin_poisson, self.spin_peso, self.spin_fy, self.spin_et):
             spin.valueChanged.connect(self._marcar_sucio)
+        self.spin_fy.valueChanged.connect(lambda v: self.spin_et.setEnabled(v > 0))
 
         self._refrescar_lista()
         self._nuevo()
@@ -150,6 +163,9 @@ class DialogoMateriales(QDialog):
         self.spin_e.setValue(25000.0)
         self.spin_poisson.setValue(0.2)
         self.spin_peso.setValue(24.0)
+        self.spin_fy.setValue(0.0)
+        self.spin_et.setValue(0.0)
+        self.spin_et.setEnabled(False)
         self.combo_plantilla.setCurrentIndex(0)
         self.boton_eliminar.setEnabled(False)
         self.etiqueta_uso.clear()
@@ -172,6 +188,9 @@ class DialogoMateriales(QDialog):
         self.spin_e.setValue(modulo_en_mpa(material))
         self.spin_poisson.setValue(material.modulo_poisson)
         self.spin_peso.setValue(material.densidad)
+        self.spin_fy.setValue(material.fluencia / KPA_POR_MPA if material.es_plastico else 0.0)
+        self.spin_et.setValue(material.modulo_tangente / KPA_POR_MPA if material.es_plastico and material.modulo_tangente else 0.0)
+        self.spin_et.setEnabled(material.es_plastico)
         self.combo_plantilla.setCurrentIndex(0)
         self.boton_eliminar.setEnabled(True)
         usos = usos_de_material(self._proyecto, nombre)
@@ -202,6 +221,8 @@ class DialogoMateriales(QDialog):
         self.spin_e.setValue(e)
         self.spin_poisson.setValue(nu)
         self.spin_peso.setValue(peso)
+        self.spin_fy.setValue(FLUENCIA_PLANTILLAS.get(nombre, 0.0))
+        self.spin_et.setValue(0.0)
         if self._nombre_actual is None and not self.edit_nombre.text().strip():
             self.edit_nombre.setText("".join(c if c.isalnum() else "_" for c in nombre).strip("_").upper())
 
@@ -214,8 +235,8 @@ class DialogoMateriales(QDialog):
             QMessageBox.warning(self, "Nombre repetido", f"Ya existe un material llamado «{nombre}».")
             return False
         self._materiales[nombre] = material_desde_valores(
-            nombre, self.spin_e.value(), self.spin_poisson.value(), self.spin_peso.value()
-        )
+            nombre, self.spin_e.value(), self.spin_poisson.value(), self.spin_peso.value(), self.spin_fy.value(),
+            self.spin_et.value())
         self._refrescar_lista(nombre)
         self._cargar(nombre)
         return True

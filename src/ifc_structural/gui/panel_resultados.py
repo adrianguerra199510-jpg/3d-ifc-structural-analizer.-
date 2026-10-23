@@ -32,6 +32,9 @@ from ..combinaciones.esfuerzos import MAGNITUDES
 ENVOLVENTE = "__ENVOLVENTE__"
 #: Clave del combo «Esfuerzo» para colorear por el desplazamiento total |u| (mm), como la deformada del reporte.
 DESPLAZAMIENTO = "__DESPLAZAMIENTO__"
+#: Clave del combo para la deformación plástica equivalente PEEQ (%), solo con resultados del análisis elastoplástico.
+DEFORMACION_PLASTICA = "__PEEQ__"
+TEXTO_PLASTICA = "Deformación plástica (PEEQ)"
 COLORMAPS = ["turbo", "jet", "viridis", "coolwarm", "rainbow", "plasma"]
 
 
@@ -193,7 +196,8 @@ class PanelEsfuerzos(QWidget):
 
     @property
     def unidad(self) -> str:
-        return "mm" if self.combo_magnitud.currentData() == DESPLAZAMIENTO else "MPa"
+        clave = self.combo_magnitud.currentData()
+        return "mm" if clave == DESPLAZAMIENTO else "%" if clave == DEFORMACION_PLASTICA else "MPa"
 
     def _actualizar_unidades(self) -> None:
         unidad = self.unidad
@@ -207,9 +211,21 @@ class PanelEsfuerzos(QWidget):
         self.spin_maximo.setEnabled(manual)
 
     # ------------------------------------------------------------------
-    def establecer_resultados(self, casos: List[Tuple[str, str]], combinaciones: List[Tuple[str, str]]) -> None:
+    def establecer_resultados(self, casos: List[Tuple[str, str]], combinaciones: List[Tuple[str, str]],
+                              plastica: bool = False) -> None:
         """Opciones del combo: [(id, texto)] de casos y de combinaciones;
-        la envolvente solo se ofrece si hay combinaciones."""
+        la envolvente solo se ofrece si hay combinaciones. ``plastica``: hay deformaciones plásticas que mostrar."""
+
+        indice = self.combo_magnitud.findData(DEFORMACION_PLASTICA)
+        if plastica and indice < 0:
+            self.combo_magnitud.addItem(TEXTO_PLASTICA, DEFORMACION_PLASTICA)
+        elif not plastica and indice >= 0:
+            self.combo_magnitud.blockSignals(True)
+            if self.combo_magnitud.currentIndex() == indice:
+                self.combo_magnitud.setCurrentIndex(0)
+            self.combo_magnitud.removeItem(indice)
+            self.combo_magnitud.blockSignals(False)
+            self._actualizar_unidades()
 
         self.combo_resultado.blockSignals(True)
         self.combo_resultado.clear()

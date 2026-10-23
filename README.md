@@ -251,6 +251,15 @@ y la conserva como **sólido de forma libre**:
   el agujero a un perno infinitamente rígido), fija el **centro** de la superficie, el promedio de sus
   desplazamientos ponderado por el área (acople distribuido, como el RBE3): el agujero se deforma y la
   pieza gira alrededor del perno. Con todos los apoyos pasadores alineados el modelo puede girar y se avisa.
+- **Material elastoplástico (bilineal).** En *Materiales* se indica la fluencia **fy** y, si se quiere, el
+  módulo tangente **Et** (por defecto E/100; las plantillas de acero y aluminio traen su fy). En el diálogo de
+  ANALIZAR, la casilla «Material elastoplástico (análisis no lineal)» escribe `*PLASTIC` (endurecimiento
+  isótropo lineal) y aplica la carga en incrementos: el acero no pasa de fy (más el endurecimiento) y los
+  picos locales se reparten. Con plasticidad los casos no se pueden sumar, así que **cada combinación se
+  resuelve como un análisis propio** con sus cargas mayoradas. El visor y el reporte muestran la
+  **deformación plástica equivalente (PEEQ, %)**, con aviso por encima del 5 % (EN 1993-1-5, anexo C).
+  Tarda varias veces más que el análisis elástico. Si no converge, la estructura plastifica hasta formar un
+  mecanismo (se supera su capacidad).
 - **Cargas.** *Asignar → Carga* sobre una superficie: **presión** (kPa, por defecto normal a la
   superficie y hacia dentro), **fuerza total** (kN repartida por área) o **momento total** (kN·m,
   repartido con fuerzas proporcionales a la distancia al centro), en la dirección elegida (normal,

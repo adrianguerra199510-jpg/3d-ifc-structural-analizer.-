@@ -239,3 +239,24 @@ def leer_desplazamientos_frd(ruta_frd: Path, malla: MallaTensiones) -> np.ndarra
     if faltantes:
         raise ErrorLecturaResultados(f"Faltan desplazamientos en {len(faltantes)} nodos de la malla (p. ej. el nodo {faltantes[0]}).")
     return np.array([por_nodo[n] for n in malla.ids_nodos], dtype=float)
+
+
+def leer_escalar_frd(ruta_frd: Path, malla: MallaTensiones, nombre: str) -> np.ndarray:
+    """Campo nodal escalar del bloque ``nombre`` del .frd (p. ej. ``PE``, la deformación plástica equivalente PEEQ) en el
+    orden de ``malla.ids_nodos``; ceros donde no hay datos (o si el bloque no está, p. ej. sin materiales plásticos). Con
+    varios incrementos guardados vale el último."""
+
+    lineas = ruta_frd.read_text(encoding="utf-8", errors="ignore").splitlines()
+    por_nodo: Dict[int, float] = {}
+    en_bloque = False
+    for linea in lineas:
+        if linea.startswith(" -4"):
+            partes = linea.split()
+            en_bloque = len(partes) > 1 and partes[1] == nombre
+            continue
+        if linea.startswith(" -3"):
+            en_bloque = False
+            continue
+        if en_bloque and linea.startswith(" -1"):
+            por_nodo[int(linea[3 : 3 + _LARGO_ID])] = _parsear_valores(linea, 1)[0]
+    return np.array([por_nodo.get(n, 0.0) for n in malla.ids_nodos], dtype=float)

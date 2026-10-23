@@ -67,6 +67,8 @@ class Resumen:
     u_max: float  # mm
     punto_u: np.ndarray
     u_componentes: Tuple[float, float, float]  # máximos de |ux|, |uy|, |uz| en mm
+    peeq_max: float = float("nan")  # % (análisis elastoplástico)
+    punto_peeq: Optional[np.ndarray] = None
 
 
 def _fmt(x: float, d: int = 3) -> str:
@@ -112,8 +114,13 @@ def _resumenes(datos: DatosReporte) -> List[Resumen]:
             componentes = tuple(float(np.nanmax(np.abs(u[:, k]))) * 1000.0 for k in range(3))
         else:
             u_max, punto_u, componentes = float("nan"), coordenadas[0] * np.nan, (float("nan"),) * 3
-        resumenes.append(Resumen(id_, nombre, tipo, float(vm[i]), coordenadas[i], barras[celda] if celda >= 0 else "—",
-                                 u_max, punto_u, componentes))
+        resumen = Resumen(id_, nombre, tipo, float(vm[i]), coordenadas[i], barras[celda] if celda >= 0 else "—",
+                          u_max, punto_u, componentes)
+        plastica = (getattr(r, "plastica_por_caso", {}) if tipo == "Caso" else getattr(r, "plastica_por_combinacion", {})) or {}
+        if id_ in plastica:
+            k = int(np.argmax(plastica[id_]))
+            resumen.peeq_max, resumen.punto_peeq = float(plastica[id_][k]) * 100.0, coordenadas[k]
+        resumenes.append(resumen)
     return resumenes
 
 
@@ -147,7 +154,9 @@ def armar_contenido(datos: DatosReporte, imagenes: Dict[str, str]) -> List[Bloqu
     bloques.append(Bloque("parrafo", f"Proyecto: {p.nombre or 'sin nombre'}" + (f" ({Path(p.ruta_ifc).name})" if getattr(p, "ruta_ifc", None) else "")))
     bloques.append(Bloque("parrafo", f"Fecha: {fecha}" + (f" — Autor: {datos.autor}" if datos.autor else "")))
     bloques.append(Bloque("parrafo", "Tipo de análisis: " + ("modelo sólido 3D por elementos finitos (CalculiX)" if r.es_solido
-                                                           else "modelo de barras (CalculiX)") + ", elástico lineal."))
+                                                           else "modelo de barras (CalculiX)")
+                                     + (", elastoplástico bilineal (no lineal): cada combinación se resolvió directamente con "
+                                        "sus cargas mayoradas." if getattr(r, "no_lineal", False) else ", elástico lineal.")))
 
     # 1. Modelo
     bloques.append(Bloque("subtitulo", "1. Modelo"))
@@ -158,10 +167,15 @@ def armar_contenido(datos: DatosReporte, imagenes: Dict[str, str]) -> List[Bloqu
             filas.append([nombre, str(n)])
     bloques.append(Bloque("tabla", filas=filas))
     usados = {getattr(e, "material", None) for c in (p.vigas, p.columnas, p.losas, p.muros, p.solidos) for e in c.values()}
-    filas = [["Material", "E [MPa]", "ν", "Peso específico [kN/m³]"]]
+    plastico = getattr(r, "no_lineal", False)
+    filas = [["Material", "E [MPa]", "ν", "Peso específico [kN/m³]"] + (["fy [MPa]", "Et [MPa]"] if plastico else [])]
     for nombre, m in p.materiales.items():
         if nombre in usados:
-            filas.append([nombre, _fmt(m.modulo_elasticidad / 1000.0, 0), f"{m.modulo_poisson:.2f}", f"{m.densidad:.2f}"])
+            fila = [nombre, _fmt(m.modulo_elasticidad / 1000.0, 0), f"{m.modulo_poisson:.2f}", f"{m.densidad:.2f}"]
+            if plastico:
+                fila += ([_fmt(m.fluencia / 1000.0, 0), _fmt(m.tangente / 1000.0, 0)] if getattr(m, "es_plastico", False)
+                         else ["elástico", "—"])
+            filas.append(fila)
     if len(filas) > 1:
         bloques.append(Bloque("parrafo", "Materiales:"))
         bloques.append(Bloque("tabla", filas=filas))
@@ -180,7 +194,10 @@ def armar_contenido(datos: DatosReporte, imagenes: Dict[str, str]) -> List[Bloqu
                 if getattr(a, "cara", None) is not None:
                     sobre += f", superficie {a.cara}"
             grados = a.grados_restringidos() if hasattr(a, "grados_restringidos") else []
-            filas.append([getattr(a, "nombre", "") or getattr(a, "id", ""), sobre, " ".join(nombres_gdl.get(g, str(g)) for g in grados)])
+            restringe = " ".join(nombres_gdl.get(g, str(g)) for g in grados)
+            if getattr(a, "pasador", False):
+                restringe = f"pasador: {restringe} del centro"
+            filas.append([getattr(a, "nombre", "") or getattr(a, "id", ""), sobre, restringe])
         bloques.append(Bloque("tabla", filas=filas))
     filas = [["Caso", "Nombre", "Tipo", "Cargas"]]
     for c in datos.casos.values():
@@ -210,16 +227,25 @@ def armar_contenido(datos: DatosReporte, imagenes: Dict[str, str]) -> List[Bloqu
     resumenes = _resumenes(datos)
     escala = datos.escala_deformada or escala_deformada_automatica(r)
     bloques.append(Bloque("subtitulo", "4. Resumen de resultados"))
-    filas = [["Resultado", "σvm máx. [MPa]", "Ubicación (x; y; z) [m]", "Elemento", "Desplaz. máx. [mm]"]]
+    con_peeq = any(not math.isnan(s.peeq_max) for s in resumenes)
+    filas = [["Resultado", "σvm máx. [MPa]", "Ubicación (x; y; z) [m]", "Elemento", "Desplaz. máx. [mm]"]
+             + (["PEEQ máx. [%]"] if con_peeq else [])]
     for s in resumenes:
         filas.append([f"{s.tipo} {s.id}", _fmt(s.vm_max), _punto(s.punto_vm), s.elemento_vm,
-                      "—" if math.isnan(s.u_max) else _fmt(s.u_max)])
+                      "—" if math.isnan(s.u_max) else _fmt(s.u_max)]
+                     + (["—" if math.isnan(s.peeq_max) else _fmt(s.peeq_max, 2)] if con_peeq else []))
     bloques.append(Bloque("tabla", filas=filas))
     peor = max(resumenes, key=lambda s: s.vm_max, default=None)
     if peor is not None:
         bloques.append(Bloque("parrafo", f"Esfuerzo de Von Mises más desfavorable: {_fmt(peor.vm_max)} MPa ({peor.tipo.lower()} "
                                          f"{peor.id}, elemento {peor.elemento_vm}). Los valores junto a apoyos, cargas puntuales y "
                                          "esquinas interiores son locales y dependen del tamaño de elemento."))
+    if con_peeq:
+        peor_p = max((s for s in resumenes if not math.isnan(s.peeq_max)), key=lambda s: s.peeq_max)
+        veredicto = ("no supera" if peor_p.peeq_max <= 5.0 else "SUPERA")
+        bloques.append(Bloque("parrafo", f"Deformación plástica equivalente (PEEQ) máxima: {_fmt(peor_p.peeq_max, 2)} % "
+                                         f"({peor_p.tipo.lower()} {peor_p.id}, en {_punto(peor_p.punto_peeq)} m): {veredicto} el 5 % "
+                                         "admisible para fluencia local (EN 1993-1-5, anexo C)."))
 
     for k, s in enumerate(resumenes):
         bloques.append(Bloque("salto"))
@@ -228,6 +254,12 @@ def armar_contenido(datos: DatosReporte, imagenes: Dict[str, str]) -> List[Bloqu
                                          f"{s.elemento_vm})."))
         if f"vm:{s.id}" in imagenes:
             bloques.append(Bloque("imagen", f"Esfuerzos de Von Mises [MPa] — {s.tipo.lower()} {s.id}", ruta=imagenes[f"vm:{s.id}"]))
+        if not math.isnan(s.peeq_max):
+            bloques.append(Bloque("parrafo", f"Deformación plástica equivalente máxima: {_fmt(s.peeq_max, 2)} % en "
+                                             f"{_punto(s.punto_peeq)} m."))
+            if f"pe:{s.id}" in imagenes:
+                bloques.append(Bloque("imagen", f"Deformación plástica equivalente PEEQ [%] — {s.tipo.lower()} {s.id}",
+                                      ruta=imagenes[f"pe:{s.id}"]))
         if not math.isnan(s.u_max):
             ux, uy, uz = s.u_componentes
             bloques.append(Bloque("parrafo", f"Desplazamiento máximo: {_fmt(s.u_max)} mm en {_punto(s.punto_u)} m "
@@ -310,6 +342,16 @@ def generar_imagenes(datos: DatosReporte, carpeta: Path,
             pl.add_mesh(contorno, color="#333333", line_width=1.0)
 
         imagenes[f"vm:{id_}"] = foto(f"vm_{k}", dibujar_vm)
+        plastica = (getattr(r, "plastica_por_caso", {}) if tipo == "Caso" else getattr(r, "plastica_por_combinacion", {})) or {}
+        if id_ in plastica and float(np.max(plastica[id_])) > 0:
+            sup_p = superficie.copy()
+            sup_p.point_data["pe"] = np.asarray(plastica[id_], dtype=float)[ids] * 100.0
+
+            def dibujar_pe(pl, sup_p=sup_p):
+                pl.add_mesh(sup_p, scalars="pe", cmap=datos.colormap, scalar_bar_args=dict(title="PEEQ [%]", **barra))
+                pl.add_mesh(contorno, color="#333333", line_width=1.0)
+
+            imagenes[f"pe:{id_}"] = foto(f"pe_{k}", dibujar_pe)
         if u is None or not len(u):
             continue
         deformada = superficie.copy()

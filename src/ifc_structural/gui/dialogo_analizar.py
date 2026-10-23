@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, Iterable, List, Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
+from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
                                QVBoxLayout)
 
 from ..core.casos_carga import CasoCarga, Combinacion, combinaciones_calculables
@@ -17,7 +17,10 @@ class DialogoAnalizar(QDialog):
     casos marcados (una combinación necesita todos sus casos) y, en el análisis sólido, la malla que se usará."""
 
     def __init__(self, casos: Dict[str, CasoCarga], combinaciones: Dict[str, Combinacion], parent=None,
-                 motivo: str = "", texto_malla: str = "", elegidos: Optional[Iterable[str]] = None):
+                 motivo: str = "", texto_malla: str = "", elegidos: Optional[Iterable[str]] = None,
+                 plasticos: Optional[List[str]] = None, no_lineal: bool = False):
+        """``plasticos``: materiales con fluencia del modelo, en el análisis sólido (None: sin la casilla del análisis
+        elastoplástico, p. ej. en el modelo de barras)."""
         super().__init__(parent)
         self.setWindowTitle("Analizar")
         self.resize(560, 520)
@@ -57,6 +60,21 @@ class DialogoAnalizar(QDialog):
             malla.setWordWrap(True)
             layout.addWidget(malla)
 
+        self.check_no_lineal = None
+        if plasticos is not None:
+            self.check_no_lineal = QCheckBox("Material elastoplástico (análisis no lineal)")
+            self.check_no_lineal.setEnabled(bool(plasticos))
+            self.check_no_lineal.setChecked(bool(plasticos) and no_lineal)
+            ayuda = QLabel(
+                ("Materiales con fluencia: " + ", ".join(plasticos) + ". " if plasticos else
+                 "<span style='color:#9a6700'>Ningún material tiene fluencia fy: indíquela en Materiales.</span> ")
+                + "El acero fluye al llegar a fy y sigue con la pendiente Et (bilineal): los picos locales se reparten y se "
+                "revisa la deformación plástica (PEEQ ≤ 5 %). La carga se aplica en incrementos y cada combinación se "
+                "resuelve por separado: tarda varias veces más que el análisis elástico.")
+            ayuda.setWordWrap(True)
+            layout.addWidget(self.check_no_lineal)
+            layout.addWidget(ayuda)
+
         self.botones = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.botones.button(QDialogButtonBox.Ok).setText("Analizar")
         self.botones.accepted.connect(self.accept)
@@ -73,6 +91,9 @@ class DialogoAnalizar(QDialog):
     def casos_elegidos(self) -> List[str]:
         return [self.lista.item(i).data(Qt.UserRole) for i in range(self.lista.count())
                 if self.lista.item(i).checkState() == Qt.Checked]
+
+    def no_lineal(self) -> bool:
+        return self.check_no_lineal is not None and self.check_no_lineal.isEnabled() and self.check_no_lineal.isChecked()
 
     def combinaciones_elegidas(self) -> Dict[str, Combinacion]:
         return combinaciones_calculables(self._combinaciones, self.casos_elegidos())

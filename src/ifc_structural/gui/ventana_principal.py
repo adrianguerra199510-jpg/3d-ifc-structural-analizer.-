@@ -81,7 +81,7 @@ from .estilo import etiqueta_logo
 from .iconos import icono, icono_aplicacion, icono_blanco
 from .pagina_bienvenida import PaginaBienvenida
 from .panel_arbol import PanelArbol
-from .panel_resultados import DESPLAZAMIENTO, ENVOLVENTE, PanelEsfuerzos
+from .panel_resultados import DEFORMACION_PLASTICA, DESPLAZAMIENTO, ENVOLVENTE, TEXTO_PLASTICA, PanelEsfuerzos
 from .trabajador_analisis import TrabajadorAnalisis
 from .visor_3d import ESTILO_ALAMBRE, ESTILO_SOLIDO, ESTILO_TRANSPARENTE, MODO_CARA, MODO_ELEMENTO, Visor3D
 
@@ -148,6 +148,7 @@ class VentanaPrincipal(QMainWindow):
         self._resultado_desactualizado = False
         self._malla_previa: Optional[MallaPrevia] = None  # la del botón Mallar (ANALIZAR la reutiliza si sirve)
         self._casos_elegidos: Optional[set] = None  # casos marcados en el último ANALIZAR (los nuevos, marcados)
+        self._no_lineal = False  # la casilla «Material elastoplástico» del último ANALIZAR sólido
         self._casos_conocidos: set = set()
         self._barra_principal = None
         self.modo_analisis = "AUTO"  # AUTO, BARRAS o SOLIDO (Analizar → Modo de análisis)
@@ -1348,20 +1349,29 @@ class VentanaPrincipal(QMainWindow):
         else:
             self._analizar_barras()
 
-    def _elegir_casos(self, motivo: str, texto_malla: str = "") -> Optional[Tuple[Dict[str, CasoCarga], Dict[str, Combinacion]]]:
-        """Casos y combinaciones que se analizan (diálogo de ANALIZAR); ``None`` si se cancela."""
+    def _elegir_casos(self, motivo: str, texto_malla: str = "", solido: bool = False
+                      ) -> Optional[Tuple[Dict[str, CasoCarga], Dict[str, Combinacion], bool]]:
+        """Casos, combinaciones y si el análisis es elastoplástico (diálogo de ANALIZAR); ``None`` si se cancela."""
 
         if not self.casos:
             QMessageBox.warning(self, "Todavía no se puede analizar", "• No hay casos de carga definidos (botón Casos).")
             return None
         previos = None if self._casos_elegidos is None else [i for i in self.casos if i in self._casos_elegidos
                                                               or i not in self._casos_conocidos]
-        dialogo = DialogoAnalizar(self.casos, self.combinaciones, self, motivo, texto_malla, previos)
+        plasticos = None
+        if solido:
+            usados = {e.material for c in (self.proyecto.vigas, self.proyecto.columnas, self.proyecto.losas, self.proyecto.muros,
+                                           self.proyecto.solidos) for e in c.values()}
+            plasticos = sorted(m for m in usados if m in self.proyecto.materiales and self.proyecto.materiales[m].es_plastico)
+        dialogo = DialogoAnalizar(self.casos, self.combinaciones, self, motivo, texto_malla, previos, plasticos,
+                                  self._no_lineal)
         if not dialogo.exec():
             return None
         elegidos = dialogo.casos_elegidos()
         self._casos_elegidos, self._casos_conocidos = set(elegidos), set(self.casos)
-        return {i: self.casos[i] for i in elegidos}, dialogo.combinaciones_elegidas()
+        if solido:
+            self._no_lineal = dialogo.no_lineal()
+        return {i: self.casos[i] for i in elegidos}, dialogo.combinaciones_elegidas(), dialogo.no_lineal()
 
     def _analizar_barras(self) -> None:
         errores, advertencias = validar_modelo(self.proyecto, self.casos, self.combinaciones, self.apoyos, self.conexiones)
@@ -1401,9 +1411,10 @@ class VentanaPrincipal(QMainWindow):
             texto_malla = (f"<b>Malla:</b> se mallará con elementos de {tamano * 1000:.0f} mm (tamaño sugerido). Para "
                            "revisarla o cambiar el tamaño de elemento, use <b>Mallar</b> antes de analizar.")
         texto_motivo = "Se analiza como <b>sólido 3D</b>" + (f" porque {motivo}." if motivo else ".")
-        elegidos = self._elegir_casos(texto_motivo, texto_malla)
+        elegidos = self._elegir_casos(texto_motivo, texto_malla, solido=True)
         if elegidos is not None:
-            self._iniciar_hilo(solido=True, tamano=tamano, barridos=barridos, casos=elegidos[0], combinaciones=elegidos[1])
+            self._iniciar_hilo(solido=True, tamano=tamano, barridos=barridos, casos=elegidos[0], combinaciones=elegidos[1],
+                               no_lineal=elegidos[2])
 
     def mallar(self) -> None:
         """Botón Mallar: genera la malla del análisis sólido sin resolverlo, para revisarla antes de ANALIZAR."""
@@ -1456,7 +1467,7 @@ class VentanaPrincipal(QMainWindow):
 
     def _iniciar_hilo(self, solido: bool = False, tamano: float = 0.05, elemento_solido: Optional[str] = None,
                       barridos: bool = True, casos: Optional[Dict[str, CasoCarga]] = None,
-                      combinaciones: Optional[Dict[str, Combinacion]] = None) -> None:
+                      combinaciones: Optional[Dict[str, Combinacion]] = None, no_lineal: bool = False) -> None:
         casos = dict(self.casos if casos is None else casos)
         combinaciones = dict(self.combinaciones if combinaciones is None else combinaciones)
         proyecto, apoyos = self.proyecto, list(self.apoyos)
@@ -1476,7 +1487,7 @@ class VentanaPrincipal(QMainWindow):
                     configuracion.directorio_trabajo_absoluto, configuracion.ruta_ccx_efectiva, avanzar,
                     tamano=tamano, conexiones=conexiones, cargas_superficie_por_caso=superficiales,
                     uniones_manuales=uniones, elemento_solido=elemento_solido, malla_previa=malla_previa,
-                    barridos=barridos,
+                    barridos=barridos, no_lineal=no_lineal,
                 )
             return ejecutar_analisis(
                 proyecto, casos, combinaciones, apoyos, area, lineales, puntuales,
@@ -1526,6 +1537,7 @@ class VentanaPrincipal(QMainWindow):
         self.panel_esfuerzos.establecer_resultados(
             [(c.id, c.nombre) for c in self.casos.values() if c.id in resultado.tensiones_por_caso],
             [(c.id, c.nombre) for c in self.combinaciones.values() if c.id in resultado.tensiones_por_combinacion],
+            plastica=bool(getattr(resultado, "plastica_por_caso", None) or getattr(resultado, "plastica_por_combinacion", None)),
         )
         self._actualizar_estado_de_acciones()
         self._detener_animacion()
@@ -1553,12 +1565,19 @@ class VentanaPrincipal(QMainWindow):
         self.accion_ver_esfuerzos.setChecked(True)
 
         por_desplazamiento = parametros.magnitud == DESPLAZAMIENTO
-        unidad = "mm" if por_desplazamiento else "MPa"
-        if por_desplazamiento:
-            nombre_magnitud, buscar_minimo = "Desplazamiento total", False
-            valores, combinacion_por_nodo, origen = self._desplazamiento_total(resultado, parametros.resultado)
+        por_plastica = parametros.magnitud == DEFORMACION_PLASTICA
+        unidad = "mm" if por_desplazamiento else "%" if por_plastica else "MPa"
+        if por_desplazamiento or por_plastica:
+            if por_desplazamiento:
+                nombre_magnitud = "Desplazamiento total"
+                valores, combinacion_por_nodo, origen = self._desplazamiento_total(resultado, parametros.resultado)
+            else:
+                nombre_magnitud = TEXTO_PLASTICA
+                valores, combinacion_por_nodo, origen = self._deformacion_plastica(resultado, parametros.resultado)
+            buscar_minimo = False
             if valores is None:
-                self.panel_esfuerzos.mostrar_resumen("Este resultado no tiene desplazamientos.", {})
+                self.panel_esfuerzos.mostrar_resumen(
+                    "Este resultado no tiene " + ("desplazamientos." if por_desplazamiento else "deformaciones plásticas."), {})
                 return
             origen = origen or self.panel_esfuerzos.combo_resultado.currentText()
         else:
@@ -1595,6 +1614,9 @@ class VentanaPrincipal(QMainWindow):
             + (f" (combinación {combinacion_por_nodo[i_critico]})" if combinacion_por_nodo is not None else "")
             + ".\nHaga clic en el visor para leer el valor en un punto."
         )
+        if por_plastica:
+            resumen += ("\n✓ No pasa del 5 % admisible para fluencia local (EN 1993-1-5, anexo C)." if valor_critico <= 5.0 else
+                        "\n✗ Supera el 5 % admisible para fluencia local (EN 1993-1-5, anexo C).")
         if self._resultado_desactualizado:
             resumen = "⚠ Resultados anteriores a los últimos cambios.\n" + resumen
 
@@ -1619,6 +1641,23 @@ class VentanaPrincipal(QMainWindow):
     # ------------------------------------------------------------------
     # Deformada, animación y video
     # ------------------------------------------------------------------
+    @staticmethod
+    def _deformacion_plastica(resultado: ResultadoAnalisis, id_resultado: str):
+        """(PEEQ en % por nodo, combinación de cada nodo o None, texto); con la envolvente, el mayor de cada nodo."""
+
+        por_caso = getattr(resultado, "plastica_por_caso", {}) or {}
+        por_comb = getattr(resultado, "plastica_por_combinacion", {}) or {}
+        if id_resultado == ENVOLVENTE:
+            ids = list(por_comb)
+            if not ids:
+                return None, None, ""
+            valores = np.vstack([por_comb[i] for i in ids])
+            indice = np.argmax(valores, axis=0)
+            return (valores[indice, np.arange(valores.shape[1])] * 100.0, np.array(ids, dtype=object)[indice],
+                    "Envolvente de combinaciones")
+        v = por_comb.get(id_resultado, por_caso.get(id_resultado))
+        return (None, None, "") if v is None else (np.asarray(v, dtype=float) * 100.0, None, "")
+
     @staticmethod
     def _desplazamiento_total(resultado: ResultadoAnalisis, id_resultado: str):
         """(|u| en mm por nodo, combinación de cada nodo o None, texto) del caso o combinación elegidos; con la

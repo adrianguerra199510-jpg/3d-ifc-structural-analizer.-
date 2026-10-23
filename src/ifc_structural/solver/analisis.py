@@ -51,6 +51,10 @@ class ResultadoAnalisis:
     es_solido: bool = False  # True si viene del análisis como modelo sólido (3D)
     desplazamientos_por_caso: Dict[str, np.ndarray] = field(default_factory=dict)  # (N, 3), en m
     desplazamientos_por_combinacion: Dict[str, np.ndarray] = field(default_factory=dict)
+    # Análisis elastoplástico (no lineal): deformación plástica equivalente PEEQ por nodo (adimensional, 0.05 = 5 %)
+    plastica_por_caso: Dict[str, np.ndarray] = field(default_factory=dict)
+    plastica_por_combinacion: Dict[str, np.ndarray] = field(default_factory=dict)
+    no_lineal: bool = False
 
     def resultados_disponibles(self) -> Dict[str, np.ndarray]:
         """Casos y combinaciones, por id, listos para mostrar."""

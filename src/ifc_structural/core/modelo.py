@@ -82,6 +82,29 @@ class Material:
     modulo_poisson: float = 0.2
     densidad: float = 24.0  # peso específico, en kN/m3 (24 kN/m3 ~ hormigón)
     ifc_guid: Optional[str] = None
+    # Elastoplástico bilineal (solo en el análisis 3D no lineal): fluye a ``fluencia`` y después sigue con la pendiente
+    # ``modulo_tangente`` (por defecto E/100). Sin fluencia el material es siempre elástico.
+    fluencia: Optional[float] = None  # fy, en kPa
+    modulo_tangente: Optional[float] = None  # Et, en kPa
+
+    @property
+    def es_plastico(self) -> bool:
+        return self.fluencia is not None and self.fluencia > 0
+
+    @property
+    def tangente(self) -> float:
+        """Pendiente después de la fluencia (kPa): la elegida o E/100."""
+
+        et = self.modulo_tangente if self.modulo_tangente else self.modulo_elasticidad / 100.0
+        return min(float(et), 0.5 * self.modulo_elasticidad)
+
+    def curva_plastica(self) -> list:
+        """Puntos (esfuerzo kPa, deformación plástica) de la recta de endurecimiento: σ = fy + H·εp, con el módulo
+        plástico H = E·Et / (E − Et) (el que da la pendiente Et en la curva esfuerzo–deformación total)."""
+
+        e, et = self.modulo_elasticidad, self.tangente
+        h = e * et / (e - et)
+        return [(self.fluencia, 0.0), (self.fluencia + h * 1.0, 1.0)]
 
     @property
     def modulo_corte(self) -> float:
