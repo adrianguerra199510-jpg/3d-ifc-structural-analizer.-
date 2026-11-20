@@ -344,7 +344,8 @@ y la conserva como **sólido de forma libre**:
 
 - **Perfiles reales.** Los perfiles `IfcIShapeProfileDef` (IPE, HEA, HEB…), los
   rectangulares y los circulares se leen del IFC (del conjunto de perfiles del
-  material o de la extrusión del elemento) con su peralte orientado como está
+  material o de la extrusión del elemento, también si está recortada por un
+  `IfcBooleanResult` o dentro de un `IfcMappedItem`) con su peralte orientado como está
   colocado en el modelo. Un perfil en I se analiza con su **forma real**: CalculiX
   2.21 no tiene sección en I para vigas B31, así que se descompone en alas y alma
   (tres barras rectangulares unidas en cada nudo por tramos rígidos). La flexión
@@ -362,9 +363,13 @@ y la conserva como **sólido de forma libre**:
 - **Placas, pernos y rigidizadores** no son barras: en el análisis de barras no participan
   (se importan como sólidos de forma libre y solo se analizan con ANALIZAR 3D; las barras se
   unen por sus ejes). Tampoco se incluye el cortante
-  por torsión de los perfiles en I. Los perfiles huecos, en L o en U no están
-  soportados (se aproximan con un rectángulo macizo y se avisa); el círculo se
-  analiza como un cuadrado de igual inercia.
+  por torsión de los perfiles en I. Los perfiles huecos (tubos, cajones), en L, en U o
+  cualquier otro que no sea rectángulo macizo, círculo macizo o doble T no se idealizan como
+  barra: el elemento se importa como **sólido con su geometría real** (y se avisa), de modo
+  que se analiza con ANALIZAR 3D. Con `importar_ifc(ruta, perfiles_no_soportados="aproximar")`
+  se vuelve al comportamiento anterior (barra con un rectángulo macizo de su caja orientada,
+  de rigidez y peso poco fiables). El círculo macizo se analiza como un cuadrado de igual
+  inercia.
 - **Cargas en los extremos.** En modo **Cara** se pueden cargar las caras extremas
   de cada barra: una presión (× el área real del perfil) o una fuerza puntual en la
   dirección elegida, aplicada en el nodo del extremo.

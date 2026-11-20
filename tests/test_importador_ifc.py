@@ -150,3 +150,65 @@ def test_un_ifc_en_milimetros_se_importa_en_metros_y_las_placas_no_son_barras(tm
     from ifc_structural.solido.miembros import barras_de_longitud_cero
 
     assert barras_de_longitud_cero(p) == []
+
+
+# --- perfiles que Revit exporta dentro de recortes booleanos y de IfcMappedItem, o que la app no idealiza como barra ---
+
+@pytest.fixture()
+def proyecto_perfiles_especiales(tmp_path: Path):
+    from .ayuda_ifc import crear_ifc_perfiles_especiales
+
+    ruta = tmp_path / "perfiles_especiales.ifc"
+    crear_ifc_perfiles_especiales(str(ruta))
+    return importar_ifc(str(ruta))
+
+
+def _barra(proyecto, nombre):
+    return next(b for b in proyecto.todas_las_barras().values() if b.nombre == nombre)
+
+
+def test_la_viga_recortada_conserva_su_perfil_en_i_y_su_longitud_recortada(proyecto_perfiles_especiales):
+    p = proyecto_perfiles_especiales
+    viga = _barra(p, "VIGA_RECORTADA")
+    perfil = p.perfiles[viga.perfil]
+    assert perfil.forma == "I" and perfil.nombre == "IPE300"
+    assert perfil.altura == pytest.approx(0.3) and perfil.ancho == pytest.approx(0.15)
+    assert p.nodos[viga.nodo_inicio].distancia(p.nodos[viga.nodo_fin]) == pytest.approx(2.5, abs=1e-3)
+
+
+def test_el_perfil_en_i_dentro_de_un_mapped_item_se_lee(proyecto_perfiles_especiales):
+    p = proyecto_perfiles_especiales
+    columna = _barra(p, "COLUMNA_I_MAPEADA")
+    perfil = p.perfiles[columna.perfil]
+    assert perfil.forma == "I" and perfil.nombre == "HEB200"
+    assert perfil.espesor_ala == pytest.approx(0.015) and perfil.espesor_alma == pytest.approx(0.009)
+
+
+@pytest.mark.parametrize("nombre, area", [
+    ("TUBO_MAPEADO", 3.141592653589793 * (0.2**2 - 0.19**2)),  # tubo de R = 0,2 y e = 0,01 m
+    ("SHS_DIRECTO", 0.2**2 - 0.18**2),  # cajón cuadrado de 0,2 m y e = 0,01 m
+])
+def test_los_perfiles_huecos_no_soportados_se_importan_como_solidos_reales(proyecto_perfiles_especiales, nombre, area):
+    p = proyecto_perfiles_especiales
+    assert nombre not in {b.nombre for b in p.todas_las_barras().values()}
+    assert not [n for n in p.perfiles if n.startswith("APROX_")]
+    solidos = [s for s in p.solidos.values() if s.nombre == nombre]
+    assert len(solidos) == 1
+    assert solidos[0].volumen == pytest.approx(area * 3.0, rel=0.03)  # la sección hueca real, no un cuadrado macizo
+
+
+def test_se_avisa_de_los_perfiles_que_pasaron_a_solido(proyecto_perfiles_especiales):
+    avisos = " ".join(proyecto_perfiles_especiales.avisos)
+    assert "IfcCircleHollowProfileDef" in avisos and "IfcRectangleHollowProfileDef" in avisos
+    assert "sólido" in avisos
+
+
+def test_la_opcion_aproximar_mantiene_el_rectangulo_macizo_de_antes(tmp_path):
+    from .ayuda_ifc import crear_ifc_perfiles_especiales
+
+    ruta = tmp_path / "perfiles_especiales.ifc"
+    crear_ifc_perfiles_especiales(str(ruta))
+    p = importar_ifc(str(ruta), perfiles_no_soportados="aproximar")
+    assert {"SHS_DIRECTO", "TUBO_MAPEADO"} <= {b.nombre for b in p.todas_las_barras().values()}
+    assert len([n for n in p.perfiles if n.startswith("APROX_")]) == 2
+    assert not p.solidos

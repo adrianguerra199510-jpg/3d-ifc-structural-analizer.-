@@ -414,3 +414,90 @@ def crear_ifc_viga_armada_en_milimetros(ruta: str) -> None:
         elemento("IfcMember", f"RIG_{i}", i * 500.0, 0.0, 19.0, rect(10.0, 200.0), 562.0)
     elemento("IfcPlate", "PLACA_SUP", 3000.0, 0.0, 600.0, rect(6000.0, 260.0), 12.0)
     model.write(ruta)
+
+
+def crear_ifc_perfiles_especiales(ruta: str) -> None:
+    """Perfiles que Revit exporta de formas que el importador debe saber leer (todo en metros, acero):
+
+    - ``VIGA_RECORTADA``: viga IPE 300 de 3 m cuya representación es un ``IfcBooleanClippingResult`` (extrusión
+      menos un semiespacio), que corta el extremo a 2,5 m. Es lo que sale de un recorte de Revit.
+    - ``TUBO_MAPEADO``: columna tubular (``IfcCircleHollowProfileDef`` R = 0,2 m, e = 0,01 m) de 3 m cuya
+      extrusión está dentro de un ``IfcMappedItem`` (una familia con tipo).
+    - ``COLUMNA_I_MAPEADA``: columna HEB 200 de 3 m, también dentro de un ``IfcMappedItem``.
+    - ``SHS_DIRECTO``: columna tubular cuadrada (``IfcRectangleHollowProfileDef`` 0,2 x 0,2 m, e = 0,01 m) de 3 m
+      con la extrusión directa.
+
+    Están separadas 5 m entre sí para que no se conecten.
+    """
+
+    model = ifcopenshell.file(schema="IFC4")
+    longitud = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Name="METRE")
+    unidades = model.create_entity("IfcUnitAssignment", Units=[longitud])
+    origen = model.create_entity("IfcAxis2Placement3D", Location=model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0, 0.0)))
+    contexto = model.create_entity("IfcGeometricRepresentationContext", ContextType="Model", CoordinateSpaceDimension=3,
+                                   Precision=1e-5, WorldCoordinateSystem=origen)
+    model.create_entity("IfcProject", GlobalId=guid.new(), Name="Perfiles especiales", UnitsInContext=unidades,
+                        RepresentationContexts=[contexto])
+    piso = model.create_entity("IfcBuildingStorey", GlobalId=guid.new(), Name="Nivel 1", ObjectPlacement=_placement(model))
+    acero = _material_con_propiedades(model, "ACERO_S275", 2.1e11, 0.3, 7850.0)
+
+    def punto(x, y, z):
+        return model.create_entity("IfcCartesianPoint", Coordinates=(x, y, z))
+
+    def direccion(x, y, z):
+        return model.create_entity("IfcDirection", DirectionRatios=(x, y, z))
+
+    def extrusion(perfil, profundidad):
+        return model.create_entity(
+            "IfcExtrudedAreaSolid", SweptArea=perfil,
+            Position=model.create_entity("IfcAxis2Placement3D", Location=punto(0.0, 0.0, 0.0)),
+            ExtrudedDirection=direccion(0.0, 0.0, 1.0), Depth=profundidad,
+        )
+
+    def representacion(items, tipo):
+        cuerpo = model.create_entity("IfcShapeRepresentation", ContextOfItems=contexto, RepresentationIdentifier="Body",
+                                     RepresentationType=tipo, Items=items)
+        return cuerpo
+
+    def elemento(clase, nombre, y, cuerpo, axis=None, ref=None):
+        e = model.create_entity(
+            clase, GlobalId=guid.new(), Name=nombre, ObjectPlacement=_placement(model, 0.0, y, 3.0 if axis else 0.0, axis=axis, ref_direction=ref),
+            Representation=model.create_entity("IfcProductDefinitionShape", Representations=[cuerpo]),
+        )
+        model.create_entity("IfcRelAssociatesMaterial", GlobalId=guid.new(), RelatingMaterial=acero, RelatedObjects=[e])
+        model.create_entity("IfcRelContainedInSpatialStructure", GlobalId=guid.new(), RelatingStructure=piso, RelatedElements=[e])
+        return e
+
+    def mapeado(solido):
+        fuente = model.create_entity(
+            "IfcRepresentationMap", MappingOrigin=model.create_entity("IfcAxis2Placement3D", Location=punto(0.0, 0.0, 0.0)),
+            MappedRepresentation=representacion([solido], "SweptSolid"),
+        )
+        item = model.create_entity(
+            "IfcMappedItem", MappingSource=fuente,
+            MappingTarget=model.create_entity("IfcCartesianTransformationOperator3D", LocalOrigin=punto(0.0, 0.0, 0.0), Scale=1.0),
+        )
+        return representacion([item], "MappedRepresentation")
+
+    # Viga IPE 300 recortada a 2,5 m (el semiespacio z_local > 2,5 se resta)
+    ipe = model.create_entity("IfcIShapeProfileDef", ProfileType="AREA", ProfileName="IPE300", OverallWidth=0.15,
+                              OverallDepth=0.3, WebThickness=0.0071, FlangeThickness=0.0107)
+    plano = model.create_entity("IfcPlane", Position=model.create_entity(
+        "IfcAxis2Placement3D", Location=punto(0.0, 0.0, 2.5), Axis=direccion(0.0, 0.0, 1.0), RefDirection=direccion(1.0, 0.0, 0.0)))
+    recorte = model.create_entity(
+        "IfcBooleanClippingResult", Operator="DIFFERENCE", FirstOperand=extrusion(ipe, 3.0),
+        SecondOperand=model.create_entity("IfcHalfSpaceSolid", BaseSurface=plano, AgreementFlag=False),
+    )
+    elemento("IfcBeam", "VIGA_RECORTADA", 0.0, representacion([recorte], "Clipping"), axis=(1.0, 0.0, 0.0), ref=(0.0, 1.0, 0.0))
+
+    tubo = model.create_entity("IfcCircleHollowProfileDef", ProfileType="AREA", ProfileName="TUBO 400x10", Radius=0.2, WallThickness=0.01)
+    elemento("IfcColumn", "TUBO_MAPEADO", 5.0, mapeado(extrusion(tubo, 3.0)))
+
+    heb = model.create_entity("IfcIShapeProfileDef", ProfileType="AREA", ProfileName="HEB200", OverallWidth=0.2,
+                              OverallDepth=0.2, WebThickness=0.009, FlangeThickness=0.015)
+    elemento("IfcColumn", "COLUMNA_I_MAPEADA", 10.0, mapeado(extrusion(heb, 3.0)))
+
+    shs = model.create_entity("IfcRectangleHollowProfileDef", ProfileType="AREA", ProfileName="SHS 200x10", XDim=0.2, YDim=0.2,
+                              WallThickness=0.01)
+    elemento("IfcColumn", "SHS_DIRECTO", 15.0, representacion([extrusion(shs, 3.0)], "SweptSolid"))
+    model.write(ruta)

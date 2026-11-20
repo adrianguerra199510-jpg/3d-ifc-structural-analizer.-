@@ -32,9 +32,14 @@ Perfil y material reales
 --------------------------
 Cuando el elemento tiene asociado un ``IfcMaterialProfileSetUsage`` (lo
 habitual en vigas/columnas de acero exportadas como elementos
-estructurales), se usa el perfil real (``IfcRectangleProfileDef`` o
-``IfcCircleProfileDef``; otras formas de perfil quedan fuera de la Fase 1 y
-se aproximan con la OBB). El material se busca en las propiedades
+estructurales), o el de la extrusión del cuerpo (también cuando está
+recortada por un ``IfcBooleanResult`` o dentro de un ``IfcMappedItem``), se
+usa el perfil real (``IfcRectangleProfileDef``, ``IfcCircleProfileDef`` o
+``IfcIShapeProfileDef``). Los demás perfiles (tubos y cajones huecos,
+ángulos, canales...) no se idealizan como barra: el elemento se importa como
+sólido con su geometría real (``perfiles_no_soportados="solido"``, por
+defecto) o, con ``"aproximar"``, como barra de rectángulo macizo según la
+OBB. El material se busca en las propiedades
 mecánicas del IFC (``Pset_MaterialMechanical`` / ``IfcMechanicalMaterialPropertiesValues``
 según la versión del esquema); si no están presentes (frecuente en
 exportaciones de Revit sin ese detalle), se usan valores por defecto de
@@ -256,14 +261,44 @@ def _perfil_ifc_del_elemento(elemento):
     return extrusion.SweptArea if extrusion is not None else None
 
 
-def _extrusion_del_elemento(elemento):
+#: Profundidad máxima al buscar una extrusión dentro de recortes booleanos y mapas anidados.
+_PROFUNDIDAD_MAXIMA_DE_REPRESENTACION = 16
+
+
+def _extrusion_de_item(item, seguir_mapas: bool, profundidad: int = 0):
+    """Primera ``IfcExtrudedAreaSolid`` de un ítem de representación: el ítem mismo, el sólido que recorta un
+    ``IfcBooleanResult`` (su primer operando; así Revit exporta las vigas recortadas contra otras) o, si
+    ``seguir_mapas``, el contenido de un ``IfcMappedItem`` (las familias con tipo)."""
+
+    if item is None or profundidad > _PROFUNDIDAD_MAXIMA_DE_REPRESENTACION:
+        return None
+    if item.is_a("IfcExtrudedAreaSolid"):
+        return item
+    if item.is_a("IfcBooleanResult"):
+        return _extrusion_de_item(item.FirstOperand, seguir_mapas, profundidad + 1)
+    if seguir_mapas and item.is_a("IfcMappedItem"):
+        fuente = getattr(item.MappingSource, "MappedRepresentation", None)
+        for sub in (fuente.Items if fuente is not None else ()):
+            extrusion = _extrusion_de_item(sub, seguir_mapas, profundidad + 1)
+            if extrusion is not None:
+                return extrusion
+    return None
+
+
+def _extrusion_del_elemento(elemento, seguir_mapas: bool = True):
+    """Extrusión (``IfcExtrudedAreaSolid``) del cuerpo del elemento, aunque esté recortada o dentro de un mapa.
+
+    Con ``seguir_mapas`` False no entra en los ``IfcMappedItem``: su ``Position`` está en el sistema local de la
+    familia, no en el del elemento, y no sirve para orientar el perfil."""
+
     representacion = getattr(elemento, "Representation", None)
     if representacion is None:
         return None
     for rep in representacion.Representations:
         for item in rep.Items:
-            if item.is_a("IfcExtrudedAreaSolid"):
-                return item
+            extrusion = _extrusion_de_item(item, seguir_mapas)
+            if extrusion is not None:
+                return extrusion
     return None
 
 
@@ -316,7 +351,7 @@ def _direccion_peralte(elemento) -> Optional[np.ndarray]:
     """Dirección global (unitaria) del eje Y del perfil de la extrusión, que
     para un perfil en I o rectangular es el sentido del peralte."""
 
-    extrusion = _extrusion_del_elemento(elemento)
+    extrusion = _extrusion_del_elemento(elemento, seguir_mapas=False)
     if extrusion is None or getattr(elemento, "ObjectPlacement", None) is None:
         return None
     try:
@@ -419,7 +454,13 @@ def _limpiar(punto: np.ndarray) -> Tuple[float, float, float]:
     return tuple(round(float(c), 6) + 0.0 for c in punto)
 
 
-def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: float, tipo: str) -> None:
+def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: float, tipo: str,
+                    sin_idealizar: Optional[Dict[str, int]] = None) -> None:
+    """Importa una viga, columna o miembro como barra. Si ``sin_idealizar`` no es None, un elemento cuyo perfil IFC es
+    conocido pero la aplicación no sabe idealizar (tubos, cajones, ángulos, canales...) no se aproxima con un
+    rectángulo macizo: se omite aquí, se cuenta en ``sin_idealizar`` por clase de perfil y entra después como sólido
+    con su geometría real."""
+
     vertices = _vertices_elemento(elemento, ajustes, factor_longitud, proyecto)
     if vertices is None or len(vertices) < 2:
         logger.warning("Se omite %s %s por no tener geometría utilizable", tipo, elemento.GlobalId)
@@ -434,6 +475,11 @@ def _importar_barra(proyecto: Proyecto, elemento, ajustes, factor_longitud: floa
         proyecto.avisos.append(f"{elemento.Name or elemento.GlobalId}: es una placa delgada y se importó como sólido "
                                "(no como barra).")
         return
+    if sin_idealizar is not None:
+        perfil_ifc = _perfil_ifc_del_elemento(elemento)
+        if perfil_ifc is not None and _perfil_real(perfil_ifc, factor_longitud) is None:
+            sin_idealizar[perfil_ifc.is_a()] = sin_idealizar.get(perfil_ifc.is_a(), 0) + 1
+            return
     eje_principal = ejes[:, 0]
     punto_inicio = centro + eje_principal * minimos[0]
     punto_fin = centro + eje_principal * maximos[0]
@@ -639,8 +685,16 @@ def _importar_solidos(modelo_ifc, proyecto: Proyecto, ajustes, factor_longitud: 
             "mallar en el análisis 3D.")
 
 
-def importar_ifc(ruta_ifc: str) -> Proyecto:
-    """Punto de entrada principal: importa un archivo IFC y devuelve un Proyecto."""
+def importar_ifc(ruta_ifc: str, perfiles_no_soportados: str = "solido") -> Proyecto:
+    """Punto de entrada principal: importa un archivo IFC y devuelve un Proyecto.
+
+    ``perfiles_no_soportados`` decide qué pasa con una viga, columna o miembro cuyo perfil IFC se conoce pero no se
+    puede idealizar como barra (tubo o cajón huecos, ángulo, canal, T...): ``"solido"`` (por defecto) lo importa como
+    sólido con su geometría real, que se analiza con ANALIZAR 3D; ``"aproximar"`` lo conserva como barra con un
+    rectángulo macizo de su caja orientada (lo que hacía la versión anterior: rigidez y peso poco fiables)."""
+
+    if perfiles_no_soportados not in ("solido", "aproximar"):
+        raise ValueError("perfiles_no_soportados debe ser 'solido' o 'aproximar'")
 
     try:
         modelo_ifc = ifcopenshell.open(ruta_ifc)
@@ -652,12 +706,18 @@ def importar_ifc(ruta_ifc: str) -> Proyecto:
 
     proyecto = Proyecto(nombre=Path(ruta_ifc).stem)
 
+    sin_idealizar: Optional[Dict[str, int]] = {} if perfiles_no_soportados == "solido" else None
     for elemento in modelo_ifc.by_type("IfcBeam"):
-        _importar_barra(proyecto, elemento, ajustes, factor_longitud, "VIGA")
+        _importar_barra(proyecto, elemento, ajustes, factor_longitud, "VIGA", sin_idealizar)
     for elemento in modelo_ifc.by_type("IfcColumn"):
-        _importar_barra(proyecto, elemento, ajustes, factor_longitud, "COLUMNA")
+        _importar_barra(proyecto, elemento, ajustes, factor_longitud, "COLUMNA", sin_idealizar)
     for elemento in modelo_ifc.by_type("IfcMember"):
-        _importar_barra(proyecto, elemento, ajustes, factor_longitud, "MIEMBRO")
+        _importar_barra(proyecto, elemento, ajustes, factor_longitud, "MIEMBRO", sin_idealizar)
+    if sin_idealizar:
+        detalle = ", ".join(f"{n} con {t}" for t, n in sorted(sin_idealizar.items()))
+        proyecto.avisos.append(
+            f"{sum(sin_idealizar.values())} viga(s), columna(s) o miembro(s) tienen un perfil que no se idealiza como "
+            f"barra ({detalle}): se importaron como sólidos con su geometría real, no como rectángulos macizos.")
     unidos = conectar_nodos(proyecto)
     if unidos:
         logger.info("Se unieron %d extremos de barras que casi coincidían (idealización por ejes).", unidos)
