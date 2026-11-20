@@ -340,7 +340,16 @@ y la conserva como **sólido de forma libre**:
   teoría (voladizo `PL³/3EI`, compresión `σ = p`, perno en tracción `FL/EA`) en
   `tests/test_solidos_libres.py` y con clics reales en `tests/guion_gui_libre_xvfb.py`.
 
-## Estructuras de acero: perfiles en I y uniones
+## Modos de importación: sólidos (por defecto) y barras
+
+`importar_ifc(ruta)` importa **todo como sólido**: no se detecta ninguna viga, columna, losa ni
+muro, y la geometría queda exactamente donde la pone el IFC (coordenadas globales de ifcopenshell;
+solo se sueldan los vértices repetidos a 1 µm). No hay nodos, perfiles ni uniones en T. Se analiza
+con ANALIZAR 3D. La idealización por ejes que describen las secciones siguientes (barras, láminas,
+perfiles, uniones) sigue disponible con `importar_ifc(ruta, modo="barras")`, pero la interfaz ya no
+la usa.
+
+## Estructuras de acero: perfiles en I y uniones (modo `barras`)
 
 - **Perfiles reales.** Los perfiles `IfcIShapeProfileDef` (IPE, HEA, HEB…), los
   rectangulares y los circulares se leen del IFC (del conjunto de perfiles del

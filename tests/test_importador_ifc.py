@@ -19,7 +19,7 @@ def ruta_ifc_prueba(tmp_path: Path) -> Path:
 
 
 def test_importa_columna_viga_y_losa(ruta_ifc_prueba: Path):
-    proyecto = importar_ifc(str(ruta_ifc_prueba))
+    proyecto = importar_ifc(str(ruta_ifc_prueba), modo="barras")
 
     assert len(proyecto.columnas) == 1
     assert len(proyecto.vigas) == 1
@@ -28,7 +28,7 @@ def test_importa_columna_viga_y_losa(ruta_ifc_prueba: Path):
 
 
 def test_columna_sin_perfil_real_usa_respaldo_por_geometria(ruta_ifc_prueba: Path):
-    proyecto = importar_ifc(str(ruta_ifc_prueba))
+    proyecto = importar_ifc(str(ruta_ifc_prueba), modo="barras")
 
     columna = next(iter(proyecto.columnas.values()))
     n1 = proyecto.nodos[columna.nodo_inicio]
@@ -46,7 +46,7 @@ def test_columna_sin_perfil_real_usa_respaldo_por_geometria(ruta_ifc_prueba: Pat
 
 
 def test_viga_con_perfil_real_usa_dimensiones_exactas(ruta_ifc_prueba: Path):
-    proyecto = importar_ifc(str(ruta_ifc_prueba))
+    proyecto = importar_ifc(str(ruta_ifc_prueba), modo="barras")
 
     viga = next(iter(proyecto.vigas.values()))
     n1 = proyecto.nodos[viga.nodo_inicio]
@@ -74,7 +74,7 @@ def test_viga_con_perfil_real_usa_dimensiones_exactas(ruta_ifc_prueba: Path):
 
 
 def test_losa_tiene_contorno_espesor_y_area_correctos(ruta_ifc_prueba: Path):
-    proyecto = importar_ifc(str(ruta_ifc_prueba))
+    proyecto = importar_ifc(str(ruta_ifc_prueba), modo="barras")
 
     losa = next(iter(proyecto.losas.values()))
     assert losa.espesor == pytest.approx(0.15, rel=1e-3)
@@ -91,7 +91,7 @@ def test_losa_tiene_contorno_espesor_y_area_correctos(ruta_ifc_prueba: Path):
 def proyecto_portico(tmp_path: Path):
     ruta = tmp_path / "portico.ifc"
     crear_ifc_portico(str(ruta))
-    return importar_ifc(str(ruta))
+    return importar_ifc(str(ruta), modo="barras")
 
 
 def test_portico_las_vigas_se_conectan_a_los_ejes_de_las_columnas(proyecto_portico):
@@ -136,7 +136,7 @@ def test_un_ifc_en_milimetros_se_importa_en_metros_y_las_placas_no_son_barras(tm
 
     ruta = tmp_path / "viga_mm.ifc"
     crear_ifc_viga_armada_en_milimetros(str(ruta))
-    p = importar_ifc(str(ruta))
+    p = importar_ifc(str(ruta), modo="barras")
     assert len(p.vigas) == 1 and not p.columnas  # los rigidizadores no son barras
     viga = next(iter(p.vigas.values()))
     a, b = p.nodos[viga.nodo_inicio], p.nodos[viga.nodo_fin]
@@ -160,7 +160,7 @@ def proyecto_perfiles_especiales(tmp_path: Path):
 
     ruta = tmp_path / "perfiles_especiales.ifc"
     crear_ifc_perfiles_especiales(str(ruta))
-    return importar_ifc(str(ruta))
+    return importar_ifc(str(ruta), modo="barras")
 
 
 def _barra(proyecto, nombre):
@@ -208,7 +208,84 @@ def test_la_opcion_aproximar_mantiene_el_rectangulo_macizo_de_antes(tmp_path):
 
     ruta = tmp_path / "perfiles_especiales.ifc"
     crear_ifc_perfiles_especiales(str(ruta))
-    p = importar_ifc(str(ruta), perfiles_no_soportados="aproximar")
+    p = importar_ifc(str(ruta), modo="barras", perfiles_no_soportados="aproximar")
     assert {"SHS_DIRECTO", "TUBO_MAPEADO"} <= {b.nombre for b in p.todas_las_barras().values()}
     assert len([n for n in p.perfiles if n.startswith("APROX_")]) == 2
     assert not p.solidos
+
+
+# --- modo por defecto: todo entra como sólido, con la geometría exacta del IFC ---
+
+def _geometria_cruda_del_ifc(ruta):
+    """Vértices en coordenadas globales (metros) de cada elemento tal como los entrega ifcopenshell, sin ningún
+    tratamiento posterior: la referencia contra la que se compara lo que importa la aplicación."""
+
+    import ifcopenshell
+    import ifcopenshell.geom
+    import numpy as np
+
+    modelo = ifcopenshell.open(str(ruta))
+    ajustes = ifcopenshell.geom.settings()
+    ajustes.set("use-world-coords", True)
+    crudos = {}
+    for e in modelo.by_type("IfcElement"):
+        if e.is_a("IfcOpeningElement"):
+            continue
+        crudos[e.GlobalId] = np.array(ifcopenshell.geom.create_shape(ajustes, e).geometry.verts).reshape(-1, 3)
+    return crudos
+
+
+def test_por_defecto_vigas_columnas_y_losas_entran_como_solidos(ruta_ifc_prueba: Path):
+    p = importar_ifc(str(ruta_ifc_prueba))
+
+    assert not p.vigas and not p.columnas and not p.losas and not p.muros
+    assert not p.nodos and not p.perfiles  # sin idealización: ni nodos ni perfiles de barra
+    assert sorted(s.tipo_ifc for s in p.solidos.values()) == ["IfcBeam", "IfcColumn", "IfcSlab"]
+    assert all(s.cerrado and s.volumen > 0 for s in p.solidos.values())
+
+
+def test_los_solidos_importados_no_mueven_la_geometria_del_ifc(tmp_path):
+    """El pórtico tiene las vigas terminando en las caras de las columnas: la idealización por barras las movía a los
+    ejes. Como sólidos, cada vértice debe quedar donde lo pone el IFC (tolerancia de la soldadura de vértices, 1 µm)."""
+
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    from .ayuda_ifc import crear_ifc_portico
+
+    ruta = tmp_path / "portico.ifc"
+    crear_ifc_portico(str(ruta))
+    p = importar_ifc(str(ruta))
+    crudos = _geometria_cruda_del_ifc(ruta)
+
+    assert {s.ifc_guid for s in p.solidos.values()} == set(crudos)  # no se pierde ningún elemento
+    for guid, original in crudos.items():
+        importado = np.vstack([s.vertices for s in p.solidos.values() if s.ifc_guid == guid])
+        assert cKDTree(original).query(importado)[0].max() < 2e-6  # ningún vértice importado se movió
+        assert cKDTree(importado).query(original)[0].max() < 2e-6  # ni se perdió ninguno del IFC
+        assert np.allclose(importado.min(axis=0), original.min(axis=0), atol=2e-6)
+        assert np.allclose(importado.max(axis=0), original.max(axis=0), atol=2e-6)
+
+
+def test_un_ifc_en_milimetros_como_solidos_queda_en_metros(tmp_path):
+    from .ayuda_ifc import crear_ifc_viga_armada_en_milimetros
+
+    ruta = tmp_path / "viga_mm.ifc"
+    crear_ifc_viga_armada_en_milimetros(str(ruta))
+    p = importar_ifc(str(ruta))
+    assert not p.vigas and len(p.solidos) == 13  # la viga, 11 rigidizadores y la placa superior
+    assert max(s.extension.max() for s in p.solidos.values()) == pytest.approx(6.0, abs=1e-3)
+
+
+def test_en_modo_solidos_no_se_descartan_elementos_por_el_limite(ruta_ifc_prueba: Path, monkeypatch):
+    from ifc_structural.ifc import importador
+
+    monkeypatch.setattr(importador, "MAXIMO_DE_SOLIDOS", 2)
+    assert len(importar_ifc(str(ruta_ifc_prueba)).solidos) == 3  # el límite solo protege el modo de barras
+
+
+def test_el_modo_barras_sigue_disponible_y_el_modo_invalido_se_rechaza(ruta_ifc_prueba: Path):
+    p = importar_ifc(str(ruta_ifc_prueba), modo="barras")
+    assert len(p.columnas) == 1 and len(p.vigas) == 1 and len(p.losas) == 1 and not p.solidos
+    with pytest.raises(ValueError):
+        importar_ifc(str(ruta_ifc_prueba), modo="otro")

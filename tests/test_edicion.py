@@ -12,7 +12,7 @@ from .ayuda_ifc import crear_ifc_portico
 def _portico(tmp_path: Path):
     ruta = tmp_path / "p.ifc"
     crear_ifc_portico(str(ruta))
-    return importar_ifc(str(ruta))
+    return importar_ifc(str(ruta), modo="barras")
 
 
 def test_eliminar_una_viga_quita_sus_cargas_y_lo_que_depende_de_ella(tmp_path: Path):

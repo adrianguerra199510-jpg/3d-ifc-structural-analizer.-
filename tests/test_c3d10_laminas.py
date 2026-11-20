@@ -188,7 +188,7 @@ def test_el_portico_se_analiza_solo_con_tetraedros_cuadraticos(tmp_path: Path):
     from ifc_structural.core.cargas import Apoyo, CargaPuntual
 
     crear_ifc_portico(str(tmp_path / "portico.ifc"))
-    p = importar_ifc(str(tmp_path / "portico.ifc"))
+    p = importar_ifc(str(tmp_path / "portico.ifc"), modo="barras")
     miembros = construir_miembros(p)
     recortar_uniones(p, miembros)
     malla = construir_malla_solida(p, miembros, 0.1, None, "TETRA", usar_laminas=True)

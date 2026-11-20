@@ -43,7 +43,7 @@ def _volumenes(malla) -> np.ndarray:
 def conexion(tmp_path_factory):
     ruta = tmp_path_factory.mktemp("c") / "conexion.ifc"
     crear_ifc_conexion_metalica(str(ruta))
-    return importar_ifc(str(ruta))
+    return importar_ifc(str(ruta), modo="barras")
 
 
 @pytest.fixture
@@ -115,7 +115,7 @@ def test_las_placas_y_los_pernos_de_la_conexion_se_mallan_y_se_unen_a_alguna_pie
 def test_la_losa_solapada_con_las_vigas_se_recorta_y_se_une(tmp_path: Path):
     ruta = tmp_path / "p.ifc"
     crear_ifc_portico(str(ruta))
-    p = importar_ifc(str(ruta))
+    p = importar_ifc(str(ruta), modo="barras")
     miembros = construir_miembros(p)
     recortar_uniones(p, miembros)
     malla = construir_malla_solida(p, miembros, 0.1)
@@ -240,7 +240,7 @@ def test_conexion_metalica_como_solido_equilibrio_y_flexion_de_las_vigas(conexio
 def test_portico_con_losa_equilibrio_de_la_carga_de_area(tmp_path: Path):
     ruta = tmp_path / "p.ifc"
     crear_ifc_portico(str(ruta))
-    p = importar_ifc(str(ruta))
+    p = importar_ifc(str(ruta), modo="barras")
     casos, comb = casos_y_combinaciones_por_defecto()
     apoyos = [Apoyo(id=f"A{i}", nodo_id=c.nodo_inicio) for i, c in enumerate(p.columnas.values())]
     area = {"L": [CargaArea(id="Q", caso_id="L", presion=5.0, losa_id="L1")]}

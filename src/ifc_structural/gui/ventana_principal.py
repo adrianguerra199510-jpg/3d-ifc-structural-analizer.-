@@ -598,7 +598,7 @@ class VentanaPrincipal(QMainWindow):
         sin_soporte = [l.id for l in proyecto.losas.values() if not any(l.vigas_soporte)]
         texto = (
             f"Vigas: {len(proyecto.vigas)}\nColumnas: {len(proyecto.columnas)}\n"
-            f"Losas: {len(proyecto.losas)}\nMuros: {len(proyecto.muros)}"
+            f"Losas: {len(proyecto.losas)}\nMuros: {len(proyecto.muros)}\nSólidos: {len(proyecto.solidos)}"
         )
         if sin_soporte:
             texto += (
@@ -608,9 +608,15 @@ class VentanaPrincipal(QMainWindow):
         if proyecto.avisos:
             texto += "\n\nAvisos:\n- " + "\n- ".join(proyecto.avisos)
         QMessageBox.information(self, "Importación completa", texto)
-        self.statusBar().showMessage(
-            "Modelo importado. Ahora asigne los apoyos: modo Cara + Ver → Vista inferior, clic en la base de cada columna."
-        )
+        if proyecto.solidos and not proyecto.todas_las_barras():
+            self.statusBar().showMessage(
+                "Modelo importado como sólidos, con la geometría exacta del IFC. Asigne apoyos y cargas en modo Cara "
+                "y analice con ANALIZAR 3D."
+            )
+        else:
+            self.statusBar().showMessage(
+                "Modelo importado. Ahora asigne los apoyos: modo Cara + Ver → Vista inferior, clic en la base de cada columna."
+            )
         return True
 
     def _establecer_proyecto(

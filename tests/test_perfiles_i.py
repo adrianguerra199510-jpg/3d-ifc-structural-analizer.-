@@ -190,7 +190,7 @@ def test_columna_con_perfil_en_i_orientado_desde_el_ifc(tmp_path: Path):
 
     ruta = tmp_path / "c.ifc"
     crear_ifc_conexion_metalica(str(ruta))
-    p = importar_ifc(str(ruta))
+    p = importar_ifc(str(ruta), modo="barras")
     heb = p.perfiles["HEB200"]
     r = _analizar(
         p, tmp_path / "w",
@@ -213,7 +213,7 @@ def test_columna_con_perfil_en_i_orientado_desde_el_ifc(tmp_path: Path):
 def test_importa_la_conexion_metalica_con_perfiles_reales_y_union_en_t(tmp_path: Path):
     ruta = tmp_path / "conexion.ifc"
     crear_ifc_conexion_metalica(str(ruta))
-    p = importar_ifc(str(ruta))
+    p = importar_ifc(str(ruta), modo="barras")
 
     assert len(p.vigas) == 2 and len(p.columnas) == 2  # la columna continua se parte donde llegan las vigas
     ipe, heb = p.perfiles["IPE300"], p.perfiles["HEB200"]
@@ -270,7 +270,7 @@ def test_conexion_metalica_con_cargas_en_los_extremos_coincide_con_el_calculo_ma
 
     ruta = tmp_path / "c.ifc"
     crear_ifc_conexion_metalica(str(ruta))
-    p = importar_ifc(str(ruta))
+    p = importar_ifc(str(ruta), modo="barras")
     apoyo = Apoyo(id="A", nodo_id=p.columnas["C1"].nodo_inicio)
     puntuales = [
         CargaPuntual(id="1", caso_id="L", nodo_id=p.vigas["B1"].nodo_fin, fz=-25.0),
@@ -305,6 +305,6 @@ def test_los_ifcmember_se_importan_como_vigas_o_columnas(tmp_path: Path):
     texto = ruta.read_text().replace("IFCBEAM(", "IFCMEMBER(").replace("IFCCOLUMN(", "IFCMEMBER(")
     ruta_miembros = tmp_path / "miembros.ifc"
     ruta_miembros.write_text(texto)
-    p = importar_ifc(str(ruta_miembros))
+    p = importar_ifc(str(ruta_miembros), modo="barras")
     assert len(p.vigas) == 2 and len(p.columnas) == 2
     assert all(abs(c.vector_n1[0]) == pytest.approx(1.0) for c in p.columnas.values())

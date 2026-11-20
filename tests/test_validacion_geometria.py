@@ -18,7 +18,7 @@ from .ayuda_ifc import crear_ifc_portico
 def portico(tmp_path: Path):
     ruta = tmp_path / "p.ifc"
     crear_ifc_portico(str(ruta))
-    return importar_ifc(str(ruta))
+    return importar_ifc(str(ruta), modo="barras")
 
 
 def test_modelo_sano_no_tiene_problemas(portico):

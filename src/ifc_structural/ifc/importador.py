@@ -1,7 +1,11 @@
 """Importador de modelos IFC (p. ej. exportados desde Revit) con ifcopenshell.
 
-Extrae vigas, columnas, losas y muros con su geometría, perfil y material,
-y construye un ``core.modelo.Proyecto``.
+Tiene dos modos (``importar_ifc(ruta, modo=...)``). Por defecto, ``"solidos"``:
+todo elemento del IFC entra como sólido con su geometría real, sin detectar
+vigas, columnas, losas ni muros y sin mover nada. El modo ``"barras"`` es la
+idealización por ejes que describe el resto de este módulo: extrae vigas,
+columnas, losas y muros con su geometría, perfil y material, y construye un
+``core.modelo.Proyecto``.
 
 Estrategia de extracción de geometría
 --------------------------------------
@@ -654,15 +658,16 @@ def importar_solidos_de_elemento(proyecto: Proyecto, elemento, ajustes, factor_l
     return solidos
 
 
-def _importar_solidos(modelo_ifc, proyecto: Proyecto, ajustes, factor_longitud: float) -> None:
-    """Todo elemento que no sea viga, columna, losa o muro entra como sólido de forma libre:
-    placas, pernos, zapatas, escaleras, piezas especiales..."""
+def _importar_solidos(modelo_ifc, proyecto: Proyecto, ajustes, factor_longitud: float, limitar: bool = True) -> None:
+    """Todo elemento que no esté ya importado (como barra, losa o muro) entra como sólido de forma libre: placas,
+    pernos, zapatas, escaleras, piezas especiales... y, en el modo de sólidos, también vigas, columnas, losas y muros.
+    ``limitar`` aplica el tope ``MAXIMO_DE_SOLIDOS`` (la protección del modo de barras, donde son piezas sueltas)."""
 
     ya_importados = {e.ifc_guid for e in proyecto.todas_las_barras().values()}
     ya_importados |= {e.ifc_guid for e in list(proyecto.losas.values()) + list(proyecto.muros.values())}
     candidatos = [e for e in modelo_ifc.by_type("IfcElement")
                   if e.GlobalId not in ya_importados and not any(e.is_a(t) for t in _TIPOS_SIN_SOLIDO)]
-    if len(candidatos) > MAXIMO_DE_SOLIDOS:
+    if limitar and len(candidatos) > MAXIMO_DE_SOLIDOS:
         proyecto.avisos.append(
             f"El archivo tiene {len(candidatos)} elementos que no son vigas, columnas, losas ni muros: se importan "
             f"solo los primeros {MAXIMO_DE_SOLIDOS} como sólidos.")
@@ -685,14 +690,25 @@ def _importar_solidos(modelo_ifc, proyecto: Proyecto, ajustes, factor_longitud: 
             "mallar en el análisis 3D.")
 
 
-def importar_ifc(ruta_ifc: str, perfiles_no_soportados: str = "solido") -> Proyecto:
+def importar_ifc(ruta_ifc: str, modo: str = "solidos", perfiles_no_soportados: str = "solido") -> Proyecto:
     """Punto de entrada principal: importa un archivo IFC y devuelve un Proyecto.
 
-    ``perfiles_no_soportados`` decide qué pasa con una viga, columna o miembro cuyo perfil IFC se conoce pero no se
-    puede idealizar como barra (tubo o cajón huecos, ángulo, canal, T...): ``"solido"`` (por defecto) lo importa como
-    sólido con su geometría real, que se analiza con ANALIZAR 3D; ``"aproximar"`` lo conserva como barra con un
-    rectángulo macizo de su caja orientada (lo que hacía la versión anterior: rigidez y peso poco fiables)."""
+    ``modo`` decide cómo se interpreta el modelo:
 
+    - ``"solidos"`` (por defecto): no se detecta ninguna viga, columna, losa ni muro. Todo elemento del IFC entra como
+      sólido con su geometría real, tal como la entrega ifcopenshell en coordenadas globales: no se fusionan
+      extremos, no se parten uniones ni se mueve ningún vértice (solo se sueldan los repetidos a 1 µm). Se analiza
+      con ANALIZAR 3D.
+    - ``"barras"``: la idealización por ejes de antes (vigas, columnas y miembros como barras con su perfil; losas y
+      muros como láminas; el resto como sólidos). Mueve los extremos de las barras a los ejes y las une.
+
+    ``perfiles_no_soportados`` solo vale en el modo ``"barras"`` y decide qué pasa con una viga, columna o miembro
+    cuyo perfil IFC se conoce pero no se puede idealizar como barra (tubo o cajón huecos, ángulo, canal, T...):
+    ``"solido"`` (por defecto) lo importa como sólido con su geometría real; ``"aproximar"`` lo conserva como barra
+    con un rectángulo macizo de su caja orientada (rigidez y peso poco fiables)."""
+
+    if modo not in ("solidos", "barras"):
+        raise ValueError("modo debe ser 'solidos' o 'barras'")
     if perfiles_no_soportados not in ("solido", "aproximar"):
         raise ValueError("perfiles_no_soportados debe ser 'solido' o 'aproximar'")
 
@@ -705,6 +721,12 @@ def importar_ifc(ruta_ifc: str, perfiles_no_soportados: str = "solido") -> Proye
     ajustes = _ajustes_geometria()
 
     proyecto = Proyecto(nombre=Path(ruta_ifc).stem)
+
+    if modo == "solidos":
+        _importar_solidos(modelo_ifc, proyecto, ajustes, factor_longitud, limitar=False)
+        proyecto.ruta_ifc = str(ruta_ifc)
+        logger.info("Importación completa: %d sólidos (modo de sólidos, sin idealización).", len(proyecto.solidos))
+        return proyecto
 
     sin_idealizar: Optional[Dict[str, int]] = {} if perfiles_no_soportados == "solido" else None
     for elemento in modelo_ifc.by_type("IfcBeam"):

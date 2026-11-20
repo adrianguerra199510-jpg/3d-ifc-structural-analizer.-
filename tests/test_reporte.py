@@ -89,7 +89,7 @@ def test_reporte_de_un_analisis_de_barras(tmp_path: Path):
     from .test_analisis import CASOS, COMBINACIONES
 
     crear_ifc_portico(str(tmp_path / "portico.ifc"))
-    p = importar_ifc(str(tmp_path / "portico.ifc"))
+    p = importar_ifc(str(tmp_path / "portico.ifc"), modo="barras")
     apoyos = [Apoyo(id=f"AP{i}", nodo_id=c.nodo_inicio) for i, c in enumerate(p.columnas.values(), start=1)]
     losa = next(iter(p.losas.values()))
     r = ejecutar_analisis(p, CASOS, COMBINACIONES, apoyos, {"L": [CargaArea(id="CA1", caso_id="L", presion=5.0, losa_id=losa.id)]},

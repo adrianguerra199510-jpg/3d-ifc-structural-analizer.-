@@ -93,7 +93,7 @@ pytestmark_ccx = pytest.mark.skipif(shutil.which("ccx") is None, reason="ccx no 
 def test_portico_importado_de_un_ifc_se_analiza_de_punta_a_punta(tmp_path: Path):
     ruta = tmp_path / "portico.ifc"
     crear_ifc_portico(str(ruta))
-    p = importar_ifc(str(ruta))
+    p = importar_ifc(str(ruta), modo="barras")
 
     apoyos = [Apoyo(id=f"AP{i}", nodo_id=c.nodo_inicio) for i, c in enumerate(p.columnas.values(), start=1)]
     losa = next(iter(p.losas.values()))
