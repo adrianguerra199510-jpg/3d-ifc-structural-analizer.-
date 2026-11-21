@@ -15,7 +15,7 @@ from .iconos import icono
 
 ICONO_NIVEL = {ERROR: "quitar", AVISO: "advertencia", CORRECTO: "correcto"}
 COLOR_NIVEL = {ERROR: "#b3261e", AVISO: "#9a6700", CORRECTO: "#1e7a3c"}
-ORDEN_SECCIONES = ("Datos", "Materiales", "Geometría", "Conectividad", "Estabilidad", "Cargas", "Malla", "CalculiX",
+ORDEN_SECCIONES = ("Datos", "Materiales", "Geometría", "Solo carga", "Conectividad", "Estabilidad", "Cargas", "Malla", "CalculiX",
                    "Modelo de barras")
 
 #: Lo que el usuario eligió al cerrar el informe.

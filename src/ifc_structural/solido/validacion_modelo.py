@@ -29,6 +29,7 @@ from ..core.asignacion import Objetivo
 from ..core.cargas import Apoyo, ApoyoArea, ApoyoSuperficie, CargaSuperficie, UnionSuperficie
 from ..core.casos_carga import CasoCarga, Combinacion, casos_con_peso_propio
 from ..core.modelo import Proyecto
+from .solo_carga import calcular_transferencias, elementos_solo_carga, proyecto_mallado
 
 ERROR, AVISO, CORRECTO = "ERROR", "AVISO", "OK"
 #: Fracción de los nodos de materiales con fluencia que, pasando de fy en el análisis elástico, hace probable que el
@@ -566,6 +567,39 @@ def _malla(informe: InformeValidacion, proyecto: Proyecto, malla_previa, tamano:
                                   "que el elástico.")
 
 
+def _solo_carga(informe: InformeValidacion, proyecto: Proyecto, casos, superficiales, apoyos, tolerancia: float,
+                cargados: set, al_avanzar=None) -> None:
+    """Grupos «solo carga»: dónde apoyan, qué transmiten y si se pueden equilibrar con sus contactos."""
+
+    s = "Solo carga"
+    fuera = elementos_solo_carga(proyecto)
+    sobre = [a for a in apoyos if (getattr(a, "elemento_tipo", None), getattr(a, "elemento_id", None)) in fuera]
+    for a in sobre:
+        informe.agregar(AVISO, s, f"El apoyo {a.nombre} está sobre un elemento «solo carga», que no se malla: no se aplica, y "
+                                  "toda la carga de ese elemento baja a las piezas malladas que toca (del lado seguro para "
+                                  "ellas). Si ese apoyo debe sostener la parte mallada, póngalo en una pieza mallada.",
+                        [Objetivo(a.elemento_tipo, a.elemento_id)])
+    r = calcular_transferencias(proyecto, casos, superficiales, tolerancia, al_avanzar)
+    for piezas in r.sueltos:
+        informe.agregar(ERROR, s, f"Los elementos «solo carga» {_lista([i for _, i in piezas])} no tocan ninguna pieza mallada: "
+                                  "su peso y sus cargas se perderían. Mállelos (quite «solo carga») o únalos a la estructura.",
+                        [Objetivo(t, i) for t, i in piezas])
+    for g in r.grupos:
+        cargados.update(g.destinos)
+        resultantes = "; ".join(f"{c}: {abs(f[2]):.2f} kN" + (f" (+ {np.linalg.norm(f[:2]):.2f} kN horizontal)"
+                                                              if np.linalg.norm(f[:2]) > 1e-6 else "")
+                                for c, f in g.resultantes.items() if np.linalg.norm(f) > 1e-9)
+        texto = (f"Los elementos {_lista([i for _, i in g.piezas], 5)} no se mallan y apoyan en "
+                 f"{_lista([i for _, i in g.destinos], 6)}: les transmiten {resultantes or 'nada (sin peso ni cargas)'}.")
+        peor = max(g.desequilibrio.values(), default=0.0)
+        if peor > 1e-3:
+            informe.agregar(AVISO, s, texto + f" No quedan en equilibrio con sus contactos (falta el {peor * 100:.0f} % de la "
+                                              "carga): apoyan en una línea o un punto y la carga los haría girar.",
+                            [Objetivo(t, i) for t, i in g.piezas])
+        else:
+            informe.agregar(CORRECTO, s, texto, [Objetivo(t, i) for t, i in g.piezas])
+
+
 # ---------------------------------------------------------------------------
 # Prueba con CalculiX
 # ---------------------------------------------------------------------------
@@ -688,11 +722,21 @@ def validar_modelo_solido(
     if any(h.seccion == "Geometría" and h.nivel == ERROR for h in informe.hallazgos):
         return informe  # sin geometría válida no se puede seguir
     cargados = {(c.elemento_tipo, c.elemento_id) for lista in superficiales.values() for c in lista}
-    if elementos:
-        _conectividad_y_estabilidad(informe, proyecto, elementos, apoyos, uniones, cargados, max(2e-3, 0.25 * tamano), sups,
-                                    al_avanzar)
+    # Elementos «solo carga»: no se mallan; la conectividad y la estabilidad son las de lo que se malla, y cada grupo
+    # «solo carga» tiene que apoyar en piezas malladas que reciban su peso y sus cargas
+    fuera = elementos_solo_carga(proyecto)
+    mallados = [e for e in elementos if e not in fuera]
+    apoyos_mallados, uniones_malladas = list(apoyos), list(uniones)
+    if fuera:
+        _solo_carga(informe, proyecto, casos, superficiales, apoyos, max(2e-3, 0.25 * tamano), cargados, al_avanzar)
+        apoyos_mallados = [a for a in apoyos if (getattr(a, "elemento_tipo", None), getattr(a, "elemento_id", None)) not in fuera]
+        uniones_malladas = [u for u in uniones if (u.a_tipo, u.a_id) not in fuera and (u.b_tipo, u.b_id) not in fuera]
+    if mallados:
+        _conectividad_y_estabilidad(informe, proyecto_mallado(proyecto), mallados, apoyos_mallados, uniones_malladas, cargados,
+                                    max(2e-3, 0.25 * tamano), sups, al_avanzar)
     else:
-        informe.agregar(ERROR, "Geometría", "El modelo no tiene elementos.")
+        informe.agregar(ERROR, "Geometría", "El modelo no tiene elementos que mallar (todos son «solo carga»)."
+                        if elementos else "El modelo no tiene elementos.")
     _cargas(informe, proyecto, casos, superficiales, otras_cargas_por_caso or {}, elementos, sups)
     if mallar and malla_previa is None and not informe.errores:
         # la malla real (la que usará el análisis, que la vuelve a usar): da los nodos y la memoria de verdad

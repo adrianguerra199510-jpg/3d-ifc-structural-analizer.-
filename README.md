@@ -251,6 +251,13 @@ y la conserva como **sólido de forma libre**:
   el agujero a un perno infinitamente rígido), fija el **centro** de la superficie, el promedio de sus
   desplazamientos ponderado por el área (acople distribuido, como el RBE3): el agujero se deforma y la
   pieza gira alrededor del perno. Con todos los apoyos pasadores alineados el modelo puede girar y se avisa.
+- **Solo carga (no mallar).** *Asignar → Solo carga* (o clic derecho) sobre elementos seleccionados: no se
+  mallan y se ven semitransparentes. Su peso propio y las cargas asignadas a sus superficies pasan, en cada caso,
+  a las piezas malladas que tocan: cada grupo de elementos «solo carga» que se tocan es un cuerpo rígido, y sus
+  fuerzas de contacto se reparten con la mínima energía ponderada por el área, cumpliendo el equilibrio de
+  fuerzas y momentos (ley de la palanca si apoya en varios sitios). Sirve para mallar en detalle solo una parte
+  (una base, una conexión) con el resto como carga. No aportan rigidez; un apoyo sobre ellos no se aplica; la
+  validación avisa si un grupo no toca ninguna pieza mallada o no puede equilibrarse con sus contactos.
 - **Validar (F6).** Comprueba, sin analizar, si el análisis va a correr y a converger: datos (apoyos, cargas y
   constraints sobre elementos y superficies que existen), materiales (E, ν, fy), geometría (sólidos cerrados),
   conectividad (qué piezas se tocan o están unidas; cada grupo necesita apoyos), **estabilidad** (los apoyos de

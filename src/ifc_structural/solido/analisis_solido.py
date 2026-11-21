@@ -30,6 +30,7 @@ from ..solver.ejecutor_ccx import ejecutar_ccx_todos_los_casos
 from ..solver.generador_inp import ElementoMalla, MallaAnalisis
 from ..solver.lector_resultados import leer_desplazamientos_frd, leer_escalar_frd, leer_malla_frd, leer_tensiones_frd
 from .contactos import Union, _caras_cercanas, _caras_en_contacto, detectar_acoples, detectar_uniones, partes_sin_conexion
+from .solo_carga import aplicar_a_la_malla, calcular_transferencias, elementos_solo_carga, proyecto_mallado
 from .generador import (Acople, Apoyo3D, CargasCaso, Enlace3D, ModeloSolido, distancias_a_caras, escribir, escribir_caso,
                         escribir_comun, etiqueta)
 from .malla import ErrorMalla, MallaSolida, ParteMalla, construir_malla_solida, estimar_hexaedros
@@ -113,6 +114,7 @@ def tamano_sugerido(proyecto: Proyecto, objetivo: int = OBJETIVO_ELEMENTOS, elem
     más grueso cumple el objetivo, se toma el más fino que da casi lo mismo que el más grueso (agrandar más los elementos
     solo empeoraría las piezas grandes sin ahorrar nada)."""
 
+    proyecto = proyecto_mallado(proyecto)  # los elementos «solo carga» no se mallan
     elemento_solido = elemento_solido or elemento_solido_por_defecto()
     miembros = construir_miembros(proyecto)
     recortar_uniones(proyecto, miembros)
@@ -126,6 +128,7 @@ def tamano_sugerido(proyecto: Proyecto, objetivo: int = OBJETIVO_ELEMENTOS, elem
 def estimar(proyecto: Proyecto, tamano: float, elemento_solido: Optional[str] = None, barridos: bool = True) -> int:
     """Elementos aproximados (los hexaedros barridos de 20 nodos cuentan como varios tetraedros: es el coste)."""
 
+    proyecto = proyecto_mallado(proyecto)
     elemento_solido = elemento_solido or elemento_solido_por_defecto()
     miembros = construir_miembros(proyecto)
     recortar_uniones(proyecto, miembros)
@@ -502,8 +505,10 @@ def piezas_con_mecanismo(malla_tensiones, desplazamientos: Dict[str, np.ndarray]
 
 
 def huella_geometria(proyecto: Proyecto) -> str:
-    """Resumen de todo lo que define la malla (geometría, perfiles y materiales; no las cargas ni los constraints)."""
+    """Resumen de todo lo que define la malla (geometría, perfiles y materiales; no las cargas ni los constraints). Los
+    elementos «solo carga» no se mallan: marcar o desmarcar uno cambia la huella."""
 
+    proyecto = proyecto_mallado(proyecto)
     datos = (proyecto.nodos, proyecto.materiales, proyecto.perfiles, proyecto.vigas, proyecto.columnas, proyecto.losas,
              proyecto.muros, proyecto.solidos)
     return hashlib.sha1(pickle.dumps(datos, protocol=pickle.HIGHEST_PROTOCOL)).hexdigest()
@@ -581,6 +586,7 @@ def mallar_modelo(
             al_avanzar(mensaje)
 
     advertencias: List[str] = []
+    proyecto = proyecto_mallado(proyecto)  # los elementos «solo carga» no se mallan
     avanzar("Preparando los miembros sólidos...")
     degeneradas = barras_de_longitud_cero(proyecto)
     if degeneradas:
@@ -638,6 +644,29 @@ def ejecutar_analisis_solido(
     if conexiones:
         advertencias.append("Las conexiones manuales (articulaciones y enlaces) no se aplican en el análisis sólido: "
                             "las piezas se unen por las superficies en contacto.")
+
+    # Elementos «solo carga»: no se mallan; su peso y sus cargas pasan a las piezas malladas que tocan
+    fuera = elementos_solo_carga(proyecto)
+    transferencia = None
+    if fuera:
+        transferencia = calcular_transferencias(proyecto, casos, cargas_superficie_por_caso, max(2e-3, 0.25 * tamano), avanzar)
+        advertencias.extend(transferencia.avisos)
+        sobre = [a for a in apoyos if (getattr(a, "elemento_tipo", None), getattr(a, "elemento_id", None)) in fuera]
+        if sobre:
+            advertencias.append(f"Los apoyos {', '.join(a.nombre for a in sobre)} están sobre elementos «solo carga», que no se "
+                                "mallan: no se aplican.")
+            apoyos = [a for a in apoyos if a not in sobre]
+            if not apoyos:
+                raise ErrorAnalisis("Todos los apoyos están sobre elementos «solo carga», que no se mallan: asigne apoyos a "
+                                    "piezas malladas.")
+        cargas_superficie_por_caso = {k: [c for c in v if (c.elemento_tipo, c.elemento_id) not in fuera]
+                                      for k, v in cargas_superficie_por_caso.items()}
+        uniones_manuales = [u for u in uniones_manuales if (u.a_tipo, u.a_id) not in fuera and (u.b_tipo, u.b_id) not in fuera]
+        recibidas = sorted({i for t in transferencia.transferencias for _, i in [t.destino]})
+        advertencias.append(f"{len(fuera)} elemento(s) «solo carga» no se mallaron: su peso y sus cargas se transmitieron, "
+                            f"como cuerpos rígidos en equilibrio, a las piezas que tocan ({', '.join(recibidas[:10])}"
+                            f"{' y otras' if len(recibidas) > 10 else ''}). No aportan rigidez.")
+        proyecto = proyecto_mallado(proyecto)
 
     elemento_solido = elemento_solido or elemento_solido_por_defecto()
     previa = None
@@ -737,6 +766,8 @@ def ejecutar_analisis_solido(
                 proyecto, miembros, malla, caso_id, cargas_puntuales_por_caso.get(caso_id, []),
                 cargas_lineales_por_caso.get(caso_id, []), cargas_area_por_caso.get(caso_id, []),
                 caso_id in con_peso_propio, avisos_cargas, cargas_superficie_por_caso.get(caso_id, []), tamano)
+            if transferencia is not None and aplicar_a_la_malla(malla, transferencia.transferencias, caso_id, cargas):
+                avisos_cargas.append("Parte de la carga de los elementos «solo carga» no encontró su pieza en la malla.")
             cargas_por_caso[caso_id] = cargas
             escribir_paso(caso_id, f"solido_{caso_id}", cargas)
         if no_lineal:  # cada combinación, con sus cargas mayoradas

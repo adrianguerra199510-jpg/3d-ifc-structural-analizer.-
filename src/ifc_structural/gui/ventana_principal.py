@@ -106,6 +106,8 @@ AYUDA = (
     "<li><b>Conectar elementos</b>: articulación o enlace rígido entre dos elementos seleccionados.</li>"
     "<li>Si quiere revisar la malla antes de calcular, pulse <b>Mallar</b> (F7): se genera y se dibuja la malla de "
     "elementos finitos del análisis sólido, y ANALIZAR la vuelve a usar mientras no cambie el modelo.</li>"
+    "<li><b>Solo carga</b> (Asignar o clic derecho): los elementos seleccionados no se mallan y su peso y sus cargas "
+    "pasan a las piezas malladas que tocan; así se malla en detalle solo la parte que interesa.</li>"
     "<li><b>Validar</b> (F6) comprueba, sin analizar, si el análisis va a correr y a converger (apoyos que dejan "
     "movimientos libres, piezas sueltas, materiales, cargas) y, si se pide, hace una prueba con CalculiX.</li>"
     "<li>Pulse <b>▶ ANALIZAR</b> (F5) y revise los esfuerzos en el panel <b>Esfuerzos</b>; el programa decide si lo "
@@ -294,6 +296,10 @@ class VentanaPrincipal(QMainWindow):
         self.accion_analizar.setIcon(icono_blanco("analizar"))
         self.accion_mallar = accion("Mallar", self.mallar, "malla", "F7",
                                     "Generar y ver la malla de elementos finitos antes de analizar; ANALIZAR la reutiliza (F7)")
+        self.accion_solo_carga = accion(
+            "Solo carga (no mallar)", self.alternar_solo_carga, "material",
+            ayuda="Los elementos seleccionados no se mallan: su peso y sus cargas pasan a las piezas malladas que tocan "
+                  "(análisis 3D). Vuelva a usarlo para mallarlos de nuevo.")
         self.accion_validar = accion("Validar", self.validar, "correcto", "F6",
                                      "Comprobar, sin analizar, si el análisis va a correr y a converger: datos, materiales, "
                                      "geometría, piezas sueltas, estabilidad de los apoyos y, si se pide, una prueba con "
@@ -332,6 +338,7 @@ class VentanaPrincipal(QMainWindow):
         submenu = menu.addMenu(icono("conectar"), "Conectar elementos")
         submenu.addAction("Conectar manualmente…", self.asignar_conexion)
         submenu.addAction("Conectar automáticamente…", self.conectar_automaticamente)
+        menu.addAction(self.accion_solo_carga)
         menu.addSeparator()
         menu.addActions([self.accion_materiales, self.accion_casos])
 
@@ -536,6 +543,7 @@ class VentanaPrincipal(QMainWindow):
         self.accion_analizar.setEnabled((hay_modelo or hay_solidos or bool(self.proyecto.losas or self.proyecto.muros)) and not ocupado)
         self.accion_mallar.setEnabled(self.accion_analizar.isEnabled())
         self.accion_validar.setEnabled(self.accion_analizar.isEnabled())
+        self.accion_solo_carga.setEnabled(hay_modelo or hay_solidos or bool(self.proyecto.losas or self.proyecto.muros))
         self.accion_ver_malla.setEnabled(self._malla_previa is not None)
         self.accion_apoyo.setEnabled(hay_modelo or hay_solidos)
         self.accion_material.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
@@ -931,6 +939,25 @@ class VentanaPrincipal(QMainWindow):
         self._marcar_resultados_desactualizados()
         self.statusBar().showMessage(f"Material «{dialogo.material_elegido()}» asignado a {len(cambiados)} elemento(s).")
 
+    def alternar_solo_carga(self) -> None:
+        """Marca los elementos seleccionados como «solo carga» (no se mallan) o, si ya lo son todos, los vuelve a mallar."""
+
+        elementos = {(o.tipo, o.id) for o in self.visor.seleccion}
+        if not elementos:
+            QMessageBox.information(self, "Solo carga", "Seleccione primero los elementos que no quiere mallar.")
+            return
+        if elementos <= self.proyecto.solo_carga:
+            self.proyecto.solo_carga -= elementos
+            texto = f"{len(elementos)} elemento(s) se vuelven a mallar."
+        else:
+            self.proyecto.solo_carga |= elementos
+            texto = (f"{len(elementos)} elemento(s) «solo carga»: no se mallan; su peso y sus cargas pasan a las piezas "
+                     "malladas que tocan.")
+        self.visor.actualizar_solo_carga()
+        self._refrescar_arbol()
+        self._marcar_resultados_desactualizados()
+        self.statusBar().showMessage(texto)
+
     def gestionar_materiales(self) -> None:
         dialogo = DialogoMateriales(self.proyecto, self)
         if dialogo.exec():
@@ -1122,6 +1149,10 @@ class VentanaPrincipal(QMainWindow):
         if not manual.isEnabled():
             manual.setToolTip("Seleccione dos superficies o dos elementos (Ctrl + clic)")
         conectar.addAction("Conectar automáticamente…", self.conectar_automaticamente)
+        elementos = {(o.tipo, o.id) for o in seleccion}
+        todos = elementos <= self.proyecto.solo_carga
+        menu.addAction(icono("material"), "Mallar de nuevo (quitar «solo carga»)" if todos else
+                       "Solo carga: no mallar (su peso y cargas pasan a lo que tocan)", self.alternar_solo_carga)
         menu.addSeparator()
         menu.addAction("Propiedades…", self.mostrar_propiedades)
         menu.addAction("Quitar la selección", lambda: self.visor.seleccionar([]))

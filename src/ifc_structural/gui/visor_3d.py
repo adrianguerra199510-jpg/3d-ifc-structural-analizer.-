@@ -56,6 +56,8 @@ COLOR_MOMENTO = "darkorchid"
 COLOR_APOYO_AREA = "seagreen"
 COLOR_CONEXION = "deeppink"
 OPACIDAD_PLANOS = 0.6
+#: Elementos «solo carga» (no se mallan): casi transparentes.
+OPACIDAD_SOLO_CARGA = 0.22
 
 #: Estilos de vista del modelo: sólido, transparente (se ve a través de las piezas) y alambre (solo aristas).
 ESTILO_SOLIDO = "SOLIDO"
@@ -257,6 +259,18 @@ class Visor3D(QtInteractor):
                 propiedad.SetOpacity(OPACIDAD_PLANOS if plano else 1.0)
             if visual.actor_bordes is not None:
                 visual.actor_bordes.GetProperty().SetLineWidth(2.2 if self._estilo == ESTILO_ALAMBRE else 1.2)
+            if (visual.tipo, visual.id) in self._solo_carga():  # «solo carga»: no se malla, se ve como un fantasma
+                propiedad.SetRepresentationToSurface()
+                propiedad.SetOpacity(OPACIDAD_SOLO_CARGA)
+
+    def _solo_carga(self) -> set:
+        return set(getattr(self._proyecto, "solo_carga", None) or ())
+
+    def actualizar_solo_carga(self) -> None:
+        """Vuelve a dibujar con su transparencia los elementos «solo carga» (tras marcarlos o desmarcarlos)."""
+
+        self._aplicar_estilo()
+        self.render()
 
     @conserva_camara
     def reemplazar_modelo(self, proyecto: Proyecto) -> None:
@@ -1084,6 +1098,10 @@ class Visor3D(QtInteractor):
                 if visual.actor_bordes is not None:
                     visual.actor_bordes.SetVisibility(self._visibles[visual.tipo] and not ocultar_planos)
                 visual.actor.GetProperty().SetOpacity(OPACIDAD_PLANOS_EN_ESFUERZOS)
+        for visual in self._visuales.values():  # los «solo carga» no están en la malla: se dejan ver como fantasmas
+            if (visual.tipo, visual.id) in self._solo_carga():
+                visual.actor.SetVisibility(True)
+                visual.actor.GetProperty().SetOpacity(OPACIDAD_SOLO_CARGA)
 
         celdas, tipos = malla.celdas_vtk()  # hexaedros, tetraedros y cuñas (láminas) con su forma real
         coordenadas = np.asarray(malla.coordenadas, dtype=float)

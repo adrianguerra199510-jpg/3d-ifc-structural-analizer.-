@@ -308,6 +308,8 @@ class PanelArbol(QWidget):
                     detalle = f"{seccion} · {elemento.material}"
                 else:
                     detalle = f"e = {elemento.espesor:.2f} m · {elemento.material}"
+                if (tipo, id_) in getattr(proyecto, "solo_carga", set()):
+                    detalle = "solo carga (no se malla) · " + detalle
                 hijos = por_elemento.get((tipo, id_), [])
                 if hijos:
                     detalle += f"  ({len(hijos)})"

@@ -26,6 +26,11 @@ from ..core.solidos import SolidoGeneral, normales_y_areas
 
 #: Máximo de triángulos de una lámina tras el refinamiento.
 MAXIMO_TRIANGULOS = 120_000
+#: La superficie media se parte, antes de volver a mallarla con Gmsh, en triángulos de a lo sumo estos tamaños de
+#: elemento (las tiras largas del IFC hacen fallar la reconstrucción de Gmsh).
+REFINO_PREVIO = 4.0
+#: Solo se parte si hay agujas (tiras con calidad 4√3·A/Σl² menor que esto); un abanico normal lo malla bien Gmsh.
+CALIDAD_AGUJA = 0.05
 #: Fracción del tamaño de elemento por debajo de la cual el espesor medio hace que un sólido sea una pared delgada.
 RELACION_PARED_DELGADA = 0.4
 #: Una pieza es lámina si su espesor medio es como mucho esta fracción de su tamaño en planta (placa o cáscara delgada).
@@ -460,7 +465,30 @@ def superficie_media(solido: SolidoGeneral, tamano: float) -> SuperficieMedia:
     espesor_vertice = np.zeros(len(vm))
     np.maximum.at(espesor_vertice, local.ravel(), np.repeat(espesores[origen], 3))
     vm, local, origen, _ = _cerrar_grietas(vm, local, origen, 1.05 * espesor_vertice)
+    # Tiras largas y estrechas (un tubo del IFC son decenas de triángulos de toda su longitud y unos centímetros de
+    # ancho): Gmsh no reconstruye bien la superficie a partir de ellas y deja una costura de triángulos degenerados, con
+    # lo que se descartaba su malla y se partían las tiras (8 veces más láminas, y alargadas). Partidas antes a unos
+    # cuatro tamaños de elemento, Gmsh la malla bien y rápido.
+    if len(local) and _arista_mas_larga(vm, local) > REFINO_PREVIO * tamano and _peor_calidad(vm, local) < CALIDAD_AGUJA:
+        try:
+            vm, local, origen = _refinar(vm, local, origen, REFINO_PREVIO * tamano)
+        except ErrorLamina:  # demasiado grande para partirla: se deja como está
+            pass
     return SuperficieMedia(vertices=vm, triangulos=local, origen=origen, espesores=espesores, normales=n[conservados])
+
+
+def _peor_calidad(v: np.ndarray, t: np.ndarray) -> float:
+    """Peor calidad 4√3·A/Σl² de los triángulos (1 equilátero, 0 degenerado)."""
+
+    p = v[t]
+    area = 0.5 * np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+    l2 = sum(((p[:, (k + 1) % 3] - p[:, k]) ** 2).sum(axis=1) for k in range(3))
+    return float((4.0 * np.sqrt(3.0) * area / np.maximum(l2, 1e-30)).min())
+
+
+def _arista_mas_larga(v: np.ndarray, t: np.ndarray) -> float:
+    p = v[t]
+    return float(max(np.linalg.norm(p[:, (k + 1) % 3] - p[:, k], axis=1).max() for k in range(3)))
 
 
 def _partes_conexas(triangulos: np.ndarray) -> int:
