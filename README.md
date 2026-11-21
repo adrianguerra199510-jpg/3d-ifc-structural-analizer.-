@@ -251,6 +251,15 @@ y la conserva como **sólido de forma libre**:
   el agujero a un perno infinitamente rígido), fija el **centro** de la superficie, el promedio de sus
   desplazamientos ponderado por el área (acople distribuido, como el RBE3): el agujero se deforma y la
   pieza gira alrededor del perno. Con todos los apoyos pasadores alineados el modelo puede girar y se avisa.
+- **Validar (F6).** Comprueba, sin analizar, si el análisis va a correr y a converger: datos (apoyos, cargas y
+  constraints sobre elementos y superficies que existen), materiales (E, ν, fy), geometría (sólidos cerrados),
+  conectividad (qué piezas se tocan o están unidas; cada grupo necesita apoyos), **estabilidad** (los apoyos de
+  cada grupo deben impedir sus 6 movimientos de cuerpo rígido; dice cuáles quedan libres, p. ej. pasadores
+  alineados), resultante de cargas de cada caso y tamaño de la malla. La **prueba con CalculiX** hace además el
+  análisis elástico: confirma que se resuelve, detecta piezas en mecanismo y, con materiales con fluencia,
+  estima si el análisis elastoplástico convergerá (qué parte del modelo pasa de fy). ANALIZAR hace la
+  validación rápida antes de lanzar CalculiX (casilla en su diálogo) y solo se detiene si hay errores; un doble
+  clic en un hallazgo selecciona las piezas en el visor.
 - **Sección (corte).** En el panel de Resultados, «Cortar con un plano» corta la vista con un plano de normal
   X, Y o Z que se mueve con un deslizador (o libre, arrastrándolo y girándolo con el ratón): la cara del
   corte se colorea con los valores interpolados dentro del sólido (p. ej. una zapata por la mitad, para ver

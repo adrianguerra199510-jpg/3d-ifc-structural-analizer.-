@@ -39,6 +39,10 @@ def main(salida: Path) -> None:
     QDialog.exec = lambda self: 1  # los diálogos se aceptan con sus valores por defecto
 
     import ifc_structural.gui.ventana_principal as vp
+    import functools
+
+    # este guion ejercita el modelo de barras: la importación por defecto ahora deja todo como sólidos
+    vp.importar_ifc = functools.partial(vp.importar_ifc, modo="barras")
     from ifc_structural.gui.ventana_principal import VentanaPrincipal
 
     def bombear(n=15):

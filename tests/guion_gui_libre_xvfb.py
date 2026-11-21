@@ -371,9 +371,14 @@ def main(salida: Path) -> None:
     mensajes.clear()
     ventana.accion_analizar.trigger()  # un solo botón: detecta que hay sólidos y analiza en 3D
     inicio = time.time()
-    while ventana._worker.isRunning() and time.time() - inicio < 250:
+    # ANALIZAR valida primero el modelo (un hilo) y al terminar lanza el análisis (otro hilo)
+    while time.time() - inicio < 300:
         bombear(5)
         time.sleep(0.05)
+        if not ventana._worker.isRunning():
+            bombear(20)
+            if not ventana._worker.isRunning():
+                break
     bombear(30)
     resultado = ventana.resultado
     verificar(resultado is not None and resultado.es_solido, f"el análisis 3D terminó ({mensajes})")

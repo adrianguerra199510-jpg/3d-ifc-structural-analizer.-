@@ -81,6 +81,8 @@ from .estilo import etiqueta_logo
 from .iconos import icono, icono_aplicacion, icono_blanco
 from .pagina_bienvenida import PaginaBienvenida
 from .panel_arbol import PanelArbol
+from .dialogo_validacion import ANALIZAR as ANALIZAR_VALIDACION, PRUEBA as PRUEBA_VALIDACION, DialogoValidacion
+from ..solido.validacion_modelo import validar_modelo_barras, validar_modelo_solido
 from .panel_resultados import DEFORMACION_PLASTICA, DESPLAZAMIENTO, ENVOLVENTE, TEXTO_PLASTICA, PanelEsfuerzos
 from .trabajador_analisis import TrabajadorAnalisis
 from .visor_3d import ESTILO_ALAMBRE, ESTILO_SOLIDO, ESTILO_TRANSPARENTE, MODO_CARA, MODO_ELEMENTO, Visor3D
@@ -104,8 +106,10 @@ AYUDA = (
     "<li><b>Conectar elementos</b>: articulación o enlace rígido entre dos elementos seleccionados.</li>"
     "<li>Si quiere revisar la malla antes de calcular, pulse <b>Mallar</b> (F7): se genera y se dibuja la malla de "
     "elementos finitos del análisis sólido, y ANALIZAR la vuelve a usar mientras no cambie el modelo.</li>"
-    "<li>Pulse <b>▶ ANALIZAR</b> (F5) y revise los esfuerzos en el panel <b>Esfuerzos</b>. "
-    "<b>ANALIZAR 3D</b> (F6) lo resuelve como modelo sólido, con la geometría real de cada pieza.</li></ol>"
+    "<li><b>Validar</b> (F6) comprueba, sin analizar, si el análisis va a correr y a converger (apoyos que dejan "
+    "movimientos libres, piezas sueltas, materiales, cargas) y, si se pide, hace una prueba con CalculiX.</li>"
+    "<li>Pulse <b>▶ ANALIZAR</b> (F5) y revise los esfuerzos en el panel <b>Esfuerzos</b>; el programa decide si lo "
+    "resuelve como barras o como sólido 3D (Analizar → Modo de análisis).</li></ol>"
     "Con el botón central del mouse se desplaza la vista; con la rueda se acerca o aleja; arrastrando con "
     "el botón izquierdo se gira."
 )
@@ -149,6 +153,7 @@ class VentanaPrincipal(QMainWindow):
         self._malla_previa: Optional[MallaPrevia] = None  # la del botón Mallar (ANALIZAR la reutiliza si sirve)
         self._casos_elegidos: Optional[set] = None  # casos marcados en el último ANALIZAR (los nuevos, marcados)
         self._no_lineal = False  # la casilla «Material elastoplástico» del último ANALIZAR sólido
+        self._validar_antes = True  # la casilla «Validar el modelo antes de analizar» del último ANALIZAR sólido
         self._casos_conocidos: set = set()
         self._barra_principal = None
         self.modo_analisis = "AUTO"  # AUTO, BARRAS o SOLIDO (Analizar → Modo de análisis)
@@ -289,6 +294,10 @@ class VentanaPrincipal(QMainWindow):
         self.accion_analizar.setIcon(icono_blanco("analizar"))
         self.accion_mallar = accion("Mallar", self.mallar, "malla", "F7",
                                     "Generar y ver la malla de elementos finitos antes de analizar; ANALIZAR la reutiliza (F7)")
+        self.accion_validar = accion("Validar", self.validar, "correcto", "F6",
+                                     "Comprobar, sin analizar, si el análisis va a correr y a converger: datos, materiales, "
+                                     "geometría, piezas sueltas, estabilidad de los apoyos y, si se pide, una prueba con "
+                                     "CalculiX (F6)")
 
         self.accion_ver_modelo = accion("Modelo", lambda: self.volver_al_modelo(), "modelo",
                                         ayuda="Volver a la vista del modelo", checkable=True, checked=True)
@@ -327,7 +336,7 @@ class VentanaPrincipal(QMainWindow):
         menu.addActions([self.accion_materiales, self.accion_casos])
 
         menu = self.menuBar().addMenu("A&nalizar")
-        menu.addActions([self.accion_mallar, self.accion_analizar])
+        menu.addActions([self.accion_validar, self.accion_mallar, self.accion_analizar])
         menu.addSeparator()
         submenu = menu.addMenu("Modo de análisis")
         grupo_modo_analisis = QActionGroup(self)
@@ -446,6 +455,14 @@ class VentanaPrincipal(QMainWindow):
         espacio.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         barra.addWidget(espacio)
 
+        self.boton_validar = QToolButton()
+        self.boton_validar.setObjectName("botonValidar")
+        self.boton_validar.setDefaultAction(self.accion_validar)
+        self.boton_validar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.boton_validar.setIconSize(QSize(18, 18))
+        self.boton_validar.setCursor(Qt.PointingHandCursor)
+        barra.addWidget(self.boton_validar)
+
         self.boton_mallar = QToolButton()
         self.boton_mallar.setObjectName("botonMallar")
         self.boton_mallar.setDefaultAction(self.accion_mallar)
@@ -518,6 +535,7 @@ class VentanaPrincipal(QMainWindow):
         ocupado = self._worker is not None and self._worker.isRunning()
         self.accion_analizar.setEnabled((hay_modelo or hay_solidos or bool(self.proyecto.losas or self.proyecto.muros)) and not ocupado)
         self.accion_mallar.setEnabled(self.accion_analizar.isEnabled())
+        self.accion_validar.setEnabled(self.accion_analizar.isEnabled())
         self.accion_ver_malla.setEnabled(self._malla_previa is not None)
         self.accion_apoyo.setEnabled(hay_modelo or hay_solidos)
         self.accion_material.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
@@ -1372,13 +1390,14 @@ class VentanaPrincipal(QMainWindow):
                                            self.proyecto.solidos) for e in c.values()}
             plasticos = sorted(m for m in usados if m in self.proyecto.materiales and self.proyecto.materiales[m].es_plastico)
         dialogo = DialogoAnalizar(self.casos, self.combinaciones, self, motivo, texto_malla, previos, plasticos,
-                                  self._no_lineal)
+                                  self._no_lineal, validar=self._validar_antes if solido else None)
         if not dialogo.exec():
             return None
         elegidos = dialogo.casos_elegidos()
         self._casos_elegidos, self._casos_conocidos = set(elegidos), set(self.casos)
         if solido:
             self._no_lineal = dialogo.no_lineal()
+            self._validar_antes = dialogo.validar_antes()
         return {i: self.casos[i] for i in elegidos}, dialogo.combinaciones_elegidas(), dialogo.no_lineal()
 
     def _analizar_barras(self) -> None:
@@ -1420,9 +1439,109 @@ class VentanaPrincipal(QMainWindow):
                            "revisarla o cambiar el tamaño de elemento, use <b>Mallar</b> antes de analizar.")
         texto_motivo = "Se analiza como <b>sólido 3D</b>" + (f" porque {motivo}." if motivo else ".")
         elegidos = self._elegir_casos(texto_motivo, texto_malla, solido=True)
-        if elegidos is not None:
+        if elegidos is None:
+            return
+
+        def analizar() -> None:
             self._iniciar_hilo(solido=True, tamano=tamano, barridos=barridos, casos=elegidos[0], combinaciones=elegidos[1],
                                no_lineal=elegidos[2])
+
+        if not self._validar_antes:
+            analizar()
+            return
+
+        def al_validar(informe) -> None:  # solo se interrumpe si hay errores
+            self._esperar_trabajo()
+            if informe.errores:
+                dialogo = self._dialogo_validacion(informe, antes_de_analizar=True)
+                dialogo.exec()
+                if dialogo.eleccion != ANALIZAR_VALIDACION:
+                    self.statusBar().showMessage("Análisis cancelado: corrija los errores de la validación.")
+                    return
+            analizar()
+
+        self._lanzar_validacion(elegidos[0], elegidos[1], elegidos[2], tamano, prueba=False, al_terminar=al_validar)
+
+    # ------------------------------------------------------------------
+    # Validación del modelo (botón Validar y antes de ANALIZAR)
+    # ------------------------------------------------------------------
+    def validar(self) -> None:
+        """Comprueba, sin analizar, si el análisis va a correr y a converger, y muestra el informe."""
+
+        if self._worker is not None and self._worker.isRunning():
+            return
+        modo = self.modo_analisis
+        if modo == "AUTO":
+            modo, _ = self._detectar_modo_de_analisis()
+        if modo == "BARRAS":
+            errores, advertencias = validar_modelo(self.proyecto, self.casos, self.combinaciones, self.apoyos, self.conexiones)
+            self._mostrar_validacion(validar_modelo_barras(errores, advertencias), ofrecer_prueba=False)
+            return
+        previa = self._malla_previa
+        tamano = previa.tamano if previa is not None else tamano_sugerido(self.proyecto)
+        self._lanzar_validacion(dict(self.casos), dict(self.combinaciones), self._no_lineal, tamano, prueba=False)
+
+    def _lanzar_validacion(self, casos, combinaciones, no_lineal: bool, tamano: float, prueba: bool, al_terminar=None) -> None:
+        proyecto, apoyos = self.proyecto, list(self.apoyos)
+        superficiales = {k: list(v) for k, v in self.cargas_superficie_por_caso.items()}
+        area = {k: list(v) for k, v in self.cargas_area_por_caso.items()}
+        lineales = {k: list(v) for k, v in self.cargas_lineales_por_caso.items()}
+        puntuales = {k: list(v) for k, v in self.cargas_puntuales_por_caso.items()}
+        otras = {c: len(area.get(c, [])) + len(lineales.get(c, [])) + len(puntuales.get(c, [])) for c in casos}
+        uniones = list(self.proyecto.uniones)
+        previa = self._malla_previa
+        if previa is not None and (previa.huella != huella_geometria(proyecto) or abs(previa.tamano - tamano) > 1e-9):
+            previa = None
+        configuracion = self.configuracion
+
+        def trabajo(avanzar):
+            return validar_modelo_solido(
+                proyecto, casos, combinaciones, apoyos, superficiales, uniones, tamano=tamano, malla_previa=previa,
+                no_lineal=no_lineal, otras_cargas_por_caso=otras, prueba_ccx=prueba, mallar=True,
+                directorio_trabajo=configuracion.directorio_trabajo_absoluto / "validacion", ruta_ccx=configuracion.ruta_ccx_efectiva,
+                cargas_area_por_caso=area, cargas_lineales_por_caso=lineales, cargas_puntuales_por_caso=puntuales,
+                al_avanzar=avanzar)
+
+        def terminado(informe) -> None:
+            self._cerrar_dialogo_progreso()
+            if informe.malla_previa is not None:  # la malla de la validación: ANALIZAR (y Ver → Malla) la usan
+                self._malla_previa = informe.malla_previa
+            self._actualizar_estado_de_acciones()
+            if al_terminar is not None:
+                al_terminar(informe)
+                return
+            self._esperar_trabajo()
+            self._mostrar_validacion(informe, casos=casos, combinaciones=combinaciones, no_lineal=no_lineal, tamano=tamano)
+
+        self._lanzar_trabajo(trabajo, "Validando el modelo",
+                             "Prueba con CalculiX: análisis elástico..." if prueba else "Validando el modelo...",
+                             terminado, "La validación no pudo completarse")
+
+    def _esperar_trabajo(self) -> None:
+        """El hilo avisa de que terminó justo antes de acabar: se espera a que acabe antes de lanzar otro."""
+
+        if self._worker is not None:
+            self._worker.wait(10000)
+
+    def _dialogo_validacion(self, informe, antes_de_analizar: bool = False, ofrecer_prueba: bool = True) -> DialogoValidacion:
+        dialogo = DialogoValidacion(informe, self, antes_de_analizar=antes_de_analizar, ofrecer_prueba=ofrecer_prueba)
+        dialogo.seleccion_pedida.connect(self._seleccionar_desde_validacion)
+        self.statusBar().showMessage(informe.resumen())
+        return dialogo
+
+    def _seleccionar_desde_validacion(self, objetivos) -> None:
+        if self.visor.vista != "MODELO":
+            self.volver_al_modelo()
+        self.visor.seleccionar(objetivos)
+
+    def _mostrar_validacion(self, informe, ofrecer_prueba: bool = True, casos=None, combinaciones=None,
+                            no_lineal: bool = False, tamano: float = 0.05) -> None:
+        dialogo = self._dialogo_validacion(informe, ofrecer_prueba=ofrecer_prueba)
+        dialogo.exec()
+        if dialogo.eleccion == PRUEBA_VALIDACION and casos is not None:
+            self._lanzar_validacion(casos, combinaciones, no_lineal, tamano, prueba=True)
+        elif dialogo.eleccion == ANALIZAR_VALIDACION:
+            self.analizar()
 
     def mallar(self) -> None:
         """Botón Mallar: genera la malla del análisis sólido sin resolverlo, para revisarla antes de ANALIZAR."""

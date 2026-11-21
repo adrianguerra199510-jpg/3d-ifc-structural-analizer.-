@@ -54,6 +54,10 @@ class ResultadoEjecucion:
         for fragmento, pista in _PISTAS:
             if fragmento in self.salida:
                 return pista
+        if self.codigo_salida in (-9, 137):  # SIGKILL: casi siempre el sistema, por falta de memoria
+            return ("El sistema detuvo CalculiX (código {}), casi siempre por falta de memoria: la malla es demasiado "
+                    "grande para la RAM del equipo. Agrande el tamaño de elemento en Mallar o use el botón Validar, que "
+                    "estima la memoria necesaria.".format(self.codigo_salida))
         errores = self.errores
         if errores:
             return "CalculiX informó: " + " | ".join(errores[:3])

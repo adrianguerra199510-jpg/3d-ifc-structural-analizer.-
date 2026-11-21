@@ -39,6 +39,10 @@ def main(salida: Path) -> None:
     QDialog.exec = lambda self: 1
 
     import ifc_structural.gui.ventana_principal as vp
+    import functools
+
+    # este guion ejercita el modelo de barras: la importación por defecto ahora deja todo como sólidos
+    vp.importar_ifc = functools.partial(vp.importar_ifc, modo="barras")
     from ifc_structural.combinaciones import esfuerzos
     from ifc_structural.gui.dialogo_cargas import DialogoCargas
 
@@ -183,9 +187,14 @@ def main(salida: Path) -> None:
     ventana.accion_analizar.trigger()
     verificar(elegidos and set(elegidos[0]) == set(ventana.casos), "ANALIZAR ofrece todos los casos, marcados")
     inicio = time.time()
-    while ventana._worker.isRunning() and time.time() - inicio < 200:
+    # ANALIZAR valida primero el modelo (un hilo) y al terminar lanza el análisis (otro hilo)
+    while time.time() - inicio < 300:
         bombear(5)
         time.sleep(0.05)
+        if not ventana._worker.isRunning():
+            bombear(20)
+            if not ventana._worker.isRunning():
+                break
     bombear(30)
     solido = ventana.resultado
     verificar(solido is not None and solido.es_solido, f"el análisis 3D terminó ({mensajes})")

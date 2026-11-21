@@ -18,7 +18,7 @@ class DialogoAnalizar(QDialog):
 
     def __init__(self, casos: Dict[str, CasoCarga], combinaciones: Dict[str, Combinacion], parent=None,
                  motivo: str = "", texto_malla: str = "", elegidos: Optional[Iterable[str]] = None,
-                 plasticos: Optional[List[str]] = None, no_lineal: bool = False):
+                 plasticos: Optional[List[str]] = None, no_lineal: bool = False, validar: Optional[bool] = None):
         """``plasticos``: materiales con fluencia del modelo, en el análisis sólido (None: sin la casilla del análisis
         elastoplástico, p. ej. en el modelo de barras)."""
         super().__init__(parent)
@@ -75,6 +75,14 @@ class DialogoAnalizar(QDialog):
             layout.addWidget(self.check_no_lineal)
             layout.addWidget(ayuda)
 
+        self.check_validar = None
+        if validar is not None:
+            self.check_validar = QCheckBox("Validar el modelo antes de analizar (rápido; se detiene solo si hay errores)")
+            self.check_validar.setChecked(validar)
+            self.check_validar.setToolTip("Comprueba datos, materiales, geometría, piezas sueltas y la estabilidad de los apoyos "
+                                          "antes de lanzar CalculiX (botón Validar para el informe completo)")
+            layout.addWidget(self.check_validar)
+
         self.botones = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.botones.button(QDialogButtonBox.Ok).setText("Analizar")
         self.botones.accepted.connect(self.accept)
@@ -91,6 +99,9 @@ class DialogoAnalizar(QDialog):
     def casos_elegidos(self) -> List[str]:
         return [self.lista.item(i).data(Qt.UserRole) for i in range(self.lista.count())
                 if self.lista.item(i).checkState() == Qt.Checked]
+
+    def validar_antes(self) -> bool:
+        return self.check_validar is not None and self.check_validar.isChecked()
 
     def no_lineal(self) -> bool:
         return self.check_no_lineal is not None and self.check_no_lineal.isEnabled() and self.check_no_lineal.isChecked()
