@@ -84,8 +84,14 @@ def test_la_validacion_avisa_si_un_elemento_solo_carga_no_toca_nada():
     p.solo_carga.add(("SOLIDO", "X"))
     apoyo = ApoyoSuperficie(id="AP", elemento_tipo="SOLIDO", elemento_id="V", cara=cara_hacia(viga, (-1, 0, 0)))
     informe = validar_modelo_solido(p, {"D": CasoCarga("D", "Muerta", TipoCaso.D)}, {}, [apoyo], {}, tamano=0.05)
-    errores = [h for h in informe.errores if h.seccion == "Solo carga"]
-    assert len(errores) == 1 and "X" in errores[0].texto
+    avisos = [h for h in informe.avisos if h.seccion == "Solo carga"]
+    assert len(avisos) == 1 and "X" in avisos[0].texto
+    assert not [h for h in informe.errores if h.seccion == "Solo carga"]
+    # con un apoyo propio (un anclaje) su peso va a ese apoyo: no hay aviso
+    anclaje = ApoyoSuperficie(id="AX", elemento_tipo="SOLIDO", elemento_id="X", cara=0)
+    informe = validar_modelo_solido(p, {"D": CasoCarga("D", "Muerta", TipoCaso.D)}, {}, [apoyo, anclaje], {}, tamano=0.05)
+    assert not [h for h in informe.avisos if h.seccion == "Solo carga"]
+    assert any("apoyos propios" in h.texto for h in informe.hallazgos if h.seccion == "Solo carga")
     assert any("apoyan en V" in h.texto for h in informe.hallazgos if h.seccion == "Solo carga")
     assert not [h for h in informe.errores if h.seccion in ("Conectividad", "Estabilidad")]  # solo cuenta lo mallado
 

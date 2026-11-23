@@ -249,6 +249,11 @@ def _apoyos_3d(proyecto: Proyecto, miembros: Sequence[MiembroBarra], malla: Mall
                 resultado.append(Apoyo3D(nodos, {g for g in grados if g <= 3}, nombre=a.nombre, pasador=True, pesos=pesos))
                 partes_apoyadas.add(sup.parte)
                 continue
+            if lamina and {1, 2, 3} <= grados:
+                # En una lámina la cara se reduce a una línea de nodos (el canto) o a su superficie media: fijar solo sus
+                # traslaciones dejaría el canto articulado, cuando la cara real del sólido (con su espesor) fija también el
+                # giro. Empotrada = traslaciones y giros (para una articulación está el pasador).
+                grados = grados | {4, 5, 6}
             resultado.append(Apoyo3D(sup.nodos_unicos, grados, rigido=any(g > 3 for g in grados) and not lamina, nombre=a.nombre,
                                      directo=lamina))
             partes_apoyadas.add(sup.parte)
@@ -649,7 +654,8 @@ def ejecutar_analisis_solido(
     fuera = elementos_solo_carga(proyecto)
     transferencia = None
     if fuera:
-        transferencia = calcular_transferencias(proyecto, casos, cargas_superficie_por_caso, max(2e-3, 0.25 * tamano), avanzar)
+        transferencia = calcular_transferencias(proyecto, casos, cargas_superficie_por_caso, max(2e-3, 0.25 * tamano), avanzar,
+                                                apoyos)
         advertencias.extend(transferencia.avisos)
         sobre = [a for a in apoyos if (getattr(a, "elemento_tipo", None), getattr(a, "elemento_id", None)) in fuera]
         if sobre:

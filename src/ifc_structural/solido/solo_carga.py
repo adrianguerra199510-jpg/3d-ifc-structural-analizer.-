@@ -85,6 +85,7 @@ class ResultadoSoloCarga:
     grupos: List[GrupoSoloCarga] = field(default_factory=list)
     avisos: List[str] = field(default_factory=list)
     sueltos: List[List[Elemento]] = field(default_factory=list)  # grupos que no tocan ninguna pieza mallada
+    apoyados: List[List[Elemento]] = field(default_factory=list)  # grupos sin contacto con lo mallado pero con apoyos propios
 
 
 def _volumen_y_centro(sup) -> Tuple[float, np.ndarray]:
@@ -145,8 +146,9 @@ def repartir(puntos: np.ndarray, areas: np.ndarray, fuerza: np.ndarray, momento:
 
 
 def calcular_transferencias(proyecto: Proyecto, casos: Dict, cargas_superficie_por_caso: Dict[str, list],
-                            tolerancia: float, al_avanzar=None) -> ResultadoSoloCarga:
-    """Fuerzas que los grupos «solo carga» transmiten a las piezas malladas en cada caso (``proyecto`` completo)."""
+                            tolerancia: float, al_avanzar=None, apoyos: Sequence = ()) -> ResultadoSoloCarga:
+    """Fuerzas que los grupos «solo carga» transmiten a las piezas malladas en cada caso (``proyecto`` completo). Un
+    grupo que no toca ninguna pieza mallada pero tiene ``apoyos`` propios (un anclaje a un muro) lleva su peso a ellos."""
 
     from .deteccion import _polidata, distancia_con_signo, elementos_del_proyecto, muestras, superficie_de
 
@@ -225,6 +227,10 @@ def calcular_transferencias(proyecto: Proyecto, casos: Dict, cargas_superficie_p
                     destino_de += [m] * len(c[0])
         nombres = ", ".join(i for _, i in piezas[:6]) + (f" y {len(piezas) - 6} más" if len(piezas) > 6 else "")
         if not puntos:
+            con_apoyo = {(getattr(a, "elemento_tipo", None), getattr(a, "elemento_id", None)) for a in apoyos}
+            if con_apoyo & set(piezas):
+                resultado.apoyados.append(piezas)  # su peso va a sus propios apoyos, no a la estructura
+                continue
             resultado.sueltos.append(piezas)
             resultado.avisos.append(f"Los elementos «solo carga» {nombres} no tocan ninguna pieza mallada: su peso y sus "
                                     "cargas no se aplican. Mállelos (quite «solo carga») o únalos a la estructura.")

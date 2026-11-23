@@ -60,6 +60,12 @@ class Acople:
     # rodea (ajuste de cuerpo rígido por mínimos cuadrados), para que la unión transmita también momentos.
     # Una entrada por ecuación: [(nodo 0-based, grado 1..6, coeficiente), ...]; el primer término es el dependiente.
     ecuaciones_giro: List[List[Tuple[int, int, float]]] = field(default_factory=list)
+    # Dos láminas: en vez de las parejas nodo a nodo, cada nodo de la lámina sigue el movimiento de cuerpo rígido del
+    # parche vecino de la otra (``ecuaciones_giro`` lleva esas ecuaciones de traslación): así la unión transmite momento.
+    solo_ecuaciones: bool = False
+    # Uniones en línea entre láminas: tramos cortos de la línea de unión (nodos de los dos lados) que se mueven como cuerpos
+    # rígidos (``*RIGID BODY``): transmiten el momento sin llenar la matriz como un parche rígido por nodo.
+    rigidos: List[np.ndarray] = field(default_factory=list)
 
 
 @dataclass
@@ -195,13 +201,26 @@ def escribir_comun(modelo: ModeloSolido, proyecto: Proyecto) -> List[str]:
             continue
         enlaces.append(Enlace3D(enlace.tipo, a, b, enlace.grados, enlace.nombre, enlace.caras_a, enlace.caras_b))
     siguiente = _escribir_enlaces(enlaces, c, siguiente, lineas, ecuaciones, modelo.avisos)
+    en_rigidos = set(int(n) for n in apoyados) | set(int(n) for n in esclavos_tie)
+    for acople in modelo.acoples:
+        for k, grupo in enumerate(acople.rigidos):
+            # un nodo solo puede estar en un cuerpo rígido, y nunca con apoyo propio o esclavo de un *TIE
+            nodos = np.array([int(n) for n in grupo if int(n) not in en_rigidos], dtype=np.int64)
+            if len(nodos) < 3:
+                continue
+            en_rigidos.update(int(n) for n in nodos)
+            _, _, siguiente = _cuerpo_rigido(f"{acople.nombre}R{k + 1}", nodos, c, siguiente, lineas)
     for acople in modelo.acoples:
         # un nodo con apoyo propio no puede además depender de otro: se deja fuera
         libres = ~np.isin(acople.nodos_a, apoyados)
-        for g in (1, 2, 3, 4, 5, 6) if acople.giros else (1, 2, 3):
-            for n, m in zip(acople.nodos_a[libres], acople.nodos_b[libres]):
-                ecuaciones.append([(int(n) + 1, g, 1.0), (int(m) + 1, g, -1.0)])
+        if not acople.solo_ecuaciones:
+            for g in (1, 2, 3, 4, 5, 6) if acople.giros else (1, 2, 3):
+                for n, m in zip(acople.nodos_a[libres], acople.nodos_b[libres]):
+                    ecuaciones.append([(int(n) + 1, g, 1.0), (int(m) + 1, g, -1.0)])
+        apoyados_1 = {int(n) + 1 for n in apoyados}
         for terminos in acople.ecuaciones_giro:
+            if acople.solo_ecuaciones and terminos[0][0] + 1 in apoyados_1:
+                continue  # un nodo con apoyo propio no depende de otro
             ecuaciones.append([(n + 1, g, c) for n, g, c in terminos])
     lineas += _ecuaciones_validas(ecuaciones, lineas, condiciones)
     if condiciones:

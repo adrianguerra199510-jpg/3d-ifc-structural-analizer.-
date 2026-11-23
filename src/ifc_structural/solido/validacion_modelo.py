@@ -574,15 +574,23 @@ def _solo_carga(informe: InformeValidacion, proyecto: Proyecto, casos, superfici
     s = "Solo carga"
     fuera = elementos_solo_carga(proyecto)
     sobre = [a for a in apoyos if (getattr(a, "elemento_tipo", None), getattr(a, "elemento_id", None)) in fuera]
+    r = calcular_transferencias(proyecto, casos, superficiales, tolerancia, al_avanzar, apoyos)
+    propios = {e for piezas in r.apoyados for e in piezas}  # grupos sostenidos solo por sus apoyos: está bien
     for a in sobre:
-        informe.agregar(AVISO, s, f"El apoyo {a.nombre} está sobre un elemento «solo carga», que no se malla: no se aplica, y "
-                                  "toda la carga de ese elemento baja a las piezas malladas que toca (del lado seguro para "
-                                  "ellas). Si ese apoyo debe sostener la parte mallada, póngalo en una pieza mallada.",
-                        [Objetivo(a.elemento_tipo, a.elemento_id)])
-    r = calcular_transferencias(proyecto, casos, superficiales, tolerancia, al_avanzar)
+        if (a.elemento_tipo, a.elemento_id) in propios:
+            continue
+        informe.agregar(AVISO, s, f"El apoyo {a.nombre} está sobre un elemento «solo carga» que carga sobre la parte mallada: "
+                                  "no se aplica, y toda la carga de ese elemento baja a las piezas malladas que toca (del "
+                                  "lado seguro para ellas). Si ese apoyo debe sostener la parte mallada, póngalo en una "
+                                  "pieza mallada.", [Objetivo(a.elemento_tipo, a.elemento_id)])
+    for piezas in r.apoyados:
+        informe.agregar(CORRECTO, s, f"Los elementos «solo carga» {_lista([i for _, i in piezas])} no tocan ninguna pieza "
+                                     "mallada y tienen apoyos propios: su peso y sus cargas van directamente a esos apoyos, "
+                                     "no a la estructura.", [Objetivo(t, i) for t, i in piezas])
     for piezas in r.sueltos:
-        informe.agregar(ERROR, s, f"Los elementos «solo carga» {_lista([i for _, i in piezas])} no tocan ninguna pieza mallada: "
-                                  "su peso y sus cargas se perderían. Mállelos (quite «solo carga») o únalos a la estructura.",
+        informe.agregar(AVISO, s, f"Los elementos «solo carga» {_lista([i for _, i in piezas])} no tocan ninguna pieza mallada "
+                                  "ni tienen apoyos: su peso y sus cargas no se aplican a la estructura. Si deben cargarla, "
+                                  "únalos a ella o mállelos (quite «solo carga»).",
                         [Objetivo(t, i) for t, i in piezas])
     for g in r.grupos:
         cargados.update(g.destinos)

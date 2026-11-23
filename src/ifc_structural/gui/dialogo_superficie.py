@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from ..core.asignacion import DIRECCIONES, ErrorAsignacion, Objetivo, descripcion
 from ..core.asignacion_superficie import (
-    Superficie, apoyo_superficie_para, carga_superficie_para, superficie_de, union_para,
+    Superficie, apoyo_superficie_para, carga_superficie_para, caras_mas_cercanas, superficie_de, union_para,
 )
 from ..core.casos_carga import CasoCarga
 from ..core.modelo import Proyecto
@@ -334,6 +334,7 @@ class DialogoUnionSuperficie(QDialog):
         self.setWindowTitle("Constraint entre superficies")
         self.resize(640, 560)
         self._proyecto, self._a, self._b = proyecto, a, b
+        self._caras_cercanas = None
         layout = QVBoxLayout(self)
         layout.addWidget(EncabezadoDialogo("conectar", "Constraint entre superficies",
                                            "Une dos superficies o elementos en el análisis 3D (como los joint constraints de SAP)."))
@@ -410,7 +411,14 @@ class DialogoUnionSuperficie(QDialog):
         return tuple(c.isChecked() for c in self.checks)
 
     def union(self, id_: str = "-"):
-        return union_para(self._proyecto, self._a, self._b, id_, self.tipo(), self.grados(), completo=self.completo(),
+        a, b = self._a, self._b
+        if not self.completo() and (a.cara is None or b.cara is None):
+            # las caras por las que se tocan no dependen del tipo ni de la separación: se buscan una sola vez (antes se
+            # buscaban en cada cambio de la separación y el diálogo se quedaba pensando)
+            if self._caras_cercanas is None:
+                self._caras_cercanas = caras_mas_cercanas(self._proyecto, a, b)
+            a, b = self._caras_cercanas
+        return union_para(self._proyecto, a, b, id_, self.tipo(), self.grados(), completo=self.completo(),
                           tolerancia=self.spin_tolerancia.value() / 1000.0)
 
     def _actualizar(self, *_args) -> None:

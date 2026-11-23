@@ -146,17 +146,48 @@ def caras_mas_cercanas(proyecto: Proyecto, a: Objetivo, b: Objetivo) -> Tuple[Ob
     def hueco(x, y) -> float:  # distancia entre las cajas de dos caras (0 si se cruzan)
         return float(np.linalg.norm(np.maximum(0.0, np.maximum(x[3] - y[4], y[3] - x[4]))))
 
-    parejas = [(hueco(x, y), x, y) for x in caras_a for y in caras_b]
-    corte = min(h for h, _, _ in parejas)
+    from scipy.spatial import cKDTree
+
+    from ..solido.deteccion import _polidata
+
+    # Estimación rápida de la distancia entre cada pareja de caras (puntos de muestra de una contra los de la otra) y
+    # distancia exacta solo en las mejores: con perfiles de muchas caras que se cruzan, medirlas todas tardaba segundos.
+    datos, arboles, mallas = {}, {}, {}
+
+    def muestra(lado: str, cara):
+        """(puntos, pesos, triángulos) de muestra de una cara de ``a`` o de ``b``."""
+
+        if (lado, cara[0]) not in datos:
+            puntos, peso, tri = muestras(cara[1], 600)
+            bien = np.isfinite(puntos).all(axis=1)  # una cara degenerada da puntos NaN (y cKDTree se cuelga con ellos)
+            if not bien.any():
+                puntos, peso, tri = cara[3][None, :], np.ones(1), np.zeros(1, dtype=np.int64)
+                bien = np.ones(1, dtype=bool)
+            datos[(lado, cara[0])] = (puntos[bien], peso[bien], tri[bien])
+        return datos[(lado, cara[0])]
+
+    estimadas = []
+    for x in caras_a:
+        for y in caras_b:
+            if hueco(x, y) > 0.5:  # cajas a más de medio metro: no son las caras por las que se tocan
+                continue
+            if y[0] not in arboles:
+                arboles[y[0]] = cKDTree(muestra("b", y)[0])
+            estimadas.append((float(arboles[y[0]].query(muestra("a", x)[0])[0].min()), x, y))
+    if not estimadas:
+        estimadas = [(hueco(x, y), x, y) for x in caras_a for y in caras_b]
+    estimadas.sort(key=lambda q: q[0])
+    corte = estimadas[0][0]
     candidatas = []
-    datos = {}
-    for h, x, y in sorted(parejas, key=lambda q: q[0]):
-        if h > corte + 0.05 and len(candidatas) >= 4:
+    for e, x, y in estimadas:
+        if len(candidatas) >= 4 and e > corte + 0.02:
             break
-        if id(x[1]) not in datos:
-            datos[id(x[1])] = muestras(x[1], 600)
-        puntos, peso, _ = datos[id(x[1])]
-        d = np.abs(distancia_con_signo(puntos, y[1]))
+        if len(candidatas) >= 12:
+            break
+        puntos, peso, _ = muestra("a", x)
+        if y[0] not in mallas:
+            mallas[y[0]] = _polidata(y[1])
+        d = np.abs(distancia_con_signo(puntos, y[1], mallas[y[0]]))
         dmin = float(d.min())
         en_contacto = float(peso[d <= dmin + max(1e-3, 0.1 * dmin)].sum())
         candidatas.append((dmin, en_contacto, float(np.dot(x[2], y[2])), x[0], y[0]))

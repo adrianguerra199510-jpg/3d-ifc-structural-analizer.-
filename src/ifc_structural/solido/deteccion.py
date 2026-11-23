@@ -83,15 +83,37 @@ def _polidata(sup: Superficie):
     return pv.PolyData(sup.vertices, np.hstack([np.full((len(sup.triangulos), 1), 3), sup.triangulos]).ravel())
 
 
+def muestras_por_area(p: np.ndarray, area: np.ndarray, espaciado: float):
+    """Puntos sobre los triángulos ``p`` (n, 3, 3): cada uno recibe ~área/espaciado² puntos (al menos su centro),
+    repartidos de forma uniforme con una secuencia cuasi aleatoria (R2) plegada al triángulo. A diferencia de una rejilla
+    según el lado más largo, el número de puntos crece con el área: una tira de 4 m × 1 cm (las caras de un perfil del
+    IFC) da unos pocos cientos de puntos, no un millón.  Devuelve (puntos (K, 3), triángulo de cada punto (K,))."""
+
+    cuantos = np.maximum(1, np.ceil(area / max(espaciado, 1e-9) ** 2)).astype(np.int64)
+    total = int(cuantos.sum())
+    triangulo = np.repeat(np.arange(len(p)), cuantos)
+    inicio = np.repeat(np.cumsum(cuantos) - cuantos, cuantos)
+    k = np.arange(total) - inicio  # índice del punto dentro de su triángulo
+    # secuencia R2 (Roberts): bien repartida en el cuadrado unidad; el primer punto, el centro del triángulo
+    g = 1.32471795724474602596
+    u = np.mod(0.5 + k / g, 1.0)
+    v = np.mod(0.5 + k / (g * g), 1.0)
+    fuera = u + v > 1.0
+    u[fuera], v[fuera] = 1.0 - u[fuera], 1.0 - v[fuera]
+    solo = cuantos[triangulo] == 1
+    u[solo], v[solo] = 1.0 / 3.0, 1.0 / 3.0
+    t = p[triangulo]
+    puntos = t[:, 0] + u[:, None] * (t[:, 1] - t[:, 0]) + v[:, None] * (t[:, 2] - t[:, 0])
+    return puntos, triangulo
+
+
 def muestras(sup: Superficie, maximo: int = MUESTRAS_POR_ELEMENTO):
     """(puntos, área que representa cada uno, triángulo de cada uno) repartidos sobre la superficie."""
 
-    from ..core.solidos import muestras_de_superficie
-
     espaciado = min(0.05, max(0.002, math.sqrt(max(sup.area, 1e-12) / maximo)))
-    puntos, triangulo = muestras_de_superficie(sup.vertices, sup.triangulos, espaciado)
     p = sup.vertices[sup.triangulos]
     area_tri = 0.5 * np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+    puntos, triangulo = muestras_por_area(p, area_tri, espaciado)
     cuenta = np.bincount(triangulo, minlength=len(sup.triangulos))
     return np.asarray(puntos, float), area_tri[triangulo] / np.maximum(cuenta[triangulo], 1), np.asarray(triangulo)
 

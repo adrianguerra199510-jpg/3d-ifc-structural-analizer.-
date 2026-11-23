@@ -221,7 +221,7 @@ def detectar_acoples(malla: MallaSolida, tamano: float, ya_acopladas: Sequence[T
                      tolerancias: Optional[Dict[frozenset, object]] = None) -> Tuple[List["Acople"], List[str]]:
     """Acoples de las láminas con las piezas vecinas: cada nodo de la lámina a menos de ``tol`` de un nodo del borde de
     la otra pieza (``tol`` = 0,6 veces el tamaño de elemento más medio espesor) se une a él por ``*EQUATION``
-    (traslaciones; también giros si la otra pieza es una lámina). Un nodo solo depende de otro una vez.
+    (traslaciones; los giros, por el giro del parche vecino de la otra pieza). Un nodo solo depende de otro una vez.
     ``prohibidos`` son nodos que no pueden depender de otro (los que tienen apoyo); ``tolerancias`` da, por pareja de
     partes, una tolerancia mayor pedida por un constraint manual: un número, o (tolerancia, nodos) para que la tolerancia
     mayor valga solo en esos nodos (las superficies elegidas en el constraint; el resto, con la normal)."""
@@ -234,6 +234,13 @@ def detectar_acoples(malla: MallaSolida, tamano: float, ya_acopladas: Sequence[T
     maestros: Set[int] = set()
     saltadas = {frozenset(par) for par in ya_acopladas}
     laminas = [i for i, p in enumerate(malla.partes) if p.lamina]
+    # Dentro de una misma lámina: un perfil I (o cualquier unión en T) da una superficie media en trozos, porque el borde
+    # del alma termina a medio espesor del ala, en mitad de su superficie y no en un borde. Cada trozo se acopla a los
+    # otros por donde se tocan; sin esto el perfil se deshacía (las alas y el alma, sueltos).
+    for i in laminas:
+        acople = _acople_interno(malla, i, tamano, dependientes, maestros, len(acoples) + 1)
+        if acople is not None:
+            acoples.append(acople)
     for i in laminas:
         pi = malla.partes[i]
         espesor_i = float(malla.espesor_de_lamina[pi.primer_lamina: pi.ultimo_lamina].max())
@@ -266,9 +273,121 @@ def detectar_acoples(malla: MallaSolida, tamano: float, ya_acopladas: Sequence[T
             a, b = esclavos_posibles[bien], maestros_posibles[vecino[bien]]
             dependientes.update(int(n) for n in a)
             maestros.update(int(n) for n in b)
+            # Giros: el de cada nodo de la lámina se iguala al giro de cuerpo rígido del parche de nodos vecinos de la otra
+            # pieza, calculado con sus traslaciones. Entre dos láminas no basta con igualar los giros nodo a nodo: CalculiX
+            # no los transmite entre nodos de cáscaras, y dos láminas que se tocan en una línea (a tope, o un ala apoyada
+            # en el borde de otra) quedaban articuladas alrededor de ella y la pieza colgaba suelta.
+            if pj.lamina and (_en_linea(malla.coordenadas[a], tamano) or _en_linea(malla.coordenadas[np.unique(b)], tamano)):
+                # dos láminas que se tocan en una línea (a tope, un canto contra otra): unidas nodo a nodo quedarían
+                # articuladas alrededor de ella. Cada nodo sigue el movimiento de cuerpo rígido del parche vecino de la
+                # otra (solo traslaciones, que CalculiX sí transmite). Si se tocan en un área, nodo a nodo ya basta.
+                tramos = _tramos_rigidos(malla, a, maestros_posibles, tol, tamano)
+                if tramos:
+                    dependientes.update(int(n) for grupo in tramos for n in grupo)
+                    acoples.append(Acople(f"AC{len(acoples) + 1}", i, j, a, b, rigidos=tramos, solo_ecuaciones=True))
+                    continue
             giro = [] if pj.lamina else _ecuaciones_giro(malla, a, maestros_posibles, tol, tamano)
-            acoples.append(Acople(f"AC{len(acoples) + 1}", i, j, a, b, giros=pj.lamina, ecuaciones_giro=giro))
+            acoples.append(Acople(f"AC{len(acoples) + 1}", i, j, a, b, ecuaciones_giro=giro))
     return acoples, avisos
+
+
+def _acople_interno(malla: MallaSolida, indice: int, tamano: float, dependientes: Set[int], maestros: Set[int],
+                    numero: int) -> Optional["Acople"]:
+    """Acople entre los trozos de la superficie media de una lámina (ver ``detectar_acoples``): los nodos del borde de cada
+    trozo que quedan a menos de ``0,6·tamaño + espesor`` de otro trozo siguen al parche de nodos vecinos de ese trozo
+    como cuerpo rígido. Actualiza ``dependientes`` y ``maestros``."""
+
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    from .generador import Acople
+
+    parte = malla.partes[indice]
+    elementos = malla.laminas[parte.primer_lamina: parte.ultimo_lamina]
+    if len(elementos) == 0:
+        return None
+    esquinas = elementos[:, :3]
+    nodos, local = np.unique(elementos, return_inverse=True)
+    local = local.reshape(elementos.shape)
+    a, b = np.concatenate([local[:, k] for k in range(6)]), np.concatenate([local[:, (k + 1) % 6] for k in range(6)])
+    n_trozos, trozo = connected_components(coo_matrix((np.ones(len(a)), (a, b)), shape=(len(nodos), len(nodos))),
+                                           directed=False)
+    if n_trozos < 2:
+        return None
+    # nodos de borde (aristas de un solo triángulo, con sus nodos medios)
+    aristas = np.sort(np.concatenate([esquinas[:, [0, 1]], esquinas[:, [1, 2]], esquinas[:, [2, 0]]]), axis=1)
+    unicas, cuenta = np.unique(aristas, axis=0, return_counts=True)
+    borde = set(int(n) for n in unicas[cuenta == 1].ravel())
+    medios = elementos[:, 3:6]  # S6: nodos medios de las aristas 0-1, 1-2, 2-0
+    for k, (p, q) in enumerate(((0, 1), (1, 2), (2, 0))):
+        clave = np.sort(esquinas[:, [p, q]], axis=1)
+        en_borde = np.array([int(x) in borde and int(y) in borde for x, y in clave])
+        borde.update(int(n) for n in medios[en_borde, k])
+    trozo_de = dict(zip(nodos.tolist(), trozo.tolist()))
+    espesor = float(malla.espesor_de_lamina[parte.primer_lamina: parte.ultimo_lamina].max())
+    tol = 0.6 * tamano + espesor
+    dependientes_nuevos, ecuaciones = [], []
+    # primero los trozos pequeños (el alma sigue a las alas, no al revés)
+    tamanos = np.bincount(trozo)
+    for t_ in np.argsort(tamanos):
+        propios = np.array([n for n in borde if trozo_de[n] == t_ and n not in dependientes and n not in maestros],
+                           dtype=np.int64)
+        otros = np.array([n for n in nodos.tolist() if trozo_de[n] != t_ and n not in dependientes], dtype=np.int64)
+        if len(propios) == 0 or len(otros) < 3:
+            continue
+        distancia, _ = cKDTree(malla.coordenadas[otros]).query(malla.coordenadas[propios], distance_upper_bound=tol)
+        cerca = propios[np.isfinite(distancia)]
+        if len(cerca) < 2:
+            continue
+        # unión simple nodo a nodo (traslaciones): transmite el rasante y las fuerzas entre alma y ala, que es lo que hace
+        # trabajar juntos al perfil; un parche rígido por nodo multiplicaba los términos de las ecuaciones y CalculiX se
+        # quedaba sin memoria en modelos con muchos perfiles
+        _, vecino = cKDTree(malla.coordenadas[otros]).query(malla.coordenadas[cerca])
+        nuevas = [[(int(n), d + 1, 1.0), (int(otros[k]), d + 1, -1.0)] for n, k in zip(cerca, vecino) for d in range(3)]
+        ecuaciones += nuevas
+        dependientes.update(int(n) for n in cerca)
+        dependientes_nuevos += [int(n) for n in cerca]
+        for terminos in nuevas:
+            maestros.update(n for n, _, _ in terminos[1:])
+    if not ecuaciones:
+        return None
+    dep = np.array(dependientes_nuevos, dtype=np.int64)
+    return Acople(f"AC{numero}", indice, indice, dep, dep, ecuaciones_giro=ecuaciones, solo_ecuaciones=True)
+
+
+def _en_linea(puntos: np.ndarray, tamano: float) -> bool:
+    """¿Los puntos están (casi) en una línea? Su dispersión en la segunda dirección principal es menor que un cuarto del
+    tamaño de elemento."""
+
+    if len(puntos) < 3:
+        return True
+    r = puntos - puntos.mean(axis=0)
+    s = np.linalg.svd(r, compute_uv=False)
+    return float(s[1]) / np.sqrt(len(puntos)) < 0.25 * tamano
+
+
+def _tramos_rigidos(malla: MallaSolida, nodos: np.ndarray, otros: np.ndarray, tol: float, tamano: float
+                    ) -> List[np.ndarray]:
+    """Tramos de una unión en línea entre láminas: los ``nodos`` de una se reparten a lo largo de la línea en tramos de
+    unos dos tamaños de elemento, y cada tramo, con los nodos de ``otros`` a menos de ``tol`` de los suyos, forma un
+    cuerpo rígido. Como los nodos de la otra pieza no están en la línea, el tramo transmite también el momento."""
+
+    x = malla.coordenadas[nodos]
+    if len(nodos) < 2 or len(otros) < 2:
+        return []
+    centro = x.mean(axis=0)
+    eje = np.linalg.svd(x - centro, full_matrices=False)[2][0]
+    s = (x - centro) @ eje
+    numero = np.floor((s - s.min()) / (2.0 * tamano)).astype(np.int64)
+    arbol = cKDTree(malla.coordenadas[otros])
+    tramos = []
+    for k in np.unique(numero):
+        propios = nodos[numero == k]
+        cercanos = sorted({int(otros[j]) for lista in arbol.query_ball_point(malla.coordenadas[propios], tol) for j in lista})
+        grupo = np.unique(np.concatenate([propios, np.array(cercanos, dtype=np.int64)]))
+        if len(cercanos) >= 1 and len(grupo) >= 3:
+            tramos.append(grupo)
+    return tramos
 
 
 def _ecuaciones_giro(malla: MallaSolida, nodos_lamina: np.ndarray, nodos_solido: np.ndarray, tol: float, tamano: float,
