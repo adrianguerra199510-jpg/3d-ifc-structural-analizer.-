@@ -139,3 +139,39 @@ def test_la_ventana_marca_y_desmarca_elementos_solo_carga():
     v.alternar_solo_carga()  # ya lo era: se vuelve a mallar
     assert v.proyecto.solo_carga == set()
     v.close()
+
+
+def test_el_menu_contextual_permite_volver_a_incluir_los_solo_carga_en_el_analisis():
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from ifc_structural.core.asignacion import Objetivo
+    from ifc_structural.gui.ventana_principal import VentanaPrincipal
+
+    QApplication.instance() or QApplication([])
+    p, viga, bloque = _proyecto_con_bloque()  # el bloque B es «solo carga»
+    v = VentanaPrincipal()
+    v._establecer_proyecto(p, [], {"D": CasoCarga("D", "Muerta", TipoCaso.D)}, {}, {}, {}, {})
+
+    def textos():
+        return [a.text() for a in v.construir_menu_contextual().actions()]
+
+    assert v.accion_incluir_todos.isEnabled() and "(1)" in v.accion_incluir_todos.text()
+    v.visor.seleccionar([Objetivo("SOLIDO", "B")])
+    assert "Incluir en el análisis (volver a mallar)" in textos()
+    assert not any(t.startswith("Solo carga") for t in textos())
+    # selección mezclada: se ofrecen las dos cosas
+    v.visor.seleccionar([Objetivo("SOLIDO", "B"), Objetivo("SOLIDO", "V")])
+    assert any(t.startswith("Incluir en el análisis (volver a mallar)") for t in textos())
+    assert any(t.startswith("Solo carga") for t in textos())
+    v.incluir_en_analisis()
+    assert v.proyecto.solo_carga == set() and not v.accion_incluir_todos.isEnabled()
+    v.deshacer()
+    assert v.proyecto.solo_carga == {("SOLIDO", "B")}
+    # con la viga seleccionada (o desde el fondo) se puede incluir a todos los «solo carga»
+    v.visor.seleccionar([Objetivo("SOLIDO", "V")])
+    assert any(t.startswith("Incluir en el análisis todos") for t in textos())
+    assert any(a.text().startswith("Incluir en el análisis todos") for a in v.construir_menu_fondo().actions())
+    v.incluir_todos_en_analisis()
+    assert v.proyecto.solo_carga == set()
+    v.close()

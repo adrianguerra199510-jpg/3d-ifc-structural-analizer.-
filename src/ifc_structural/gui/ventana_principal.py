@@ -323,6 +323,9 @@ class VentanaPrincipal(QMainWindow):
             "Solo carga (no mallar)", self.alternar_solo_carga, "material",
             ayuda="Los elementos seleccionados no se mallan: su peso y sus cargas pasan a las piezas malladas que tocan "
                   "(análisis 3D). Vuelva a usarlo para mallarlos de nuevo.")
+        self.accion_incluir_todos = accion(
+            "Incluir en el análisis todos los «solo carga»", self.incluir_todos_en_analisis, "malla",
+            ayuda="Quita la marca «solo carga» de todos los elementos: se vuelven a mallar y a analizar.")
         self.accion_bloqueo = accion("Desbloqueado", self._al_pulsar_bloqueo, "candado",
                                      ayuda="Tras analizar, el modelo queda bloqueado (en azul): no se puede editar mientras "
                                            "se ven sus resultados. Pulse para desbloquearlo; se borran los resultados.",
@@ -367,6 +370,7 @@ class VentanaPrincipal(QMainWindow):
         submenu.addAction("Conectar manualmente…", self.asignar_conexion)
         submenu.addAction("Conectar automáticamente…", self.conectar_automaticamente)
         menu.addAction(self.accion_solo_carga)
+        menu.addAction(self.accion_incluir_todos)
         menu.addSeparator()
         menu.addActions([self.accion_materiales, self.accion_casos])
 
@@ -580,6 +584,9 @@ class VentanaPrincipal(QMainWindow):
         self.accion_mallar.setEnabled(self.accion_analizar.isEnabled())
         self.accion_validar.setEnabled(self.accion_analizar.isEnabled())
         self.accion_solo_carga.setEnabled(hay_modelo or hay_solidos or bool(self.proyecto.losas or self.proyecto.muros))
+        n_solo_carga = len(self.proyecto.solo_carga)
+        self.accion_incluir_todos.setEnabled(n_solo_carga > 0)
+        self.accion_incluir_todos.setText(f"Incluir en el análisis todos los «solo carga» ({n_solo_carga})")
         self.accion_ver_malla.setEnabled(self._malla_previa is not None)
         self.accion_apoyo.setEnabled(hay_modelo or hay_solidos)
         self.accion_material.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
@@ -590,6 +597,7 @@ class VentanaPrincipal(QMainWindow):
         self.accion_reporte.setEnabled(self.resultado is not None and not ocupado)
         if self._bloqueado:  # con resultados no se edita el modelo (ni se vuelve a mallar o analizar)
             for a in (self.accion_analizar, self.accion_mallar, self.accion_validar, self.accion_solo_carga,
+                      self.accion_incluir_todos,
                       self.accion_apoyo, self.accion_material, self.accion_conexion, self.accion_materiales,
                       self.accion_carga, self.accion_casos, self.accion_eliminar, self.accion_deshacer,
                       self.accion_rehacer):
@@ -1013,10 +1021,46 @@ class VentanaPrincipal(QMainWindow):
             self.proyecto.solo_carga |= elementos
             texto = (f"{len(elementos)} elemento(s) «solo carga»: no se mallan; su peso y sus cargas pasan a las piezas "
                      "malladas que tocan.")
+        self._aplicar_cambio_solo_carga(texto)
+
+    def _aplicar_cambio_solo_carga(self, texto: str) -> None:
         self.visor.actualizar_solo_carga()
         self._refrescar_arbol()
         self._marcar_resultados_desactualizados()
+        self._actualizar_estado_de_acciones()
         self.statusBar().showMessage(texto)
+
+    @requiere_desbloqueo
+    def marcar_solo_carga(self) -> None:
+        """Los seleccionados pasan a «solo carga» (no se mallan)."""
+
+        nuevos = {(o.tipo, o.id) for o in self.visor.seleccion} - self.proyecto.solo_carga
+        if not nuevos:
+            return
+        self.proyecto.solo_carga |= nuevos
+        self._aplicar_cambio_solo_carga(
+            f"{len(nuevos)} elemento(s) «solo carga»: no se mallan; su peso y sus cargas pasan a las piezas malladas "
+            "que tocan.")
+
+    @requiere_desbloqueo
+    def incluir_en_analisis(self) -> None:
+        """Los seleccionados que eran «solo carga» se vuelven a mallar y a analizar."""
+
+        quitados = {(o.tipo, o.id) for o in self.visor.seleccion} & self.proyecto.solo_carga
+        if not quitados:
+            return
+        self.proyecto.solo_carga -= quitados
+        self._aplicar_cambio_solo_carga(f"{len(quitados)} elemento(s) vuelven al análisis: se mallan de nuevo.")
+
+    @requiere_desbloqueo
+    def incluir_todos_en_analisis(self) -> None:
+        """Quita la marca «solo carga» de todos los elementos."""
+
+        n = len(self.proyecto.solo_carga)
+        if not n:
+            return
+        self.proyecto.solo_carga = set()
+        self._aplicar_cambio_solo_carga(f"{n} elemento(s) «solo carga» vuelven al análisis: se mallan de nuevo.")
 
     @requiere_desbloqueo
     def gestionar_materiales(self) -> None:
@@ -1262,9 +1306,16 @@ class VentanaPrincipal(QMainWindow):
         conectar.addAction("Conectar manualmente…", self.asignar_conexion)
         conectar.addAction("Conectar automáticamente…", self.conectar_automaticamente)
         elementos = {(o.tipo, o.id) for o in seleccion}
-        todos = elementos <= self.proyecto.solo_carga
-        menu.addAction(icono("material"), "Mallar de nuevo (quitar «solo carga»)" if todos else
-                       "Solo carga: no mallar (su peso y cargas pasan a lo que tocan)", self.alternar_solo_carga)
+        marcados = elementos & self.proyecto.solo_carga
+        sin_marcar = elementos - self.proyecto.solo_carga
+        menu.addSeparator()
+        if sin_marcar:
+            menu.addAction(icono("material"), "Solo carga: no mallar (su peso y cargas pasan a lo que tocan)"
+                           + (f" ({len(sin_marcar)})" if len(elementos) > 1 else ""), self.marcar_solo_carga)
+        if marcados:
+            menu.addAction(icono("malla"), "Incluir en el análisis (volver a mallar)"
+                           + (f" ({len(marcados)})" if len(elementos) > 1 else ""), self.incluir_en_analisis)
+        self._sumar_incluir_todos(menu, marcados)
         menu.addSeparator()
         menu.addAction("Propiedades…", self.mostrar_propiedades)
         menu.addAction("Quitar la selección", lambda: self.visor.seleccionar([]))
@@ -1291,10 +1342,19 @@ class VentanaPrincipal(QMainWindow):
         menu.addSeparator()
         menu.addActions(self._acciones_mostrar)
         menu.addAction("Escala de símbolos…", self.cambiar_escalas)
+        self._sumar_incluir_todos(menu, set())
         if self.visor.seleccion:
             menu.addSeparator()
             menu.addAction("Quitar la selección", lambda: self.visor.seleccionar([]))
         return menu
+
+    def _sumar_incluir_todos(self, menu: QMenu, ya_ofrecidos: set) -> None:
+        """«Incluir todos los solo carga» cuando hay otros además de los ya ofrecidos (un fantasma puede ser
+        difícil de señalar con el ratón)."""
+
+        if self.proyecto.solo_carga - ya_ofrecidos:
+            menu.addAction(icono("malla"), f"Incluir en el análisis todos los «solo carga» ({len(self.proyecto.solo_carga)})",
+                           self.incluir_todos_en_analisis)
 
     def _mostrar_menu_fondo(self) -> None:
         self.construir_menu_fondo().exec(QCursor.pos())
