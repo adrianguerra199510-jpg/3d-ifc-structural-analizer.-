@@ -307,32 +307,46 @@ def _acople_interno(malla: MallaSolida, indice: int, tamano: float, dependientes
     if len(elementos) == 0:
         return None
     esquinas = elementos[:, :3]
-    nodos, local = np.unique(elementos, return_inverse=True)
-    local = local.reshape(elementos.shape)
-    a, b = np.concatenate([local[:, k] for k in range(6)]), np.concatenate([local[:, (k + 1) % 6] for k in range(6)])
-    n_trozos, trozo = connected_components(coo_matrix((np.ones(len(a)), (a, b)), shape=(len(nodos), len(nodos))),
-                                           directed=False)
+    nodos = np.unique(elementos)
+    # trozos: triángulos unidos por una arista. Dos trozos que solo comparten un nodo (el alma de un perfil inclinado
+    # tocaba las alas en un punto) no están unidos a lo largo: con la conectividad por nodos parecían una sola pieza, no
+    # se acoplaban y el ala quedaba suelta del alma.
+    aristas = np.sort(np.concatenate([esquinas[:, [0, 1]], esquinas[:, [1, 2]], esquinas[:, [2, 0]]]), axis=1)
+    triangulo = np.tile(np.arange(len(elementos)), 3)
+    unicas, de_arista, cuenta = np.unique(aristas, axis=0, return_inverse=True, return_counts=True)
+    de_arista = de_arista.ravel()
+    orden = np.argsort(de_arista, kind="stable")
+    pares_a, pares_b = [], []
+    inicio = np.concatenate([[0], np.cumsum(np.bincount(de_arista, minlength=len(unicas)))])
+    for k in np.where(cuenta > 1)[0]:
+        ts = triangulo[orden[inicio[k]: inicio[k + 1]]]
+        pares_a += [int(ts[0])] * (len(ts) - 1)
+        pares_b += ts[1:].tolist()
+    n_trozos, trozo_tri = connected_components(
+        coo_matrix((np.ones(len(pares_a)), (pares_a, pares_b)), shape=(len(elementos), len(elementos))), directed=False)
     if n_trozos < 2:
         return None
+    trozos_de: Dict[int, Set[int]] = {}
+    for t_, fila in zip(trozo_tri.tolist(), elementos.tolist()):
+        for n in fila:
+            trozos_de.setdefault(int(n), set()).add(t_)
     # nodos de borde (aristas de un solo triángulo, con sus nodos medios)
-    aristas = np.sort(np.concatenate([esquinas[:, [0, 1]], esquinas[:, [1, 2]], esquinas[:, [2, 0]]]), axis=1)
-    unicas, cuenta = np.unique(aristas, axis=0, return_counts=True)
     borde = set(int(n) for n in unicas[cuenta == 1].ravel())
     medios = elementos[:, 3:6]  # S6: nodos medios de las aristas 0-1, 1-2, 2-0
     for k, (p, q) in enumerate(((0, 1), (1, 2), (2, 0))):
         clave = np.sort(esquinas[:, [p, q]], axis=1)
         en_borde = np.array([int(x) in borde and int(y) in borde for x, y in clave])
         borde.update(int(n) for n in medios[en_borde, k])
-    trozo_de = dict(zip(nodos.tolist(), trozo.tolist()))
     espesor = float(malla.espesor_de_lamina[parte.primer_lamina: parte.ultimo_lamina].max())
     tol = 0.6 * tamano + espesor
     dependientes_nuevos, ecuaciones = [], []
-    # primero los trozos pequeños (el alma sigue a las alas, no al revés)
-    tamanos = np.bincount(trozo)
+    # primero los trozos pequeños (el alma sigue a las alas, no al revés). Un nodo que ya comparten dos trozos no se
+    # acopla (ya está unido) ni sirve de maestro a otro nodo de su propio trozo.
+    tamanos = np.bincount(trozo_tri)
     for t_ in np.argsort(tamanos):
-        propios = np.array([n for n in borde if trozo_de[n] == t_ and n not in dependientes and n not in maestros],
+        propios = np.array([n for n in borde if trozos_de[n] == {t_} and n not in dependientes and n not in maestros],
                            dtype=np.int64)
-        otros = np.array([n for n in nodos.tolist() if trozo_de[n] != t_ and n not in dependientes], dtype=np.int64)
+        otros = np.array([n for n in nodos.tolist() if t_ not in trozos_de[n] and n not in dependientes], dtype=np.int64)
         if len(propios) == 0 or len(otros) < 3:
             continue
         distancia, _ = cKDTree(malla.coordenadas[otros]).query(malla.coordenadas[propios], distance_upper_bound=tol)
