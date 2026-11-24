@@ -141,6 +141,12 @@ def main(salida: Path) -> None:
             verificar("COMB1" in self.combinaciones.text() and "Sin calcular" in self.combinaciones.text(),
                       f"el diálogo dice qué combinaciones se calculan: {self.combinaciones.text()}")
 
+    # tras analizar el modelo queda bloqueado (botón azul); al desbloquearlo se borran los resultados
+    verificar(ventana._bloqueado and ventana.accion_bloqueo.isChecked(), "el modelo quedó bloqueado al analizar")
+    verificar(not ventana.accion_analizar.isEnabled(), "bloqueado: ANALIZAR deshabilitado")
+    ventana.accion_bloqueo.trigger()
+    bombear()
+    verificar(not ventana._bloqueado and ventana.resultado is None, "al desbloquear se borran los resultados")
     vp.DialogoAnalizar = SoloD
     ventana.accion_analizar.trigger()
     inicio = time.time()

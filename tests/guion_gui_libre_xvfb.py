@@ -405,8 +405,8 @@ def main(salida: Path) -> None:
         ruta = ventana.exportar_reporte(str(salida / f"reporte.{extension}"))
         verificar(ruta is not None and ruta.exists() and ruta.stat().st_size > 50_000, f"reporte {extension} exportado")
     verificar(not [m for m in mensajes if m[0] == "critical"], f"el reporte no dio errores: {mensajes}")
-    # Eliminar elementos y deshacer / rehacer
-    ventana.volver_al_modelo()
+    # Eliminar elementos y deshacer / rehacer (antes hay que desbloquear el modelo: se borran los resultados)
+    ventana.borrar_resultados()
     ventana.accion_modo_elemento.trigger()
     n_cargas = sum(len(v) for v in ventana.cargas_superficie_por_caso.values())
     visor.seleccionar([Objetivo("SOLIDO", ids["PLACA_L"])])

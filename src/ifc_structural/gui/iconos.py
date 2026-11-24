@@ -116,6 +116,10 @@ CUERPOS: Dict[str, str] = {
     "rotar": (
         '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4.5v4.6h-4.6" stroke="@A@"/>'
     ),
+    "candado": (
+        '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" stroke="@A@"/>'
+        '<path d="M12 14.5v2.5" stroke="@A@"/>'
+    ),
     "deshacer": (
         '<path d="M9 7L4.5 11.5 9 16"/><path d="M5 11.5h9a5 5 0 0 1 0 10h-3" stroke="@A@"/>'
     ),

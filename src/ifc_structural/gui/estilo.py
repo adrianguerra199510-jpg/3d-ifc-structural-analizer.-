@@ -92,6 +92,10 @@ QToolButton#botonAnalizar {{ background: {VERDE}; color: white; font-weight: 700
 QToolButton#botonAnalizar:hover {{ background: {VERDE_CLARO}; }}
 QToolButton#botonAnalizar:pressed {{ background: #25744a; }}
 QToolButton#botonAnalizar:disabled {{ background: #b9c4cf; border-color: #b9c4cf; color: #eef1f5; }}
+QToolButton#botonBloqueo {{ background: #eef1f5; color: #7a8794; font-weight: 700; font-size: 13px;
+                           padding: 7px 14px; border: 1px solid #cdd5de; border-radius: 9px; }}
+QToolButton#botonBloqueo:checked {{ background: {ACENTO}; color: white; border-color: {ACENTO_OSCURO}; }}
+QToolButton#botonBloqueo:checked:hover {{ background: {ACENTO_OSCURO}; }}
 QToolButton#botonMallar, QToolButton#botonValidar {{ background: {ACENTO_CLARO}; color: {ACENTO_OSCURO}; font-weight: 700; font-size: 13px;
                               padding: 7px 18px; border: 1px solid {ACENTO}; border-radius: 9px; }}
 QToolButton#botonMallar:hover, QToolButton#botonValidar:hover {{ background: {ACENTO_MEDIO}; }}

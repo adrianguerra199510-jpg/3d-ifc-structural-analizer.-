@@ -12,6 +12,7 @@ Flujo de uso:
 from __future__ import annotations
 
 import copy
+import functools
 import logging
 import math
 from pathlib import Path
@@ -132,6 +133,23 @@ def ruta_con_formato(ruta: str, filtro: str) -> str:
     return base + (extension or ".pdf")
 
 
+def requiere_desbloqueo(metodo):
+    """Las ediciones del modelo (y volver a mallar o analizar) no se hacen con el modelo bloqueado (tras analizar):
+    se avisa de que hay que desbloquearlo, lo que borra los resultados."""
+
+    @functools.wraps(metodo)
+    def envoltura(self, *args, **kwargs):
+        if getattr(self, "_bloqueado", False):
+            QMessageBox.information(
+                self, "Modelo bloqueado",
+                "El modelo está bloqueado porque tiene resultados de análisis. Para editarlo, pulse el botón "
+                "«Bloqueado» (en azul, junto a ANALIZAR): se desbloquea y se borran los resultados.")
+            return None
+        return metodo(self, *args, **kwargs)
+
+    return envoltura
+
+
 class VentanaPrincipal(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -155,6 +173,11 @@ class VentanaPrincipal(QMainWindow):
         self._malla_previa: Optional[MallaPrevia] = None  # la del botón Mallar (ANALIZAR la reutiliza si sirve)
         self._casos_elegidos: Optional[set] = None  # casos marcados en el último ANALIZAR (los nuevos, marcados)
         self._no_lineal = False  # la casilla «Material elastoplástico» del último ANALIZAR sólido
+        self._bloqueado = False  # tras analizar el modelo queda bloqueado hasta que se borran los resultados
+        self._conexion_pendiente: Optional[List[Objetivo]] = None  # «Conectar manualmente» esperando clics
+        self._atajo_cancelar_conexion = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self._atajo_cancelar_conexion.setEnabled(False)
+        self._atajo_cancelar_conexion.activated.connect(lambda: self._cancelar_seleccion_conexion(True))
         self._validar_antes = True  # la casilla «Validar el modelo antes de analizar» del último ANALIZAR sólido
         self._casos_conocidos: set = set()
         self._barra_principal = None
@@ -300,6 +323,11 @@ class VentanaPrincipal(QMainWindow):
             "Solo carga (no mallar)", self.alternar_solo_carga, "material",
             ayuda="Los elementos seleccionados no se mallan: su peso y sus cargas pasan a las piezas malladas que tocan "
                   "(análisis 3D). Vuelva a usarlo para mallarlos de nuevo.")
+        self.accion_bloqueo = accion("Desbloqueado", self._al_pulsar_bloqueo, "candado",
+                                     ayuda="Tras analizar, el modelo queda bloqueado (en azul): no se puede editar mientras "
+                                           "se ven sus resultados. Pulse para desbloquearlo; se borran los resultados.",
+                                     checkable=True)
+        self.accion_bloqueo.setEnabled(False)
         self.accion_validar = accion("Validar", self.validar, "correcto", "F6",
                                      "Comprobar, sin analizar, si el análisis va a correr y a converger: datos, materiales, "
                                      "geometría, piezas sueltas, estabilidad de los apoyos y, si se pide, una prueba con "
@@ -343,7 +371,7 @@ class VentanaPrincipal(QMainWindow):
         menu.addActions([self.accion_materiales, self.accion_casos])
 
         menu = self.menuBar().addMenu("A&nalizar")
-        menu.addActions([self.accion_validar, self.accion_mallar, self.accion_analizar])
+        menu.addActions([self.accion_validar, self.accion_mallar, self.accion_analizar, self.accion_bloqueo])
         menu.addSeparator()
         submenu = menu.addMenu("Modo de análisis")
         grupo_modo_analisis = QActionGroup(self)
@@ -486,6 +514,14 @@ class VentanaPrincipal(QMainWindow):
         self.boton_analizar.setCursor(Qt.PointingHandCursor)
         barra.addWidget(self.boton_analizar)
 
+        self.boton_bloqueo = QToolButton()
+        self.boton_bloqueo.setObjectName("botonBloqueo")
+        self.boton_bloqueo.setDefaultAction(self.accion_bloqueo)
+        self.boton_bloqueo.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.boton_bloqueo.setIconSize(QSize(18, 18))
+        self.boton_bloqueo.setCursor(Qt.PointingHandCursor)
+        barra.addWidget(self.boton_bloqueo)
+
     def _conectar_senales(self) -> None:
         self.accion_modo_elemento.toggled.connect(lambda marcado: marcado and self._cambiar_modo(MODO_ELEMENTO))
         self.accion_modo_cara.toggled.connect(lambda marcado: marcado and self._cambiar_modo(MODO_CARA))
@@ -552,8 +588,21 @@ class VentanaPrincipal(QMainWindow):
         self.accion_carga.setEnabled(hay_modelo or bool(self.proyecto.losas) or hay_solidos)
         self.accion_ver_esfuerzos.setEnabled(self.resultado is not None)
         self.accion_reporte.setEnabled(self.resultado is not None and not ocupado)
+        if self._bloqueado:  # con resultados no se edita el modelo (ni se vuelve a mallar o analizar)
+            for a in (self.accion_analizar, self.accion_mallar, self.accion_validar, self.accion_solo_carga,
+                      self.accion_apoyo, self.accion_material, self.accion_conexion, self.accion_materiales,
+                      self.accion_carga, self.accion_casos, self.accion_eliminar, self.accion_deshacer,
+                      self.accion_rehacer):
+                a.setEnabled(False)
+        else:
+            self.accion_casos.setEnabled(True)
+            self.accion_eliminar.setEnabled(True)
+            self._actualizar_acciones_historial()
+        self.accion_bloqueo.setEnabled(self._bloqueado and not ocupado)
 
     def _al_cambiar_seleccion(self, objetivos: List[Objetivo]) -> None:
+        if self._conexion_pendiente is not None and objetivos:
+            self._sumar_a_conexion(objetivos)
         if not self._desde_arbol:
             self.panel_arbol.resaltar(list(dict.fromkeys((o.tipo, o.id) for o in objetivos)))
         if not objetivos:
@@ -661,6 +710,8 @@ class VentanaPrincipal(QMainWindow):
         self.resultado = None
         self._resultado_desactualizado = False
         self._malla_previa = None
+        self._fijar_bloqueo(False)
+        self._cancelar_seleccion_conexion(False)
         self.panel_esfuerzos.establecer_resultados([], [])
         self.panel_esfuerzos.mostrar_resumen("Ejecute el análisis para ver los esfuerzos.", {})
 
@@ -763,8 +814,8 @@ class VentanaPrincipal(QMainWindow):
         self._actualizar_acciones_historial()
 
     def _actualizar_acciones_historial(self) -> None:
-        self.accion_deshacer.setEnabled(bool(self._deshacer))
-        self.accion_rehacer.setEnabled(bool(self._rehacer))
+        self.accion_deshacer.setEnabled(bool(self._deshacer) and not self._bloqueado)
+        self.accion_rehacer.setEnabled(bool(self._rehacer) and not self._bloqueado)
 
     def _restaurar(self, estado) -> None:
         (self.proyecto, self.apoyos, self.casos, self.combinaciones, self.cargas_area_por_caso,
@@ -790,6 +841,7 @@ class VentanaPrincipal(QMainWindow):
             for cara in s.caras:
                 yield from (cara.triangulos, cara.centro, cara.normal)
 
+    @requiere_desbloqueo
     def deshacer(self) -> None:
         if not self._deshacer or self._worker is not None and self._worker.isRunning():
             return
@@ -797,6 +849,7 @@ class VentanaPrincipal(QMainWindow):
         self._restaurar(self._deshacer.pop())
         self.statusBar().showMessage("Cambio deshecho.")
 
+    @requiere_desbloqueo
     def rehacer(self) -> None:
         if not self._rehacer or self._worker is not None and self._worker.isRunning():
             return
@@ -804,6 +857,7 @@ class VentanaPrincipal(QMainWindow):
         self._restaurar(self._rehacer.pop())
         self.statusBar().showMessage("Cambio rehecho.")
 
+    @requiere_desbloqueo
     def eliminar_seleccion(self) -> None:
         """Quita del modelo los elementos seleccionados (en modo Cara, el elemento al que pertenece cada cara)."""
 
@@ -826,6 +880,7 @@ class VentanaPrincipal(QMainWindow):
     def _hay_solidos_libres(self) -> bool:
         return any(o.tipo == "SOLIDO" for o in self.visor.seleccion)
 
+    @requiere_desbloqueo
     def asignar_apoyo_superficie(self) -> None:
         """Apoyo sobre las superficies seleccionadas (modo «Cara»): cualquier cara de cualquier elemento."""
 
@@ -843,6 +898,7 @@ class VentanaPrincipal(QMainWindow):
             self._refrescar_asignaciones()
             self.statusBar().showMessage(f"{len(creados)} apoyo(s) en superficie asignado(s). Se usan en ANALIZAR 3D.")
 
+    @requiere_desbloqueo
     def asignar_carga_superficie(self) -> None:
         """Carga (presión, fuerza o momento) sobre las superficies seleccionadas (modo «Cara»)."""
 
@@ -863,6 +919,7 @@ class VentanaPrincipal(QMainWindow):
             self._refrescar_asignaciones()
             self.statusBar().showMessage(f"{len(creadas)} carga(s) en superficie asignada(s). Se usan en ANALIZAR 3D.")
 
+    @requiere_desbloqueo
     def asignar_apoyo(self) -> None:
         if self._hay_solidos_libres():  # un sólido de forma libre solo tiene superficies
             self.asignar_apoyo_superficie()
@@ -897,6 +954,7 @@ class VentanaPrincipal(QMainWindow):
             self._refrescar_asignaciones()
             self.statusBar().showMessage(f"{len(creados)} apoyo(s) asignado(s).")
 
+    @requiere_desbloqueo
     def asignar_carga(self) -> None:
         if self._hay_solidos_libres():
             self.asignar_carga_superficie()
@@ -926,6 +984,7 @@ class VentanaPrincipal(QMainWindow):
             self._refrescar_asignaciones()
             self.statusBar().showMessage(f"{creadas} carga(s) asignada(s) al caso {caso_id}.")
 
+    @requiere_desbloqueo
     def asignar_material(self) -> None:
         dialogo = DialogoAsignarMaterial(self.proyecto, self.visor.seleccion, self)
         if not dialogo.exec():
@@ -939,6 +998,7 @@ class VentanaPrincipal(QMainWindow):
         self._marcar_resultados_desactualizados()
         self.statusBar().showMessage(f"Material «{dialogo.material_elegido()}» asignado a {len(cambiados)} elemento(s).")
 
+    @requiere_desbloqueo
     def alternar_solo_carga(self) -> None:
         """Marca los elementos seleccionados como «solo carga» (no se mallan) o, si ya lo son todos, los vuelve a mallar."""
 
@@ -958,6 +1018,7 @@ class VentanaPrincipal(QMainWindow):
         self._marcar_resultados_desactualizados()
         self.statusBar().showMessage(texto)
 
+    @requiere_desbloqueo
     def gestionar_materiales(self) -> None:
         dialogo = DialogoMateriales(self.proyecto, self)
         if dialogo.exec():
@@ -1012,6 +1073,7 @@ class VentanaPrincipal(QMainWindow):
                 posicion = widget.mapToGlobal(widget.rect().bottomLeft())
         menu.exec(posicion)
 
+    @requiere_desbloqueo
     def conectar_automaticamente(self) -> None:
         """Detecta los elementos que están unidos (se tocan o casi) y crea un constraint para cada pareja."""
 
@@ -1042,6 +1104,7 @@ class VentanaPrincipal(QMainWindow):
         self._refrescar_asignaciones()
         self.statusBar().showMessage(f"{len(nuevas)} constraint(s) creados automáticamente. Se aplican en el análisis 3D.")
 
+    @requiere_desbloqueo
     def asignar_union_superficie(self) -> None:
         """Constraint 3D entre dos superficies (o dos elementos: se toman las caras más cercanas)."""
 
@@ -1067,10 +1130,62 @@ class VentanaPrincipal(QMainWindow):
         self._refrescar_asignaciones()
         self.statusBar().showMessage(f"Constraint creado: {union.nombre}. Se aplica en ANALIZAR 3D.")
 
+    # ------------------------------------------------------------------
+    # Conectar manualmente: si no hay dos cosas seleccionadas se eligen con dos clics
+    # ------------------------------------------------------------------
+    def _iniciar_seleccion_conexion(self) -> None:
+        distintos = list(dict.fromkeys((o.tipo, o.id, o.cara) for o in self.visor.seleccion))
+        self._conexion_pendiente = [Objetivo(*distintos[0])] if len(distintos) == 1 else []
+        self._atajo_cancelar_conexion.setEnabled(True)
+        if len(distintos) > 2:
+            self.visor.seleccionar([])
+        self._avisar_seleccion_conexion()
+
+    def _avisar_seleccion_conexion(self) -> None:
+        cara = "la superficie (modo «Cara») o " if self.visor.modo == MODO_CARA else ""
+        if not self._conexion_pendiente:
+            texto = f"Conectar manualmente: haga clic en {cara}la PRIMERA pieza que quiere unir (Esc cancela)."
+        else:
+            texto = (f"Conectar manualmente: primera = {descripcion(self.proyecto, self._conexion_pendiente[0])}. "
+                     f"Haga clic en {cara}la SEGUNDA pieza (Esc cancela).")
+        self.statusBar().showMessage(texto)
+
+    def _sumar_a_conexion(self, objetivos: List[Objetivo]) -> None:
+        pendiente = self._conexion_pendiente
+        claves = {(o.tipo, o.id, o.cara) for o in pendiente}
+        for o in objetivos:
+            if (o.tipo, o.id, o.cara) not in claves:
+                pendiente.append(Objetivo(o.tipo, o.id, o.cara))
+                claves.add((o.tipo, o.id, o.cara))
+        if len(pendiente) < 2:
+            self._avisar_seleccion_conexion()
+            return
+        elegidos = pendiente[:2]
+        self._cancelar_seleccion_conexion(False)
+        # la selección cambia dentro de la señal del visor: el diálogo se abre después
+        QTimer.singleShot(0, lambda: self._conectar_elegidos(elegidos))
+
+    def _conectar_elegidos(self, elegidos: List[Objetivo]) -> None:
+        self.visor.seleccionar(elegidos)
+        self.asignar_conexion()
+
+    def _cancelar_seleccion_conexion(self, avisar: bool) -> None:
+        if self._conexion_pendiente is None:
+            return
+        self._conexion_pendiente = None
+        self._atajo_cancelar_conexion.setEnabled(False)
+        if avisar:
+            self.statusBar().showMessage("Conectar manualmente: cancelado.")
+
+    @requiere_desbloqueo
     def asignar_conexion(self) -> None:
-        """Conectar manualmente los dos elementos o superficies seleccionados."""
+        """Conectar manualmente los dos elementos o superficies seleccionados (o elegirlos con dos clics)."""
 
         seleccion = self.visor.seleccion
+        if len({(o.tipo, o.id, o.cara) for o in seleccion}) != 2:
+            self._iniciar_seleccion_conexion()
+            return
+        self._cancelar_seleccion_conexion(False)
         solo_barras = bool(seleccion) and all(o.tipo in ("VIGA", "COLUMNA") and o.cara is None for o in seleccion)
         if solo_barras and len({o.id for o in seleccion}) == 2:
             # entre dos barras hay dos clases de conexión: la del modelo de barras y el constraint 3D
@@ -1144,10 +1259,7 @@ class VentanaPrincipal(QMainWindow):
                 if not hay_caras:
                     accion_sup.setToolTip("Seleccione una cara (modo «Cara»)")
         conectar = menu.addMenu(icono("conectar"), "Conectar")
-        manual = conectar.addAction("Conectar manualmente…", self.asignar_conexion)
-        manual.setEnabled(len(set((o.tipo, o.id, o.cara) for o in seleccion)) == 2)
-        if not manual.isEnabled():
-            manual.setToolTip("Seleccione dos superficies o dos elementos (Ctrl + clic)")
+        conectar.addAction("Conectar manualmente…", self.asignar_conexion)
         conectar.addAction("Conectar automáticamente…", self.conectar_automaticamente)
         elementos = {(o.tipo, o.id) for o in seleccion}
         todos = elementos <= self.proyecto.solo_carga
@@ -1238,6 +1350,7 @@ class VentanaPrincipal(QMainWindow):
             destino = self.cargas_puntuales_por_caso
         destino.setdefault(carga.caso_id, []).append(carga)
 
+    @requiere_desbloqueo
     def eliminar_asignaciones(self, claves: Iterable[Tuple[str, str]]) -> None:
         claves = set(claves)
         self.apoyos = [
@@ -1296,6 +1409,7 @@ class VentanaPrincipal(QMainWindow):
         self._docks[1].show()
         self.mostrar_esfuerzos()
 
+    @requiere_desbloqueo
     def asignar_material_elegido(self, nombre: str) -> None:
         try:
             cambiados = asignar_material(self.proyecto, self.visor.seleccion, nombre)
@@ -1350,6 +1464,7 @@ class VentanaPrincipal(QMainWindow):
         if menu is not None:
             menu.exec(QCursor.pos())
 
+    @requiere_desbloqueo
     def _gestionar_casos(self) -> None:
         con_cargas = {
             caso_id
@@ -1390,6 +1505,7 @@ class VentanaPrincipal(QMainWindow):
             return "SOLIDO", "el modelo no tiene vigas ni columnas (solo losas o muros)"
         return "BARRAS", ""
 
+    @requiere_desbloqueo
     def analizar(self, modo: Optional[str] = None) -> None:
         """Botón ANALIZAR: elige solo el tipo de análisis (barras o sólido 3D) según lo que tenga el modelo y pregunta qué
         casos de carga se resuelven. ``modo`` (``"BARRAS"`` o ``"SOLIDO"``) lo fuerza; si no, se usa el modo elegido en
@@ -1494,8 +1610,49 @@ class VentanaPrincipal(QMainWindow):
         self._lanzar_validacion(elegidos[0], elegidos[1], elegidos[2], tamano, prueba=False, al_terminar=al_validar)
 
     # ------------------------------------------------------------------
+    # Bloqueo del modelo mientras tiene resultados
+    # ------------------------------------------------------------------
+    def _fijar_bloqueo(self, bloqueado: bool) -> None:
+        self._bloqueado = bloqueado
+        self.accion_bloqueo.blockSignals(True)
+        self.accion_bloqueo.setChecked(bloqueado)
+        self.accion_bloqueo.blockSignals(False)
+        self.accion_bloqueo.setText("Bloqueado" if bloqueado else "Desbloqueado")
+        self._actualizar_estado_de_acciones()
+
+    def _al_pulsar_bloqueo(self, *_args) -> None:
+        """Botón «Bloqueado»: desbloquea el modelo y borra los resultados (pide confirmación)."""
+
+        if not self._bloqueado:
+            self._fijar_bloqueo(False)
+            return
+        respuesta = QMessageBox.question(
+            self, "Desbloquear el modelo",
+            "Al desbloquear el modelo se borran los resultados del análisis (esfuerzos, deformada y reporte). "
+            "¿Desbloquear?")
+        if respuesta != QMessageBox.Yes:
+            self._fijar_bloqueo(True)  # el botón vuelve a quedar marcado
+            return
+        self.borrar_resultados()
+
+    def borrar_resultados(self) -> None:
+        """Quita los resultados, vuelve a la vista del modelo y lo desbloquea para editarlo."""
+
+        self._detener_animacion()
+        self.resultado = None
+        self._resultado_desactualizado = False
+        self.panel_esfuerzos.establecer_resultados([], [])
+        self.panel_esfuerzos.mostrar_resumen("Ejecute el análisis para ver los esfuerzos.", {})
+        self.volver_al_modelo()
+        self._docks[1].hide()
+        self._fijar_bloqueo(False)
+        self._refrescar_arbol()
+        self.statusBar().showMessage("Modelo desbloqueado: se borraron los resultados. Ya puede editarlo.")
+
+    # ------------------------------------------------------------------
     # Validación del modelo (botón Validar y antes de ANALIZAR)
     # ------------------------------------------------------------------
+    @requiere_desbloqueo
     def validar(self) -> None:
         """Comprueba, sin analizar, si el análisis va a correr y a converger, y muestra el informe."""
 
@@ -1574,6 +1731,7 @@ class VentanaPrincipal(QMainWindow):
         elif dialogo.eleccion == ANALIZAR_VALIDACION:
             self.analizar()
 
+    @requiere_desbloqueo
     def mallar(self) -> None:
         """Botón Mallar: genera la malla del análisis sólido sin resolverlo, para revisarla antes de ANALIZAR."""
 
@@ -1692,6 +1850,7 @@ class VentanaPrincipal(QMainWindow):
         self._cerrar_dialogo_progreso()
         self.resultado = resultado
         self._resultado_desactualizado = False
+        self._fijar_bloqueo(True)
         self.panel_esfuerzos.establecer_resultados(
             [(c.id, c.nombre) for c in self.casos.values() if c.id in resultado.tensiones_por_caso],
             [(c.id, c.nombre) for c in self.combinaciones.values() if c.id in resultado.tensiones_por_combinacion],

@@ -161,6 +161,8 @@ def main(salida: Path) -> None:
             self.spin_tamano.setValue(25)
 
     vp.DialogoAnalisis3D = Dialogo3D
+    verificar(ventana._bloqueado and not ventana.accion_analizar.isEnabled(), "tras analizar el modelo queda bloqueado")
+    ventana.borrar_resultados()  # botón «Bloqueado»: desbloquea y borra los resultados
     verificar(ventana.accion_analizar.isEnabled(), "el botón ANALIZAR está habilitado")
     verificar(ventana._detectar_modo_de_analisis()[0] == "SOLIDO", "la conexión tiene placas y pernos: el análisis automático es 3D")
     ventana.volver_al_modelo()
